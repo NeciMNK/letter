@@ -144,15 +144,6 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Element, ReadError> {
     root.ok_or_else(|| ReadError::xml("no root element"))
 }
 
-/// Экранирует значение атрибута. Табуляции и переводы строк записываются
-/// ссылками на символы, иначе при чтении они превратятся в пробелы.
-fn escape_attr(value: &str) -> String {
-    quick_xml::escape::escape(value)
-        .replace('\t', "&#9;")
-        .replace('\n', "&#10;")
-        .replace('\r', "&#13;")
-}
-
 fn predefined_entity(name: &str) -> Option<char> {
     match name {
         "lt" => Some('<'),
@@ -273,6 +264,24 @@ impl Element {
         }
     }
 
+    /// Атрибуты элемента для записи в том же виде: сначала объявления
+    /// пространств имён (`xmlns:w`), потом обычные атрибуты.
+    pub fn root_attributes(&self) -> Vec<(String, String)> {
+        let decls = self.decls.iter().map(|(prefix, uri)| {
+            let name = if prefix.is_empty() {
+                "xmlns".to_string()
+            } else {
+                format!("xmlns:{prefix}")
+            };
+            (name, uri.clone())
+        });
+        let attrs = self
+            .attrs
+            .iter()
+            .map(|a| (a.qname.clone(), a.value.clone()));
+        decls.chain(attrs).collect()
+    }
+
     /// Записывает элемент обратно в строку XML. В корень добавляются
     /// объявления тех пространств имён, которые нужны внутри фрагмента,
     /// но объявлены где-то выше.
@@ -325,14 +334,14 @@ impl Element {
                 out.push_str(prefix);
                 out.push_str("=\"");
             }
-            out.push_str(&escape_attr(uri));
+            out.push_str(&crate::serialize::escape_attr(uri));
             out.push('"');
         }
         for attr in &self.attrs {
             out.push(' ');
             out.push_str(&attr.qname);
             out.push_str("=\"");
-            out.push_str(&escape_attr(&attr.value));
+            out.push_str(&crate::serialize::escape_attr(&attr.value));
             out.push('"');
         }
         if self.children.is_empty() {

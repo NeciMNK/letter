@@ -11,6 +11,9 @@ use crate::xml;
 /// Защищает от «ZIP-бомб», которые при распаковке занимают всю память.
 const MAX_PART_SIZE: u64 = 512 * 1024 * 1024;
 
+/// Часть с типами содержимого всех остальных частей.
+pub(crate) const CONTENT_TYPES_PART: &str = "[Content_Types].xml";
+
 /// Тип связи «главный документ» в `_rels/.rels`.
 const REL_OFFICE_DOCUMENT: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
@@ -67,6 +70,16 @@ impl<R: Read + Seek> Package<R> {
         Ok(Some(bytes))
     }
 
+    /// Имена всех частей архива в порядке их следования (без папок).
+    pub fn part_names(&self) -> Vec<String> {
+        self.archive
+            .file_names()
+            .filter_map(Result::ok)
+            .filter(|n| !n.ends_with('/'))
+            .map(|n| n.into_owned())
+            .collect()
+    }
+
     /// Находит главную часть документа через `_rels/.rels` и проверяет
     /// по `[Content_Types].xml`, что это именно документ Word.
     pub fn main_document_part(&mut self) -> Result<String, ReadError> {
@@ -77,7 +90,7 @@ impl<R: Read + Seek> Package<R> {
         // Если связей нет или они битые, пробуем стандартное место.
         .unwrap_or_else(|| "word/document.xml".to_string());
 
-        if let Some(bytes) = self.read_part("[Content_Types].xml")? {
+        if let Some(bytes) = self.read_part(CONTENT_TYPES_PART)? {
             let types = xml::parse(&bytes)?;
             if let Some(content_type) = content_type_of(&types, &main)
                 && !WORD_MAIN_CONTENT_TYPES.contains(&content_type.as_str())
@@ -92,13 +105,8 @@ impl<R: Read + Seek> Package<R> {
     /// (ссылки на сайты) пропускаются. Битый или отсутствующий файл связей
     /// означает «связей нет».
     pub fn relationships(&mut self, part: &str) -> Vec<Relationship> {
-        let (dir, name) = part.rsplit_once('/').unwrap_or(("", part));
-        let rels_name = if dir.is_empty() {
-            format!("_rels/{name}.rels")
-        } else {
-            format!("{dir}/_rels/{name}.rels")
-        };
-        match self.read_part(&rels_name) {
+        let dir = part.rsplit_once('/').map_or("", |(dir, _)| dir);
+        match self.read_part(&rels_part_for(part)) {
             Ok(Some(bytes)) => match xml::parse(&bytes) {
                 Ok(root) => parse_relationships(&root, dir),
                 Err(_) => Vec::new(),
@@ -115,6 +123,14 @@ impl<R: Read + Seek> Package<R> {
             .into_iter()
             .find(|r| r.kind.ends_with(&suffix))
             .map(|r| r.target)
+    }
+}
+
+/// Имя файла связей части: `word/document.xml` → `word/_rels/document.xml.rels`.
+pub(crate) fn rels_part_for(part: &str) -> String {
+    match part.rsplit_once('/') {
+        Some((dir, name)) => format!("{dir}/_rels/{name}.rels"),
+        None => format!("_rels/{part}.rels"),
     }
 }
 
@@ -153,6 +169,39 @@ fn find_office_document(rels: &xml::Element) -> Option<String> {
         .map(|r| r.target)
 }
 
+/// Содержимое `[Content_Types].xml`: пары «расширение — тип» (`Default`)
+/// и «имя части — тип» (`Override`). Имена частей — без ведущего `/`.
+pub(crate) fn read_content_types(types: &xml::Element) -> ContentTypes {
+    let mut result = ContentTypes::default();
+    for element in types.elements() {
+        let content_type = attr(element, "ContentType");
+        match (element.local.as_str(), content_type) {
+            ("Default", Some(content_type)) => {
+                if let Some(ext) = attr(element, "Extension") {
+                    result
+                        .defaults
+                        .push((ext.to_string(), content_type.to_string()));
+                }
+            }
+            ("Override", Some(content_type)) => {
+                if let Some(part) = attr(element, "PartName") {
+                    let part = normalize_part_name(part);
+                    result.overrides.push((part, content_type.to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+    result
+}
+
+/// Типы содержимого пакета, см. [`read_content_types`].
+#[derive(Debug, Default)]
+pub(crate) struct ContentTypes {
+    pub defaults: Vec<(String, String)>,
+    pub overrides: Vec<(String, String)>,
+}
+
 /// Тип содержимого части по `[Content_Types].xml`: сначала точное
 /// совпадение (`Override`), потом по расширению (`Default`).
 fn content_type_of(types: &xml::Element, part: &str) -> Option<String> {
@@ -174,7 +223,7 @@ fn content_type_of(types: &xml::Element, part: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn attr<'a>(element: &'a xml::Element, name: &str) -> Option<&'a str> {
+pub(crate) fn attr<'a>(element: &'a xml::Element, name: &str) -> Option<&'a str> {
     element
         .attrs
         .iter()
@@ -184,7 +233,7 @@ fn attr<'a>(element: &'a xml::Element, name: &str) -> Option<&'a str> {
 
 /// Превращает цель связи в имя части архива: убирает ведущий `/`,
 /// разбирает `./` и `../`.
-fn normalize_part_name(target: &str) -> String {
+pub(crate) fn normalize_part_name(target: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
     for segment in target.split('/') {
         match segment {
@@ -223,6 +272,15 @@ fn percent_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rels_part_names() {
+        assert_eq!(
+            rels_part_for("word/document.xml"),
+            "word/_rels/document.xml.rels"
+        );
+        assert_eq!(rels_part_for("doc.xml"), "_rels/doc.xml.rels");
+    }
 
     #[test]
     fn normalize_targets() {
@@ -290,5 +348,9 @@ mod tests {
             Some("application/xml")
         );
         assert_eq!(content_type_of(&types, "word/noext"), None);
+
+        let all = read_content_types(&types);
+        assert_eq!(all.defaults, [("xml".into(), "application/xml".into())]);
+        assert_eq!(all.overrides[0].0, "word/document.xml");
     }
 }
