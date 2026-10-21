@@ -51,3 +51,15 @@ LibreOffice из одноимённых файлов `docx/` и распрост
 cd tests/fixtures/rtf
 soffice --headless --convert-to rtf ../docx/имя.docx
 ```
+
+## `odt/`
+
+Файлы ODT для проверки чтения (задача F8.4): `plain-text`, `bold-italic`,
+`ru-en`, `table`, `headings`, `lists`, `pages`, `header-footer`. Они
+сохранены программой LibreOffice из одноимённых файлов `docx/` и
+распространяются по лицензии проекта (MIT). Чтобы пересоздать:
+
+```sh
+cd tests/fixtures/odt
+soffice --headless --convert-to odt ../docx/имя.docx
+```

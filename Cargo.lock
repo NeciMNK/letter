@@ -1967,6 +1967,17 @@ name = "letter-model"
 version = "0.1.0"
 
 [[package]]
+name = "letter-odt"
+version = "0.1.0"
+dependencies = [
+ "letter-docx",
+ "letter-model",
+ "quick-xml 0.42.0",
+ "thiserror 2.0.21",
+ "zip",
+]
+
+[[package]]
 name = "letter-render"
 version = "0.1.0"
 dependencies = [
