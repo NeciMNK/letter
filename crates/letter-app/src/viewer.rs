@@ -2,7 +2,9 @@
 //! (Ctrl+колесо, кнопки, ползунок, «по ширине страницы»), строка
 //! состояния и мигающий курсор, который ставится щелчком мыши и ходит
 //! по тексту клавишами (стрелки, Home/End, PageUp/PageDown, с Ctrl —
-//! по словам, абзацам и к краям документа).
+//! по словам, абзацам и к краям документа). Текст можно набирать
+//! (в том числе через IME), Enter делит абзац, Shift+Enter переносит
+//! строку, Backspace и Delete стирают, Tab вставляет табуляцию.
 
 use std::path::{Path, PathBuf};
 
@@ -12,8 +14,12 @@ use eframe::egui::{
     self, Align, Align2, Color32, Context, CursorIcon, Key, KeyboardShortcut, Layout, Modifiers,
     Pos2, Rect, Sense, Vec2, ViewportCommand, emath::GuiRounding,
 };
-use letter_editor::{Motion, Position, caret, hit_test, move_cursor};
+use letter_editor::{
+    Motion, Position, caret, delete_backward, delete_forward, hit_test, insert_line_break,
+    insert_text, move_cursor, split_paragraph,
+};
 use letter_layout::{DocumentLayout, FontLibrary, Shaper, layout_document};
+use letter_model::Document;
 use letter_render::{DESK_COLOR, PagePainter, SCREEN_PIXELS_PER_POINT};
 
 use crate::view::{
@@ -50,6 +56,8 @@ fn caret_phase(elapsed: f64) -> (bool, f64) {
 struct OpenDocument {
     /// Откуда открыт.
     path: PathBuf,
+    /// Сам документ; правки меняют его, а потом он верстается заново.
+    doc: Document,
     /// Свёрстанные страницы.
     layout: DocumentLayout,
     /// Где стоит курсор.
@@ -59,6 +67,31 @@ struct OpenDocument {
     cursor_since: f64,
     /// Колонка для ↑ и ↓ (см. [`letter_editor::Moved::goal_x`]).
     goal_x: Option<f32>,
+}
+
+impl OpenDocument {
+    /// Верстает документ заново после правки.
+    fn relayout(&mut self, shaper: &mut Shaper, library: &FontLibrary) {
+        self.layout = layout_document(&self.doc, shaper, library);
+    }
+}
+
+/// Что сделать по событию клавиатуры.
+#[derive(Debug, Clone, PartialEq)]
+enum Action {
+    Move(Motion),
+    Edit(Edit),
+}
+
+/// Правка с клавиатуры.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Edit {
+    Text(String),
+    Enter,
+    LineBreak,
+    Tab,
+    Backspace,
+    Delete,
 }
 
 /// Состояние окна просмотра.
@@ -112,6 +145,7 @@ impl Viewer {
         let layout = layout_document(&doc, &mut self.shaper, &self.library);
         self.document = Some(OpenDocument {
             path: path.to_owned(),
+            doc,
             layout,
             cursor: Position::default(),
             cursor_since: 0.0,
@@ -240,42 +274,65 @@ impl Viewer {
             self.open_or_report(&path);
         }
         if self.error.is_none() {
-            self.move_cursor_by_keys(ctx);
+            self.keyboard(ctx);
         }
     }
 
-    /// Стрелки, Home/End, PageUp/PageDown двигают курсор.
-    fn move_cursor_by_keys(&mut self, ctx: &Context) {
+    /// Клавиатура: стрелки, Home/End, PageUp/PageDown двигают курсор,
+    /// набранный текст и Enter, Backspace, Delete, Tab правят документ.
+    /// События разбираются по порядку: «ab←c» даёт «acb».
+    fn keyboard(&mut self, ctx: &Context) {
         let points = 1.0 / (self.zoom() * SCREEN_PIXELS_PER_POINT);
         let screen = self.view_size.y * points;
         let Some(document) = &mut self.document else {
             return;
         };
-        let motions = ctx.input_mut(|i| {
-            let mut motions = Vec::new();
-            i.events.retain(|event| {
-                if let egui::Event::Key {
-                    key,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } = event
-                    && let Some(motion) = key_motion(*key, *modifiers, screen)
-                {
-                    motions.push(motion);
-                    return false;
+        let actions = ctx.input_mut(|i| {
+            let mut actions = Vec::new();
+            i.events.retain(|event| match key_action(event, screen) {
+                Some(action) => {
+                    actions.push(action);
+                    false
                 }
-                true
+                None => true,
             });
-            motions
+            actions
         });
-        if motions.is_empty() {
+        if actions.is_empty() {
             return;
         }
-        for motion in motions {
-            let moved = move_cursor(&document.layout, document.cursor, motion, document.goal_x);
-            document.cursor = moved.position;
-            document.goal_x = moved.goal_x;
+        // Вёрстка устаревает после правки; обновляем её перед следующим
+        // движением курсора и в конце.
+        let mut stale = false;
+        for action in actions {
+            match action {
+                Action::Move(motion) => {
+                    if std::mem::take(&mut stale) {
+                        document.relayout(&mut self.shaper, &self.library);
+                    }
+                    let moved =
+                        move_cursor(&document.layout, document.cursor, motion, document.goal_x);
+                    document.cursor = moved.position;
+                    document.goal_x = moved.goal_x;
+                }
+                Action::Edit(edit) => {
+                    let doc = &mut document.doc;
+                    let at = document.cursor;
+                    document.cursor = match edit {
+                        Edit::Text(text) => insert_text(doc, at, &text),
+                        Edit::Enter => split_paragraph(doc, at),
+                        Edit::LineBreak => insert_line_break(doc, at),
+                        Edit::Tab => insert_text(doc, at, "\t"),
+                        Edit::Backspace => delete_backward(doc, at),
+                        Edit::Delete => delete_forward(doc, at),
+                    };
+                    document.goal_x = None;
+                    stale = true;
+                }
+            }
+        }
+        if stale {
+            document.relayout(&mut self.shaper, &self.library);
         }
         document.cursor_since = ctx.input(|i| i.time);
         self.reveal_cursor = true;
@@ -482,7 +539,7 @@ impl Viewer {
 
             if let Some(c) = caret(&document.layout, document.cursor) {
                 let (shown, next) = caret_phase(now - document.cursor_since);
-                if shown && c.page < placement.rects.len() {
+                if c.page < placement.rects.len() {
                     let page = screen_rect(c.page);
                     let scale = 1.0 / points;
                     // Курсор — один пиксель экрана шириной.
@@ -492,7 +549,19 @@ impl Viewer {
                         Pos2::new(x, top),
                         Pos2::new(x + 1.0 / ppp, top + c.height * scale),
                     );
-                    ui.painter().rect_filled(bar, 0.0, Color32::BLACK);
+                    if shown {
+                        ui.painter().rect_filled(bar, 0.0, Color32::BLACK);
+                    }
+                    // Включает IME (китайский, японский ввод и т. п.) и
+                    // говорит ему, где открыть окошко подсказок.
+                    ui.ctx().output_mut(|o| {
+                        o.ime = Some(egui::output::IMEOutput {
+                            purpose: egui::IMEPurpose::Normal,
+                            rect: page,
+                            cursor_rect: bar,
+                            should_interrupt_composition: false,
+                        });
+                    });
                 }
                 ui.ctx()
                     .request_repaint_after(Duration::from_secs_f64(next.max(0.01)));
@@ -526,6 +595,39 @@ impl Viewer {
 }
 
 /// Клавиша перемещения курсора и что она делает. `screen` — сколько
+/// Что значит событие клавиатуры: движение курсора, правка или ничего
+/// (тогда событие достаётся меню и другим частям окна).
+fn key_action(event: &egui::Event, screen: f32) -> Option<Action> {
+    use egui::{Event, ImeEvent};
+    match event {
+        // Набранный текст. Tab и Enter приходят ещё и клавишами, поэтому
+        // управляющие знаки отсюда выбрасываем.
+        Event::Text(text) | Event::Ime(ImeEvent::Commit(text)) => {
+            let text: String = text.chars().filter(|c| !c.is_control()).collect();
+            (!text.is_empty()).then_some(Action::Edit(Edit::Text(text)))
+        }
+        Event::Key {
+            key,
+            pressed: true,
+            modifiers,
+            ..
+        } => {
+            let plain = !modifiers.command && !modifiers.alt;
+            let edit = match key {
+                Key::Enter if plain && modifiers.shift => Some(Edit::LineBreak),
+                Key::Enter if plain => Some(Edit::Enter),
+                Key::Tab if plain && !modifiers.shift => Some(Edit::Tab),
+                Key::Backspace if plain => Some(Edit::Backspace),
+                Key::Delete if plain => Some(Edit::Delete),
+                _ => None,
+            };
+            edit.map(Action::Edit)
+                .or_else(|| key_motion(*key, *modifiers, screen).map(Action::Move))
+        }
+        _ => None,
+    }
+}
+
 /// пунктов документа видно на экране по высоте (для PageUp/PageDown).
 fn key_motion(key: Key, modifiers: Modifiers, screen: f32) -> Option<Motion> {
     // Alt — для меню, Shift пока двигает курсор так же (выделение — F3.4).
@@ -857,5 +959,112 @@ mod tests {
         }
         assert_eq!(viewer.cursor(), Some(Position::default()));
         assert_eq!(viewer.current_page, 0);
+    }
+
+    fn events(events: Vec<Event>) -> RawInput {
+        let mut input = screen();
+        input.events = events;
+        input
+    }
+
+    fn press(key: Key, modifiers: Modifiers) -> Event {
+        Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    fn first_text(viewer: &mut Viewer) -> String {
+        let document = viewer.document.as_mut().unwrap();
+        letter_editor::paragraph_mut(&mut document.doc, 0)
+            .unwrap()
+            .plain_text()
+    }
+
+    #[test]
+    fn keys_map_to_edits() {
+        let none = Modifiers::NONE;
+        let action = |event: Event| key_action(&event, 0.0);
+        assert_eq!(
+            action(Event::Text("ы\t".into())),
+            Some(Action::Edit(Edit::Text("ы".into())))
+        );
+        assert_eq!(action(Event::Text("\r".into())), None);
+        assert_eq!(
+            action(Event::Ime(egui::ImeEvent::Commit("漢字".into()))),
+            Some(Action::Edit(Edit::Text("漢字".into())))
+        );
+        assert_eq!(
+            action(press(Key::Enter, none)),
+            Some(Action::Edit(Edit::Enter))
+        );
+        assert_eq!(
+            action(press(Key::Enter, Modifiers::SHIFT)),
+            Some(Action::Edit(Edit::LineBreak))
+        );
+        assert_eq!(action(press(Key::Tab, none)), Some(Action::Edit(Edit::Tab)));
+        assert_eq!(action(press(Key::Tab, Modifiers::SHIFT)), None);
+        assert_eq!(
+            action(press(Key::Backspace, none)),
+            Some(Action::Edit(Edit::Backspace))
+        );
+        assert_eq!(
+            action(press(Key::Delete, none)),
+            Some(Action::Edit(Edit::Delete))
+        );
+        assert_eq!(action(press(Key::Enter, Modifiers::COMMAND)), None);
+        assert_eq!(
+            action(press(Key::ArrowLeft, none)),
+            Some(Action::Move(Motion::Left))
+        );
+    }
+
+    #[test]
+    fn typing_edits_the_document() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let before = first_text(&mut viewer);
+        let lines = viewer.document.as_ref().unwrap().layout.pages[0]
+            .lines
+            .len();
+
+        // События по порядку: «a», «b», ←, «c» — получается «acb».
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![
+                Event::Text("a".into()),
+                Event::Text("b".into()),
+                press(Key::ArrowLeft, Modifiers::NONE),
+                Event::Text("c".into()),
+            ]),
+        );
+        assert_eq!(first_text(&mut viewer), format!("acb{before}"));
+        assert_eq!(viewer.cursor(), Some(Position::new(0, 2)));
+
+        // Enter делит абзац: на листе на строку больше.
+        frame(&ctx, &mut viewer, key(Key::Enter, Modifiers::NONE));
+        assert_eq!(viewer.cursor(), Some(Position::new(1, 0)));
+        assert_eq!(first_text(&mut viewer), "ac");
+        let document = viewer.document.as_ref().unwrap();
+        assert!(document.layout.pages[0].lines.len() > lines);
+
+        // Backspace соединяет обратно, Delete и Backspace стирают буквы.
+        frame(&ctx, &mut viewer, key(Key::Backspace, Modifiers::NONE));
+        assert_eq!(viewer.cursor(), Some(Position::new(0, 2)));
+        frame(&ctx, &mut viewer, key(Key::Delete, Modifiers::NONE));
+        frame(&ctx, &mut viewer, key(Key::Backspace, Modifiers::NONE));
+        frame(&ctx, &mut viewer, key(Key::Backspace, Modifiers::NONE));
+        assert_eq!(first_text(&mut viewer), before);
+        assert_eq!(viewer.cursor(), Some(Position::default()));
+
+        // Курсор после правки рисуется, IME знает, где он.
+        let output = ctx.run_ui(screen(), |ui| viewer.ui(ui));
+        assert!(output.platform_output.ime.is_some());
     }
 }
