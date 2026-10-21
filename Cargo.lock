@@ -1980,6 +1980,12 @@ dependencies = [
 [[package]]
 name = "letter-rtf"
 version = "0.1.0"
+dependencies = [
+ "encoding_rs",
+ "letter-docx",
+ "letter-model",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "libc"
