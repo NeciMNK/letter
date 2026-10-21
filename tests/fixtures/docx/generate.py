@@ -10,6 +10,7 @@
 """
 
 import io
+import sys
 from pathlib import Path
 
 from docx import Document
@@ -139,6 +140,28 @@ def mixed_languages() -> Document:
     return doc
 
 
+def pages() -> Document:
+    """Несколько страниц: переносы строк, разрыв страницы, заголовки
+    («не отрывать от следующего») и «не разрывать абзац» — для сверки
+    вёрстки с Word."""
+    doc = new_document("Несколько страниц")
+    words = (
+        "letter lays out pages the same way Word does: lines, paragraphs, "
+        "spacing and page breaks must land in the same places"
+    ).split()
+    for chapter in range(1, 4):
+        doc.add_heading(f"Chapter {chapter}", level=1)
+        for i in range(1, 9):
+            count = 12 + (chapter * 7 + i * 5) % 40
+            text = " ".join(words[(i + k) % len(words)] for k in range(count))
+            p = doc.add_paragraph(f"{chapter}.{i}. {text.capitalize()}.")
+            if i == 5:
+                p.paragraph_format.keep_together = True
+        if chapter == 1:
+            doc.add_page_break()
+    return doc
+
+
 FIXTURES = {
     "empty.docx": empty,
     "plain-text.docx": plain_text,
@@ -149,11 +172,15 @@ FIXTURES = {
     "image.docx": image,
     "header-footer.docx": header_footer,
     "ru-en.docx": mixed_languages,
+    "pages.docx": pages,
 }
 
 
 def main() -> None:
-    for name, build in FIXTURES.items():
+    # Можно пересоздать только некоторые файлы: generate.py pages.docx
+    names = sys.argv[1:] or list(FIXTURES)
+    for name in names:
+        build = FIXTURES[name]
         build().save(OUT / name)
         print(f"wrote {name}")
 

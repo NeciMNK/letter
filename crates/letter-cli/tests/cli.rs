@@ -95,3 +95,47 @@ fn render_writes_png_pages() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(run(&args(&["render", &fixture("headings.docx")])).is_err());
 }
+
+fn reference(name: &str) -> String {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/reference/libreoffice")
+        .join(name)
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[test]
+fn pdf_lines_prints_text_with_positions() {
+    let out = run(&args(&["pdf-lines", &reference("ru-en.pdf")])).unwrap();
+    assert!(
+        out.starts_with("Страница 1: 215.9×279.4 мм, строк 3"),
+        "{out}"
+    );
+    assert!(
+        out.contains("\"The quick brown fox jumps over the lazy dog.\""),
+        "{out}"
+    );
+    assert!(out.contains("«кавычки»"), "{out}");
+}
+
+#[test]
+fn compare_reports_differences() {
+    let out = run(&args(&[
+        "compare",
+        "--embedded-fonts",
+        "--tolerance",
+        "0,5",
+        &fixture("table.docx"),
+        &reference("table.pdf"),
+    ]))
+    .unwrap();
+    assert!(out.starts_with("Страниц: эталон 1, у нас 1\n"), "{out}");
+    assert!(out.contains("допуск 0.50 пт"), "{out}");
+    // Таблицы мы пока раскладываем по абзацам подряд.
+    assert!(out.contains("«R1C1 R1C2 R1C3»: только в эталоне"), "{out}");
+
+    assert!(run(&args(&["compare", &fixture("table.docx")])).is_err());
+    assert!(run(&args(&["compare", "--tolerance", "x", "a.docx", "b.pdf"])).is_err());
+    let missing = run(&args(&["compare", &fixture("table.docx"), "missing.pdf"]));
+    assert!(missing.unwrap_err().starts_with("missing.pdf:"));
+}

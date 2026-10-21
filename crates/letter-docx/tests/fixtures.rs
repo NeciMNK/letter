@@ -14,6 +14,7 @@ const EXPECTED: &[&str] = &[
     "image.docx",
     "header-footer.docx",
     "ru-en.docx",
+    "pages.docx",
 ];
 
 fn fixtures_dir() -> PathBuf {

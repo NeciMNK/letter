@@ -15,6 +15,7 @@
 | `image.docx` | Встроенная картинка PNG |
 | `header-footer.docx` | Верхний и нижний колонтитулы |
 | `ru-en.docx` | Русский и английский текст, типографские символы |
+| `pages.docx` | Три главы на нескольких страницах: разрыв страницы, заголовки, «не разрывать абзац» |
 
 **Источник:** все файлы созданы скриптом [`docx/generate.py`](docx/generate.py)
 с помощью библиотеки [python-docx](https://github.com/python-openxml/python-docx)
@@ -30,3 +31,10 @@ python3 tests/fixtures/docx/generate.py
 
 Файлы, сохранённые настоящим Microsoft Word, добавим позже: для каждого
 обязательно указать здесь, откуда он взят и под какой лицензией.
+
+## `reference/`
+
+PDF-эталоны для сверки вёрстки с Word (задача F2.8): откуда они взяты и
+как добавить новые — в [`reference/README.md`](reference/README.md).
+Файлы в `reference/libreoffice/` сделаны из наших `docx/` программой
+LibreOffice и распространяются по лицензии проекта (MIT).

@@ -7,7 +7,14 @@
 //! - `letter-cli pages [--embedded-fonts] файл.docx` — раскладывает
 //!   документ по страницам и печатает строки каждой страницы;
 //! - `letter-cli render [--embedded-fonts] файл.docx папка` — рисует
-//!   страницы в картинки PNG (96 точек на дюйм, как Word при 100 %).
+//!   страницы в картинки PNG (96 точек на дюйм, как Word при 100 %);
+//! - `letter-cli compare [--embedded-fonts] [--tolerance пт] файл.docx
+//!   эталон.pdf` — сверяет нашу вёрстку с PDF, сохранённым из Word;
+//! - `letter-cli pdf-lines файл.pdf` — печатает строки текста PDF так, как
+//!   их видит сверка.
+
+pub mod compare;
+pub mod pdf;
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -26,7 +33,10 @@ pub const USAGE: &str = "\
   letter-cli dump [--debug] файл.docx         напечатать дерево модели
   letter-cli roundtrip вход.docx выход.docx  открыть → сохранить → открыть и сравнить
   letter-cli pages [--embedded-fonts] файл.docx  разложить по страницам и напечатать строки
-  letter-cli render [--embedded-fonts] файл.docx папка  нарисовать страницы в PNG";
+  letter-cli render [--embedded-fonts] файл.docx папка  нарисовать страницы в PNG
+  letter-cli compare [--embedded-fonts] [--tolerance пт] файл.docx эталон.pdf
+                                               сверить вёрстку с PDF из Word
+  letter-cli pdf-lines файл.pdf               напечатать строки текста PDF";
 
 /// Выполняет команду и возвращает текст для вывода. Ошибка — текст
 /// для вывода в поток ошибок.
@@ -44,8 +54,82 @@ pub fn run(args: &[String]) -> Result<String, String> {
         ["render", "--embedded-fonts", path, dir] => {
             render(&open(path)?, &FontLibrary::embedded_only(), Path::new(dir))
         }
+        ["compare", rest @ ..] => compare_command(rest),
+        ["pdf-lines", path] => pdf_lines(Path::new(path)),
         _ => Err(USAGE.to_string()),
     }
+}
+
+fn compare_command(args: &[&str]) -> Result<String, String> {
+    let mut library = None;
+    let mut tolerance = compare::DEFAULT_TOLERANCE;
+    let mut files = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match *arg {
+            "--embedded-fonts" => library = Some(FontLibrary::embedded_only()),
+            "--tolerance" => {
+                tolerance = args
+                    .next()
+                    .and_then(|v| v.replace(',', ".").parse().ok())
+                    .filter(|v: &f32| v.is_finite() && *v >= 0.0)
+                    .ok_or_else(|| format!("--tolerance: нужно число пунктов\n{USAGE}"))?;
+            }
+            file => files.push(file),
+        }
+    }
+    let [docx, reference] = files.as_slice() else {
+        return Err(USAGE.to_string());
+    };
+    let library = library.unwrap_or_else(FontLibrary::new);
+    let result = compare_files(Path::new(docx), Path::new(reference), &library, tolerance)?;
+    Ok(result.report())
+}
+
+/// Строки текста PDF с положением, как их видит сверка.
+pub fn pdf_lines(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let pages = pdf::read_pdf_lines(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mm = |pt: f32| f64::from(pt) * 25.4 / 72.0;
+    let mut out = String::new();
+    for (i, page) in pages.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "Страница {}: {:.1}×{:.1} мм, строк {}",
+            i + 1,
+            mm(page.width),
+            mm(page.height),
+            page.lines.len()
+        );
+        for line in &page.lines {
+            let _ = writeln!(
+                out,
+                "  {:7.2} пт  x {:7.2}  {:?}",
+                line.baseline, line.x, line.text
+            );
+        }
+    }
+    Ok(out)
+}
+
+/// Сверяет вёрстку документа `docx` с эталонным PDF `reference`.
+pub fn compare_files(
+    docx: &Path,
+    reference: &Path,
+    library: &FontLibrary,
+    tolerance: f32,
+) -> Result<compare::Comparison, String> {
+    let doc = letter_docx::read_file(docx).map_err(|e| format!("{}: {e}", docx.display()))?;
+    let bytes = std::fs::read(reference).map_err(|e| format!("{}: {e}", reference.display()))?;
+    let pdf = pdf::read_pdf_lines(&bytes).map_err(|e| format!("{}: {e}", reference.display()))?;
+    let layout = layout_document(&doc, &mut Shaper::new(), library);
+    Ok(compare::compare(
+        &compare::reference_lines(&pdf, &layout),
+        pdf.len(),
+        &compare::layout_lines(&layout),
+        layout.pages.len(),
+        tolerance,
+    ))
 }
 
 /// Рисует страницы документа в `dir/page-1.png`, `dir/page-2.png`, …
