@@ -9,6 +9,7 @@
 
 use letter_model::{Block, Document, Section};
 
+use crate::clipboard::{insert_fragment, insert_plain_text};
 use crate::edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, split_paragraph,
     top_level,
@@ -28,6 +29,10 @@ pub enum Command {
     DeleteBackward,
     /// Delete.
     DeleteForward,
+    /// Вставить кусок документа с оформлением (см. [`crate::clipboard`]).
+    Paste(Box<Document>),
+    /// Вставить простой текст: строки — абзацы.
+    PasteText(String),
 }
 
 /// Сколько шагов помнить.
@@ -155,6 +160,8 @@ impl History {
             Command::DeleteBackward | Command::DeleteForward if erasing => at,
             Command::DeleteBackward => delete_backward(doc, at),
             Command::DeleteForward => delete_forward(doc, at),
+            Command::Paste(fragment) => insert_fragment(doc, at, fragment),
+            Command::PasteText(text) => insert_plain_text(doc, at, text),
         };
         let after = Selection::caret(focus);
 
@@ -389,6 +396,22 @@ mod tests {
         let mut h = History::new();
         h.run(&mut d, caret(0, 0), Command::DeleteBackward);
         assert!(!h.can_undo());
+    }
+
+    #[test]
+    fn paste_is_one_step() {
+        let mut d = doc(&["abc"]);
+        let mut h = History::new();
+        let s = h.run(&mut d, caret(0, 1), Command::PasteText("1\n2".into()));
+        assert_eq!(s, caret(1, 1));
+        let part = crate::clipboard::copy_range(&d, Position::new(0, 0), Position::new(1, 1));
+        let sel = Selection::new(Position::new(1, 0), Position::new(1, 3));
+        h.run(&mut d, sel, Command::Paste(Box::new(part)));
+        assert_eq!(texts(&d), vec!["a1", "a1", "2"]);
+        h.undo(&mut d);
+        assert_eq!(texts(&d), vec!["a1", "2bc"]);
+        h.undo(&mut d);
+        assert_eq!(texts(&d), vec!["abc"]);
     }
 
     #[test]
