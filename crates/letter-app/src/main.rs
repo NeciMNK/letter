@@ -6,6 +6,7 @@
 // В релизной сборке под Windows не показываем окно консоли рядом с программой.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod clipboard;
 mod view;
 mod viewer;
 

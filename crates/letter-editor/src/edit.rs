@@ -204,15 +204,15 @@ fn merge_with_next(doc: &mut Document, index: usize) -> Option<Position> {
 
 /// Где абзац лежит в документе.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Path {
-    section: usize,
+pub(crate) struct Path {
+    pub(crate) section: usize,
     /// Ячейки по пути: (блок таблицы, строка, ячейка).
-    cells: Vec<(usize, usize, usize)>,
+    pub(crate) cells: Vec<(usize, usize, usize)>,
     /// Номер блока в своём списке.
-    block: usize,
+    pub(crate) block: usize,
 }
 
-fn find(doc: &Document, index: usize) -> Option<Path> {
+pub(crate) fn find(doc: &Document, index: usize) -> Option<Path> {
     fn walk(
         blocks: &[Block],
         cells: &mut Vec<(usize, usize, usize)>,
@@ -263,7 +263,7 @@ pub(crate) fn top_level(doc: &Document, index: usize) -> Option<(usize, usize)> 
     Some((path.section, block))
 }
 
-fn blocks_mut<'a>(doc: &'a mut Document, path: &Path) -> Option<&'a mut Vec<Block>> {
+pub(crate) fn blocks_mut<'a>(doc: &'a mut Document, path: &Path) -> Option<&'a mut Vec<Block>> {
     let mut blocks = &mut doc.sections.get_mut(path.section)?.blocks;
     for &(b, r, c) in &path.cells {
         let Some(Block::Table(table)) = blocks.get_mut(b) else {
@@ -308,7 +308,7 @@ fn plain_text(paragraph: &Paragraph) -> String {
     text
 }
 
-fn text_len(paragraph: &Paragraph) -> usize {
+pub(crate) fn text_len(paragraph: &Paragraph) -> usize {
     paragraph
         .runs()
         .flat_map(|r| &r.content)
@@ -317,7 +317,7 @@ fn text_len(paragraph: &Paragraph) -> usize {
 }
 
 /// Смещение внутри текста абзаца и на границе букв.
-fn clamp_offset(paragraph: &Paragraph, offset: usize) -> usize {
+pub(crate) fn clamp_offset(paragraph: &Paragraph, offset: usize) -> usize {
     let text = plain_text(paragraph);
     let mut offset = offset.min(text.len());
     while !text.is_char_boundary(offset) {
@@ -390,7 +390,7 @@ fn insert_items(paragraph: &mut Paragraph, offset: usize, items: Vec<RunContent>
 }
 
 /// Отрезает содержимое абзаца после `offset` и возвращает его.
-fn split_content(paragraph: &mut Paragraph, offset: usize) -> Vec<Inline> {
+pub(crate) fn split_content(paragraph: &mut Paragraph, offset: usize) -> Vec<Inline> {
     let mut head = Vec::new();
     let mut tail = Vec::new();
     let mut pos = 0;
@@ -498,7 +498,7 @@ fn is_empty_run(inline: &Inline) -> bool {
 /// фрагменты убраны (кроме одного, если весь абзац пуст: он хранит
 /// оформление для набора), соседние фрагменты с одинаковым оформлением
 /// склеены.
-fn tidy(paragraph: &mut Paragraph) {
+pub(crate) fn tidy(paragraph: &mut Paragraph) {
     let all_empty = paragraph
         .content
         .iter()

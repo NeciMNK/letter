@@ -8,6 +8,7 @@
 //! Выделение — Shift с клавишами перемещения, мышью (протянуть,
 //! Shift+щелчок, двойной щелчок — слово, тройной — абзац) и Ctrl+A.
 //! Ctrl+Z отменяет правку, Ctrl+Y (и Ctrl+Shift+Z) повторяет.
+//! Ctrl+C, Ctrl+X, Ctrl+V — копировать, вырезать, вставить.
 
 use std::path::{Path, PathBuf};
 
@@ -18,13 +19,14 @@ use eframe::egui::{
     Pos2, Rect, Sense, Vec2, ViewportCommand, emath::GuiRounding,
 };
 use letter_editor::{
-    Command, History, Motion, Position, Selection, caret, hit_test, move_cursor, paragraph_at,
-    select_all, selection_rects, word_at,
+    Command, History, Motion, Position, Selection, caret, copy_range, hit_test, move_cursor,
+    paragraph_at, select_all, selection_rects, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, Shaper, layout_document};
 use letter_model::Document;
 use letter_render::{DESK_COLOR, PagePainter, SCREEN_PIXELS_PER_POINT};
 
+use crate::clipboard::{Clipboard, SystemBuffer};
 use crate::view::{
     MAX_ZOOM, MIN_ZOOM, PAGE_GAP, Zoom, anchored_offset, clamp_zoom, current_page, page_width_zoom,
     place_pages, step_zoom,
@@ -108,6 +110,10 @@ enum Action {
     Edit(Command),
     Undo,
     Redo,
+    Copy,
+    Cut,
+    /// Вставить; система передала текст из буфера.
+    Paste(String),
 }
 
 /// Состояние окна просмотра.
@@ -134,6 +140,8 @@ pub struct Viewer {
     open_requested: bool,
     /// Курсор сдвинули с клавиатуры: прокрутить так, чтобы он был виден.
     reveal_cursor: bool,
+    /// Буфер обмена.
+    clipboard: Clipboard,
 }
 
 impl Viewer {
@@ -154,6 +162,7 @@ impl Viewer {
             title_changed: false,
             open_requested: false,
             reveal_cursor: false,
+            clipboard: Clipboard::new(Box::new(SystemBuffer::default())),
         }
     }
 
@@ -365,6 +374,24 @@ impl Viewer {
                     }
                     document.set_selection(select_all(&document.layout));
                     document.history.seal();
+                }
+                Action::Copy | Action::Cut | Action::Paste(_) => {
+                    let selection = document.selection();
+                    let command = match action {
+                        Action::Paste(text) => self.clipboard.paste(&text),
+                        _ if selection.is_empty() => continue,
+                        _ => {
+                            let (start, end) = (selection.start(), selection.end());
+                            self.clipboard.copy(copy_range(&document.doc, start, end));
+                            if action == Action::Copy {
+                                continue;
+                            }
+                            Command::DeleteBackward
+                        }
+                    };
+                    let selection = document.history.run(&mut document.doc, selection, command);
+                    document.set_selection(selection);
+                    stale = true;
                 }
                 Action::Edit(command) => {
                     let selection = document.selection();
@@ -703,6 +730,9 @@ fn key_action(event: &egui::Event, screen: f32) -> Option<Action> {
     match event {
         // Набранный текст. Tab и Enter приходят ещё и клавишами, поэтому
         // управляющие знаки отсюда выбрасываем.
+        Event::Copy => Some(Action::Copy),
+        Event::Cut => Some(Action::Cut),
+        Event::Paste(text) => Some(Action::Paste(text.clone())),
         Event::Text(text) | Event::Ime(ImeEvent::Commit(text)) => {
             let text: String = text.chars().filter(|c| !c.is_control()).collect();
             (!text.is_empty()).then_some(Action::Edit(Command::Type(text)))
@@ -1357,5 +1387,63 @@ mod tests {
         frame(&ctx, &mut viewer, events(vec![press(Key::Y, ctrl)]));
         assert_eq!(first_text(&mut viewer), format!("ab {before}"));
         assert_eq!(viewer.cursor(), Some(Position::new(0, 3)));
+    }
+
+    #[test]
+    fn copy_cut_and_paste() {
+        use crate::clipboard::tests::FakeBuffer;
+
+        let fake = FakeBuffer::default();
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.clipboard = Clipboard::new(Box::new(fake.clone()));
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let before = first_text(&mut viewer);
+        let right = || press(Key::ArrowRight, Modifiers::SHIFT);
+
+        // Без выделения копировать нечего.
+        frame(&ctx, &mut viewer, events(vec![Event::Copy]));
+        assert_eq!(fake.content.borrow().0, "");
+
+        // Выделили две буквы, скопировали — в буфере они и HTML.
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![right(), right(), Event::Copy]),
+        );
+        let copied = fake.content.borrow().0.clone();
+        assert_eq!(copied, before[..2]);
+        assert!(fake.content.borrow().1.is_some());
+        assert_eq!(first_text(&mut viewer), before);
+
+        // Вырезали — буквы пропали; вставили дважды — их стало вдвое.
+        frame(&ctx, &mut viewer, events(vec![Event::Cut]));
+        assert_eq!(first_text(&mut viewer), before[2..]);
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![
+                Event::Paste(copied.clone()),
+                Event::Paste(copied.clone()),
+            ]),
+        );
+        assert_eq!(
+            first_text(&mut viewer),
+            format!("{copied}{copied}{}", &before[2..])
+        );
+        assert_eq!(viewer.cursor(), Some(Position::new(0, 4)));
+
+        // Текст из другой программы: строки становятся абзацами.
+        *fake.content.borrow_mut() = ("x\ny".into(), None);
+        frame(&ctx, &mut viewer, events(vec![Event::Paste("x\ny".into())]));
+        assert_eq!(viewer.cursor(), Some(Position::new(1, 1)));
+        // Ctrl+Z снимает вставку целиком.
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(Key::Z, Modifiers::COMMAND)]),
+        );
+        assert_eq!(viewer.cursor(), Some(Position::new(0, 4)));
     }
 }

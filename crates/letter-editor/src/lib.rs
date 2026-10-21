@@ -6,9 +6,11 @@
 //! - [`navigation`] — перемещение курсора с клавиатуры;
 //! - [`edit`] — ввод и удаление текста;
 //! - [`selection`] — выделение;
-//! - [`history`] — команды правки, отмена и повтор.
+//! - [`history`] — команды правки, отмена и повтор;
+//! - [`clipboard`] — копирование и вставка.
 
 pub mod caret;
+pub mod clipboard;
 pub mod edit;
 pub mod history;
 pub mod navigation;
@@ -16,6 +18,7 @@ pub mod position;
 pub mod selection;
 
 pub use caret::{Caret, CaretStop, caret, hit_test, line_stops, position_in_line};
+pub use clipboard::{copy_range, insert_fragment, insert_plain_text};
 pub use edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, paragraph_mut,
     split_paragraph,

@@ -16,11 +16,15 @@ name = "letter"
 path = "src/main.rs"
 
 [dependencies]
+# Системный буфер обмена с HTML (уже приходит вместе с eframe).
+arboard = { version = "3.7", default-features = false }
 eframe.workspace = true
 letter-docx.workspace = true
 letter-editor.workspace = true
 letter-layout.workspace = true
 letter-model.workspace = true
 letter-render.workspace = true
+letter-rtf.workspace = true
+letter-text.workspace = true
 # Системное окно выбора файла (Windows, macOS, Linux через XDG-портал).
 rfd = "0.17"
