@@ -70,12 +70,13 @@ cargo test --workspace
 архитектура описаны в [plan.md](plan.md).
 
 Посмотреть, как программа поняла файл .docx, проверить сохранение
-и раскладку по страницам:
+раскладку по страницам и нарисовать страницы в картинки PNG:
 
 ```sh
 cargo run -p letter-cli -- dump документ.docx
 cargo run -p letter-cli -- roundtrip документ.docx копия.docx
 cargo run -p letter-cli -- pages документ.docx
+cargo run -p letter-cli -- render документ.docx папка
 ```
 
 ## Лицензия
