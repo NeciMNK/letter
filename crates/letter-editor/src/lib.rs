@@ -2,10 +2,13 @@
 //!
 //! - [`position`] — позиция курсора в документе;
 //! - [`caret`](mod@caret) — где на странице нарисовать курсор и какая позиция под
-//!   указателем мыши.
+//!   указателем мыши;
+//! - [`navigation`] — перемещение курсора с клавиатуры.
 
 pub mod caret;
+pub mod navigation;
 pub mod position;
 
-pub use caret::{Caret, CaretStop, caret, hit_test, line_stops};
+pub use caret::{Caret, CaretStop, caret, hit_test, line_stops, position_in_line};
+pub use navigation::{Motion, Moved, move_cursor};
 pub use position::{Affinity, Position};
