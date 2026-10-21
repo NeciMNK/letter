@@ -36,5 +36,6 @@ python3 tests/fixtures/docx/generate.py
 
 PDF-эталоны для сверки вёрстки с Word (задача F2.8): откуда они взяты и
 как добавить новые — в [`reference/README.md`](reference/README.md).
-Файлы в `reference/libreoffice/` сделаны из наших `docx/` программой
-LibreOffice и распространяются по лицензии проекта (MIT).
+Файлы в `reference/word/` сохранены из наших `docx/` программой Microsoft
+Word 2024 (сделал владелец проекта), в `reference/libreoffice/` — программой
+LibreOffice; все распространяются по лицензии проекта (MIT).

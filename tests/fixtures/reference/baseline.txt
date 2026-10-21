@@ -13,3 +13,13 @@ libreoffice/pages 62 0
 libreoffice/plain-text 4 0
 libreoffice/ru-en 3 0
 libreoffice/table 2 0
+word/bold-italic 1 0
+word/empty 0 0
+word/header-footer 3 0
+word/headings 7 1
+word/image 2 0
+word/lists 9 6
+word/pages 26 0
+word/plain-text 3 0
+word/ru-en 3 0
+word/table 2 0
