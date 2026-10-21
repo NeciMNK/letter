@@ -103,6 +103,8 @@ impl Patch {
 /// Один шаг истории.
 #[derive(Debug, Clone, PartialEq)]
 struct Step {
+    /// Номер состояния документа после шага (см. [`History::state`]).
+    id: u64,
     patch: Patch,
     /// Выделение до и после шага.
     before: Selection,
@@ -118,6 +120,8 @@ pub struct History {
     redo: Vec<Step>,
     /// Следующий набор начнёт новый шаг (курсор двигали и т. п.).
     sealed: bool,
+    /// Последний выданный номер состояния.
+    last_id: u64,
 }
 
 impl History {
@@ -221,7 +225,9 @@ impl History {
             _ => None,
         };
         self.redo.clear();
+        self.last_id += 1;
         let step = Step {
+            id: self.last_id,
             patch,
             before: selection,
             after,
@@ -241,6 +247,7 @@ impl History {
                 *after = new_after;
             }
             last.after = step.after;
+            last.id = step.id;
             if let (Some(a), Some(b)) = (&mut last.typed, step.typed) {
                 a.push_str(&b);
             }
@@ -278,6 +285,13 @@ impl History {
         self.undo.push(step);
         self.sealed = true;
         Some(selection)
+    }
+
+    /// Номер состояния документа: меняется с каждой правкой, а отмена
+    /// и повтор возвращают прежний номер. Если запомнить его при
+    /// сохранении, по нему видно, изменён ли документ с тех пор.
+    pub fn state(&self) -> u64 {
+        self.undo.last().map_or(0, |s| s.id)
     }
 
     /// Есть ли что отменить.
@@ -368,6 +382,27 @@ mod tests {
         assert_eq!(h.redo(&mut d), Some(caret(0, 6)));
         assert_eq!(texts(&d), vec!["hi you"]);
         assert!(!h.can_redo());
+    }
+
+    #[test]
+    fn state_tells_whether_the_document_changed() {
+        let mut d = doc(&[""]);
+        let mut h = History::new();
+        assert_eq!(h.state(), 0);
+        let s = h.run(&mut d, caret(0, 0), Command::Type("a".into()));
+        let saved = h.state();
+        assert_ne!(saved, 0);
+        // Набор, слитый с прошлым шагом, — всё равно новое состояние.
+        h.run(&mut d, s, Command::Type("b".into()));
+        assert_ne!(h.state(), saved);
+        h.undo(&mut d);
+        assert_eq!(h.state(), 0);
+        h.redo(&mut d);
+        let after = h.state();
+        assert_ne!(after, saved);
+        h.undo(&mut d);
+        h.redo(&mut d);
+        assert_eq!(h.state(), after);
     }
 
     #[test]

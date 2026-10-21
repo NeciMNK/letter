@@ -1,4 +1,6 @@
-//! Окно документа: меню «Файл», листы с прокруткой, масштаб
+//! Окно документа: меню «Файл» (создать, открыть, последние файлы,
+//! сохранить, сохранить как; вопрос «сохранить изменения?»,
+//! автосохранение и восстановление после сбоя), листы с прокруткой, масштаб
 //! (Ctrl+колесо, кнопки, ползунок, «по ширине страницы»), строка
 //! состояния и мигающий курсор, который ставится щелчком мыши и ходит
 //! по тексту клавишами (стрелки, Home/End, PageUp/PageDown, с Ctrl —
@@ -15,7 +17,7 @@
 
 use std::path::{Path, PathBuf};
 
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui::{
     self, Align, Align2, Color32, Context, CursorIcon, Key, KeyboardShortcut, Layout, Modifiers,
@@ -30,6 +32,7 @@ use letter_model::{Alignment, Document};
 use letter_render::{DESK_COLOR, PagePainter, SCREEN_PIXELS_PER_POINT};
 
 use crate::clipboard::{Clipboard, SystemBuffer};
+use crate::files::{self, Autosave, OPEN_FILTERS, Recent, Recovered, SAVE_FILTERS};
 use crate::view::{
     MAX_ZOOM, MIN_ZOOM, PAGE_GAP, Zoom, anchored_offset, clamp_zoom, current_page, page_width_zoom,
     place_pages, step_zoom,
@@ -39,6 +42,17 @@ use crate::view::{
 pub const APP_NAME: &str = "letter";
 
 const OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
+const NEW: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::N);
+const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
+const SAVE_AS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F12);
+const SAVE_AS_CTRL: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
+
+/// Как часто автосохранять изменённый документ.
+const AUTOSAVE_EVERY: Duration = Duration::from_secs(120);
+
+/// Имя ещё не сохранённого документа.
+const UNTITLED: &str = "Новый документ";
 const ZOOM_IN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Equals);
 const ZOOM_IN_PLUS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Plus);
 const ZOOM_OUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Minus);
@@ -65,8 +79,13 @@ fn caret_phase(elapsed: f64) -> (bool, f64) {
 
 /// Открытый документ.
 struct OpenDocument {
-    /// Откуда открыт.
-    path: PathBuf,
+    /// Откуда открыт и куда сохранять; `None` — ещё не сохранён.
+    path: Option<PathBuf>,
+    /// [`History::state`] при последнем сохранении: если сейчас другое,
+    /// документ изменён. `u64::MAX` — изменён заведомо (восстановлен).
+    saved: u64,
+    /// [`History::state`] при последнем автосохранении.
+    autosaved: u64,
     /// Сам документ; правки меняют его, а потом он верстается заново.
     doc: Document,
     /// Отмена и повтор правок.
@@ -86,6 +105,35 @@ struct OpenDocument {
 }
 
 impl OpenDocument {
+    /// Новый открытый документ, курсор в начале.
+    fn new(path: Option<PathBuf>, doc: Document, layout: DocumentLayout) -> OpenDocument {
+        OpenDocument {
+            path,
+            saved: 0,
+            autosaved: 0,
+            doc,
+            history: History::new(),
+            layout,
+            cursor: Position::default(),
+            anchor: Position::default(),
+            cursor_since: 0.0,
+            goal_x: None,
+        }
+    }
+
+    /// Изменён ли документ после сохранения.
+    fn modified(&self) -> bool {
+        self.history.state() != self.saved
+    }
+
+    /// Имя для заголовка окна и вопросов.
+    fn name(&self) -> String {
+        self.path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map_or_else(|| UNTITLED.to_owned(), |n| n.to_string_lossy().into_owned())
+    }
+
     /// Выделение от якоря до курсора.
     fn selection(&self) -> Selection {
         Selection::new(self.anchor, self.cursor)
@@ -119,6 +167,40 @@ enum Action {
     Paste(String),
 }
 
+/// Что сделать, когда пользователь ответит, сохранять ли изменения.
+#[derive(Debug, Clone, PartialEq)]
+enum Intent {
+    /// Создать новый документ.
+    New,
+    /// Открыть файл; `None` — сначала выбрать его.
+    Open(Option<PathBuf>),
+    /// Открыть документ, оставшийся после сбоя (номер в списке).
+    Recover(usize),
+    /// Закрыть программу.
+    Close,
+}
+
+/// Ответ на вопрос «сохранить изменения?».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    Save,
+    Discard,
+    Cancel,
+}
+
+/// «5 мин назад» — когда сохранён документ.
+fn ago(time: Option<SystemTime>) -> String {
+    let minutes = time
+        .and_then(|t| t.elapsed().ok())
+        .map_or(0, |d| d.as_secs() / 60);
+    match minutes {
+        0 => "только что".to_owned(),
+        m if m < 60 => format!("{m} мин назад"),
+        m if m < 60 * 24 => format!("{} ч назад", m / 60),
+        m => format!("{} дн назад", m / (60 * 24)),
+    }
+}
+
 /// Состояние окна просмотра.
 pub struct Viewer {
     library: FontLibrary,
@@ -128,6 +210,20 @@ pub struct Viewer {
     zoom: Zoom,
     /// Сообщение об ошибке, показывается в отдельном окошке.
     error: Option<String>,
+    /// Заголовок окошка с ошибкой.
+    error_title: &'static str,
+    /// Вопрос «сохранить изменения?» и что сделать после ответа.
+    ask: Option<Intent>,
+    /// Пользователь согласился закрыть программу.
+    close_confirmed: bool,
+    /// Недавние файлы.
+    recent: Recent,
+    /// Автосохранение (`None` — некуда сохранять).
+    autosave: Option<Autosave>,
+    /// Когда автосохраняли последний раз.
+    last_autosave: Instant,
+    /// Документы, оставшиеся после сбоя.
+    recovered: Vec<Recovered>,
     /// Прокрутка и размер видимой части в прошлом кадре.
     offset: Vec2,
     view_size: Vec2,
@@ -148,9 +244,28 @@ pub struct Viewer {
 }
 
 impl Viewer {
-    /// Пустой просмотрщик со шрифтами `library`.
+    /// Пустой просмотрщик со шрифтами `library`. Ничего не хранит на
+    /// диске (ни недавних файлов, ни автосохранений) — для тестов.
+    #[cfg(test)]
     pub fn new(library: FontLibrary) -> Viewer {
+        Viewer::with_storage(library, None)
+    }
+
+    /// Просмотрщик, который хранит недавние файлы и автосохранения
+    /// в папке программы `dir` (см. [`files::app_dir`]).
+    pub fn with_storage(library: FontLibrary, dir: Option<PathBuf>) -> Viewer {
+        let autosave_dir = dir.as_ref().map(|d| d.join("autosave"));
         Viewer {
+            error_title: "",
+            ask: None,
+            close_confirmed: false,
+            recent: Recent::load(dir.as_deref()),
+            recovered: autosave_dir
+                .as_deref()
+                .map(Autosave::leftovers)
+                .unwrap_or_default(),
+            autosave: autosave_dir.as_deref().and_then(Autosave::start),
+            last_autosave: Instant::now(),
             library,
             shaper: Shaper::new(),
             painter: PagePainter::new(),
@@ -169,37 +284,208 @@ impl Viewer {
         }
     }
 
-    /// Открывает .docx и верстает его. При ошибке прежний документ
-    /// остаётся на экране.
+    /// Открывает документ (.docx, .rtf, .odt, .txt, .html, .md) и
+    /// верстает его. При ошибке прежний документ остаётся на экране.
     pub fn open(&mut self, path: &Path) -> Result<(), String> {
-        let doc = letter_docx::read_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let layout = layout_document(&doc, &mut self.shaper, &self.library);
-        self.document = Some(OpenDocument {
-            path: path.to_owned(),
-            doc,
-            history: History::new(),
-            layout,
-            cursor: Position::default(),
-            anchor: Position::default(),
-            cursor_since: 0.0,
-            goal_x: None,
-        });
-        self.pending_offset = Some(Vec2::ZERO);
-        self.current_page = 0;
-        self.title_changed = true;
+        let doc = files::read(path)?;
+        self.show(Some(path.to_owned()), doc);
+        self.recent.add(path);
         Ok(())
     }
 
     /// Открывает файл, а ошибку показывает пользователю.
     pub fn open_or_report(&mut self, path: &Path) {
         if let Err(e) = self.open(path) {
-            self.error = Some(e);
+            if !path.exists() {
+                self.recent.remove(path);
+            }
+            self.report("Не удалось открыть файл", e);
         }
+    }
+
+    /// Новый пустой документ (Ctrl+N).
+    pub fn new_document(&mut self) {
+        self.show(None, files::blank());
+    }
+
+    /// Показывает документ вместо прежнего.
+    fn show(&mut self, path: Option<PathBuf>, doc: Document) {
+        let layout = layout_document(&doc, &mut self.shaper, &self.library);
+        self.document = Some(OpenDocument::new(path, doc, layout));
+        if let Some(autosave) = &self.autosave {
+            autosave.clear();
+        }
+        self.pending_offset = Some(Vec2::ZERO);
+        self.current_page = 0;
+        self.title_changed = true;
+    }
+
+    fn report(&mut self, title: &'static str, message: String) {
+        self.error_title = title;
+        self.error = Some(message);
+    }
+
+    /// Изменён ли открытый документ после сохранения.
+    pub fn modified(&self) -> bool {
+        self.document.as_ref().is_some_and(OpenDocument::modified)
+    }
+
+    /// Делает `intent`, а если документ изменён — сначала спрашивает,
+    /// сохранить ли изменения.
+    fn request(&mut self, intent: Intent) {
+        if self.modified() {
+            self.ask = Some(intent);
+        } else {
+            self.perform(intent);
+        }
+    }
+
+    fn perform(&mut self, intent: Intent) {
+        match intent {
+            Intent::New => self.new_document(),
+            Intent::Open(Some(path)) => self.open_or_report(&path),
+            Intent::Open(None) => self.pick_file(),
+            Intent::Recover(index) => self.recover(index),
+            Intent::Close => self.close_confirmed = true,
+        }
+    }
+
+    /// Сохраняет документ туда, откуда он открыт (Ctrl+S); если
+    /// это новый документ или формат записать нельзя — спрашивает куда.
+    /// `true`, если сохранён.
+    pub fn save(&mut self) -> bool {
+        let path = self
+            .document
+            .as_ref()
+            .and_then(|d| d.path.clone())
+            .filter(|p| files::FileFormat::from_path(p).is_some());
+        match path {
+            Some(path) => self.save_to(&path),
+            None => self.save_as(),
+        }
+    }
+
+    /// «Сохранить как» (F12): окно выбора места и формата.
+    pub fn save_as(&mut self) -> bool {
+        let Some(document) = &self.document else {
+            return false;
+        };
+        let stem = document
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map_or_else(|| UNTITLED.to_owned(), |s| s.to_string_lossy().into_owned());
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Сохранить как")
+            .set_file_name(format!("{stem}.docx"));
+        for (name, extensions) in SAVE_FILTERS {
+            dialog = dialog.add_filter(*name, extensions);
+        }
+        if let Some(dir) = self.dialog_dir() {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(mut path) = dialog.save_file() else {
+            return false;
+        };
+        if files::FileFormat::from_path(&path).is_none() {
+            path.set_extension("docx");
+        }
+        self.save_to(&path)
+    }
+
+    /// Сохраняет документ в `path` (формат — по расширению). Ошибку
+    /// показывает пользователю. `true`, если сохранён.
+    pub fn save_to(&mut self, path: &Path) -> bool {
+        let Some(document) = &mut self.document else {
+            return false;
+        };
+        if let Err(e) = files::write(&document.doc, path) {
+            self.report("Не удалось сохранить файл", e);
+            return false;
+        }
+        document.path = Some(path.to_owned());
+        document.saved = document.history.state();
+        document.autosaved = document.saved;
+        if let Some(autosave) = &self.autosave {
+            autosave.clear();
+        }
+        self.recent.add(path);
+        self.title_changed = true;
+        true
+    }
+
+    /// Открывает документ, оставшийся после сбоя: он считается
+    /// изменённым, сохранять его — туда, откуда он был открыт.
+    fn recover(&mut self, index: usize) {
+        if index >= self.recovered.len() {
+            return;
+        }
+        let item = self.recovered.remove(index);
+        match files::read(&item.autosave) {
+            Ok(doc) => {
+                self.show(item.original.clone(), doc);
+                if let Some(document) = &mut self.document {
+                    document.saved = u64::MAX;
+                    document.autosaved = u64::MAX;
+                }
+                // Сразу своя копия: старую можно убрать.
+                self.autosave_now();
+                Autosave::discard(&item);
+            }
+            Err(e) => self.report("Не удалось восстановить документ", e),
+        }
+    }
+
+    /// Автосохраняет изменённый документ, если пора.
+    fn autosave_tick(&mut self, ctx: &Context) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        if !document.modified() || document.autosaved == document.history.state() {
+            return;
+        }
+        let wait = AUTOSAVE_EVERY.saturating_sub(self.last_autosave.elapsed());
+        if wait.is_zero() {
+            self.autosave_now();
+        } else {
+            ctx.request_repaint_after(wait);
+        }
+    }
+
+    fn autosave_now(&mut self) {
+        self.last_autosave = Instant::now();
+        let (Some(autosave), Some(document)) = (&self.autosave, &mut self.document) else {
+            return;
+        };
+        // Не вышло — попробуем в следующий раз; работе это не мешает.
+        if autosave
+            .save(&document.doc, document.path.as_deref())
+            .is_ok()
+        {
+            document.autosaved = document.history.state();
+        }
+    }
+
+    /// Папка для окон «Открыть» и «Сохранить как».
+    fn dialog_dir(&self) -> Option<PathBuf> {
+        self.document
+            .as_ref()
+            .and_then(|d| d.path.as_ref())
+            .or_else(|| self.recent.items().first())
+            .and_then(|p| p.parent())
+            .filter(|d| !d.as_os_str().is_empty())
+            .map(Path::to_owned)
     }
 
     /// Рисует окно целиком.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // Крестик окна: если документ изменён, сначала спрашиваем.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.close_confirmed && self.modified()
+        {
+            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            self.ask = Some(Intent::Close);
+        }
         self.handle_input(&ctx);
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
@@ -208,20 +494,26 @@ impl Viewer {
             .frame(egui::Frame::new().fill(DESK_COLOR))
             .show(ui, |ui| self.pages(ui));
         self.error_window(&ctx);
+        self.save_changes_window(&ctx);
+        self.recovery_window(&ctx);
+        self.autosave_tick(&ctx);
+        if self.close_confirmed {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+        }
 
         if self.title_changed {
             self.title_changed = false;
             ctx.send_viewport_cmd(ViewportCommand::Title(self.title()));
         }
         if std::mem::take(&mut self.open_requested) {
-            self.pick_file();
+            self.request(Intent::Open(None));
         }
     }
 
     /// Заголовок окна: «имя.docx — letter».
     pub fn title(&self) -> String {
-        match self.document.as_ref().and_then(|d| d.path.file_name()) {
-            Some(name) => format!("{} — {APP_NAME}", name.to_string_lossy()),
+        match &self.document {
+            Some(document) => format!("{} — {APP_NAME}", document.name()),
             None => APP_NAME.to_owned(),
         }
     }
@@ -284,6 +576,21 @@ impl Viewer {
 
     /// Сочетания клавиш и перетаскивание файла в окно.
     fn handle_input(&mut self, ctx: &Context) {
+        let (new, save_as, save) = ctx.input_mut(|i| {
+            (
+                i.consume_shortcut(&NEW),
+                i.consume_shortcut(&SAVE_AS) || i.consume_shortcut(&SAVE_AS_CTRL),
+                i.consume_shortcut(&SAVE),
+            )
+        });
+        if new {
+            self.request(Intent::New);
+        }
+        if save_as {
+            self.save_as();
+        } else if save {
+            self.save();
+        }
         let (open, zoom_in, zoom_out, reset, dropped) = ctx.input_mut(|i| {
             (
                 i.consume_shortcut(&OPEN),
@@ -310,9 +617,9 @@ impl Viewer {
             self.set_zoom(Zoom::Fixed(1.0), None);
         }
         if let Some(path) = dropped {
-            self.open_or_report(&path);
+            self.request(Intent::Open(Some(path)));
         }
-        if self.error.is_none() {
+        if self.error.is_none() && self.ask.is_none() {
             self.keyboard(ctx);
         }
     }
@@ -425,16 +732,12 @@ impl Viewer {
 
     /// Системное окно выбора файла.
     fn pick_file(&mut self) {
-        let mut dialog = rfd::FileDialog::new()
-            .set_title("Открыть документ")
-            .add_filter("Документ Word (*.docx)", &["docx"])
-            .add_filter("Все файлы", &["*"]);
-        if let Some(dir) = self
-            .document
-            .as_ref()
-            .and_then(|d| d.path.parent())
-            .filter(|d| !d.as_os_str().is_empty())
-        {
+        let mut dialog = rfd::FileDialog::new().set_title("Открыть документ");
+        for (name, extensions) in OPEN_FILTERS {
+            dialog = dialog.add_filter(*name, extensions);
+        }
+        dialog = dialog.add_filter("Все файлы", &["*"]);
+        if let Some(dir) = self.dialog_dir() {
             dialog = dialog.set_directory(dir);
         }
         if let Some(path) = dialog.pick_file() {
@@ -445,10 +748,46 @@ impl Viewer {
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("Файл", |ui| {
-                let open =
-                    egui::Button::new("Открыть…").shortcut_text(ui.ctx().format_shortcut(&OPEN));
+                let ctx = ui.ctx().clone();
+                let new = egui::Button::new("Создать").shortcut_text(ctx.format_shortcut(&NEW));
+                if ui.add(new).clicked() {
+                    self.request(Intent::New);
+                }
+                let open = egui::Button::new("Открыть…").shortcut_text(ctx.format_shortcut(&OPEN));
                 if ui.add(open).clicked() {
                     self.open_requested = true;
+                }
+                ui.add_enabled_ui(!self.recent.items().is_empty(), |ui| {
+                    ui.menu_button("Последние", |ui| {
+                        let mut chosen = None;
+                        for path in self.recent.items() {
+                            let name = path.file_name().map_or_else(
+                                || path.display().to_string(),
+                                |n| n.to_string_lossy().into_owned(),
+                            );
+                            if ui
+                                .button(name)
+                                .on_hover_text(path.display().to_string())
+                                .clicked()
+                            {
+                                chosen = Some(path.clone());
+                            }
+                        }
+                        if let Some(path) = chosen {
+                            self.request(Intent::Open(Some(path)));
+                        }
+                    });
+                });
+                ui.separator();
+                let has_document = self.document.is_some();
+                let save = egui::Button::new("Сохранить").shortcut_text(ctx.format_shortcut(&SAVE));
+                if ui.add_enabled(has_document, save).clicked() {
+                    self.save();
+                }
+                let save_as = egui::Button::new("Сохранить как…")
+                    .shortcut_text(ctx.format_shortcut(&SAVE_AS));
+                if ui.add_enabled(has_document, save_as).clicked() {
+                    self.save_as();
                 }
                 ui.separator();
                 if ui.button("Выход").clicked() {
@@ -708,7 +1047,7 @@ impl Viewer {
             return;
         };
         let mut close = false;
-        egui::Window::new("Не удалось открыть файл")
+        egui::Window::new(self.error_title)
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
@@ -721,6 +1060,100 @@ impl Viewer {
             });
         if close || ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.error = None;
+        }
+    }
+
+    /// «Сохранить изменения в документе?» — перед закрытием, открытием
+    /// другого файла и созданием нового.
+    fn save_changes_window(&mut self, ctx: &Context) {
+        let Some(intent) = self.ask.clone() else {
+            return;
+        };
+        let name = self
+            .document
+            .as_ref()
+            .map_or_else(String::new, OpenDocument::name);
+        let mut answer = None;
+        egui::Window::new(APP_NAME)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!("Сохранить изменения в документе «{name}»?"));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Сохранить").clicked() {
+                        answer = Some(Answer::Save);
+                    }
+                    if ui.button("Не сохранять").clicked() {
+                        answer = Some(Answer::Discard);
+                    }
+                    if ui.button("Отмена").clicked() {
+                        answer = Some(Answer::Cancel);
+                    }
+                });
+            });
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            answer = Some(Answer::Cancel);
+        }
+        if let Some(answer) = answer {
+            self.answer(intent, answer);
+        }
+    }
+
+    /// Ответ на вопрос «сохранить изменения?».
+    fn answer(&mut self, intent: Intent, answer: Answer) {
+        self.ask = None;
+        match answer {
+            Answer::Save => {
+                if self.save() {
+                    self.perform(intent);
+                }
+            }
+            Answer::Discard => self.perform(intent),
+            Answer::Cancel => {}
+        }
+    }
+
+    /// Окно «Восстановление документов» после сбоя.
+    fn recovery_window(&mut self, ctx: &Context) {
+        if self.recovered.is_empty() || self.ask.is_some() {
+            return;
+        }
+        let mut open = None;
+        let mut discard = None;
+        egui::Window::new("Восстановление документов")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label("Программа закрылась неожиданно. Эти документы не были сохранены:");
+                ui.add_space(8.0);
+                for (i, item) in self.recovered.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let name = item
+                            .original
+                            .as_ref()
+                            .and_then(|p| p.file_name())
+                            .map_or_else(
+                                || UNTITLED.to_owned(),
+                                |n| n.to_string_lossy().into_owned(),
+                            );
+                        ui.label(format!("{name} ({})", ago(item.saved)));
+                        if ui.button("Открыть").clicked() {
+                            open = Some(i);
+                        }
+                        if ui.button("Удалить").clicked() {
+                            discard = Some(i);
+                        }
+                    });
+                }
+            });
+        if let Some(i) = open {
+            self.request(Intent::Recover(i));
+        } else if let Some(i) = discard {
+            let item = self.recovered.remove(i);
+            Autosave::discard(&item);
         }
     }
 }
@@ -1508,5 +1941,144 @@ mod tests {
         let document = viewer.document.as_mut().unwrap();
         let paragraph = letter_editor::paragraph_mut(&mut document.doc, 0).unwrap();
         assert_eq!(paragraph.props.alignment, None);
+    }
+
+    #[test]
+    fn new_type_save_and_reopen() {
+        let dir = crate::files::tests::temp_dir("viewer-save");
+        let ctx = Context::default();
+        let mut viewer = Viewer::with_storage(FontLibrary::embedded_only(), Some(dir.join("app")));
+        viewer.new_document();
+        assert_eq!(viewer.title(), format!("{UNTITLED} — {APP_NAME}"));
+        assert!(!viewer.modified());
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![Event::Text("Привет".into())]),
+        );
+        assert!(viewer.modified());
+
+        let path = dir.join("письмо.docx");
+        assert!(viewer.save_to(&path));
+        assert!(!viewer.modified());
+        assert_eq!(viewer.title(), format!("письмо.docx — {APP_NAME}"));
+        // Отмена после сохранения — снова изменён, повтор — нет.
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(Key::Z, Modifiers::COMMAND)]),
+        );
+        assert!(viewer.modified());
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(Key::Y, Modifiers::COMMAND)]),
+        );
+        assert!(!viewer.modified());
+
+        // Файл открывается снова, он — в списке недавних.
+        let mut other = Viewer::with_storage(FontLibrary::embedded_only(), Some(dir.join("app")));
+        other.open(&path).unwrap();
+        assert_eq!(first_text(&mut other), "Привет");
+        assert_eq!(other.recent.items().len(), 1);
+        assert!(other.recent.items()[0].ends_with("письмо.docx"));
+
+        // Ошибка записи показывается, документ остаётся изменённым.
+        frame(&ctx, &mut viewer, events(vec![Event::Text("!".into())]));
+        assert!(!viewer.save_to(&dir.join("нет такой папки").join("x.docx")));
+        assert!(viewer.error.is_some());
+        assert!(viewer.modified());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unsaved_changes_are_asked_about() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.new_document();
+        // Без изменений Ctrl+N сразу создаёт новый документ.
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(Key::N, Modifiers::COMMAND)]),
+        );
+        assert_eq!(viewer.ask, None);
+
+        frame(&ctx, &mut viewer, events(vec![Event::Text("x".into())]));
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(Key::N, Modifiers::COMMAND)]),
+        );
+        assert_eq!(viewer.ask, Some(Intent::New));
+        // Пока висит вопрос, набор не попадает в документ.
+        frame(&ctx, &mut viewer, events(vec![Event::Text("y".into())]));
+        assert_eq!(first_text(&mut viewer), "x");
+        viewer.answer(Intent::New, Answer::Cancel);
+        assert_eq!(first_text(&mut viewer), "x");
+
+        // Крестик окна: закрытие отменяется и задаётся вопрос.
+        let mut input = screen();
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .events
+            .push(egui::ViewportEvent::Close);
+        frame(&ctx, &mut viewer, input);
+        assert_eq!(viewer.ask, Some(Intent::Close));
+        assert!(!viewer.close_confirmed);
+        viewer.answer(Intent::Close, Answer::Discard);
+        assert!(viewer.close_confirmed);
+
+        // «Не сохранять» при создании — новый пустой документ.
+        viewer.answer(Intent::New, Answer::Discard);
+        assert_eq!(first_text(&mut viewer), "");
+        assert!(!viewer.modified());
+    }
+
+    #[test]
+    fn documents_left_after_a_crash_can_be_recovered() {
+        let dir = crate::files::tests::temp_dir("viewer-recover");
+        let app = dir.join("app");
+        let autosave = app.join("autosave");
+        std::fs::create_dir_all(&autosave).unwrap();
+        let mut doc = crate::files::blank();
+        doc.sections[0].blocks = vec![letter_model::Paragraph::text("спасено").into()];
+        std::fs::write(
+            autosave.join("1-1.docx"),
+            letter_docx::write_bytes(&doc).unwrap(),
+        )
+        .unwrap();
+        let original = dir.join("отчёт.docx");
+        std::fs::write(autosave.join("1-1.path"), original.display().to_string()).unwrap();
+        std::fs::write(autosave.join("1-1.lock"), "").unwrap();
+
+        let mut viewer = Viewer::with_storage(FontLibrary::embedded_only(), Some(app.clone()));
+        assert_eq!(viewer.recovered.len(), 1);
+        viewer.request(Intent::Recover(0));
+        assert!(viewer.recovered.is_empty());
+        assert_eq!(first_text(&mut viewer), "спасено");
+        assert!(viewer.modified());
+        assert_eq!(viewer.title(), format!("отчёт.docx — {APP_NAME}"));
+        // Старая копия убрана, своя — записана.
+        assert!(!autosave.join("1-1.docx").exists());
+        assert!(
+            std::fs::read_dir(&autosave)
+                .unwrap()
+                .flatten()
+                .any(|e| e.path().extension().is_some_and(|x| x == "docx"))
+        );
+        // Сохранили — своя копия больше не нужна.
+        assert!(viewer.save_to(&original));
+        assert!(
+            !std::fs::read_dir(&autosave)
+                .unwrap()
+                .flatten()
+                .any(|e| e.path().extension().is_some_and(|x| x == "docx"))
+        );
+        drop(viewer);
+        assert_eq!(std::fs::read_dir(&autosave).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
