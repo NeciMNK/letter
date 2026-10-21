@@ -1,12 +1,13 @@
-//! Приложение `letter`: главное окно редактора. Пока это просмотрщик:
-//! открывает .docx и показывает страницы.
+//! Приложение `letter`: главное окно редактора. Открывает, правит
+//! и сохраняет документы .docx, .rtf, .odt, .txt, .html и .md.
 //!
-//! Запуск: `letter [файл.docx]`.
+//! Запуск: `letter [файл]`; без файла открывается пустой документ.
 
 // В релизной сборке под Windows не показываем окно консоли рядом с программой.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod clipboard;
+mod files;
 mod view;
 mod viewer;
 
@@ -34,9 +35,11 @@ fn main() -> eframe::Result {
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
             // Светлое оформление, как у Word по умолчанию.
             cc.egui_ctx.set_theme(egui::Theme::Light);
-            let mut viewer = Viewer::new(FontLibrary::new());
-            if let Some(file) = file {
-                viewer.open_or_report(&file);
+            let mut viewer = Viewer::with_storage(FontLibrary::new(), files::app_dir());
+            match file {
+                Some(file) => viewer.open_or_report(&file),
+                // Как Word: без файла — сразу пустой документ.
+                None => viewer.new_document(),
             }
             Ok(Box::new(LetterApp { viewer }))
         }),
