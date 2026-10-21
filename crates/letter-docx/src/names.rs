@@ -75,6 +75,14 @@ pub(crate) fn lookup<T: Copy>(table: &[(&str, T)], name: &str) -> Option<T> {
     table.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
 }
 
+/// Имя значения для записи (первое подходящее в таблице).
+pub(crate) fn name_of<T: Copy + PartialEq>(
+    table: &[(&'static str, T)],
+    value: T,
+) -> Option<&'static str> {
+    table.iter().find(|(_, v)| *v == value).map(|(n, _)| *n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,5 +100,19 @@ mod tests {
         check(THEME_FONTS);
         assert_eq!(lookup(ALIGNMENTS, "both"), Some(Alignment::Justify));
         assert_eq!(lookup(UNDERLINES, "bogus"), None);
+        assert_eq!(name_of(ALIGNMENTS, Alignment::Left), Some("left"));
+        // Каждое значение можно записать и прочитать обратно.
+        fn round_trip<T: Copy + PartialEq + std::fmt::Debug>(table: &[(&'static str, T)]) {
+            for (_, value) in table {
+                assert_eq!(
+                    name_of(table, *value).and_then(|n| lookup(table, n)),
+                    Some(*value)
+                );
+            }
+        }
+        round_trip(UNDERLINES);
+        round_trip(HIGHLIGHTS);
+        round_trip(ALIGNMENTS);
+        round_trip(THEME_FONTS);
     }
 }

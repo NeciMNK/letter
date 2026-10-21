@@ -18,6 +18,7 @@
 //! сохранении записывается обратно без изменений.
 
 mod document;
+mod package;
 mod paragraph;
 mod raw;
 mod resolve;
@@ -29,6 +30,7 @@ mod theme;
 mod units;
 
 pub use document::{Document, Numbering, Settings};
+pub use package::{SourcePackage, SourcePart};
 pub use paragraph::{
     Alignment, FirstLineIndent, Indentation, Inline, LineSpacing, Paragraph, ParagraphProps,
     Spacing,
