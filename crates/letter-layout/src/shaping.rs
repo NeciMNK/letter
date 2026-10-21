@@ -132,6 +132,11 @@ pub struct FontMetrics {
     pub win_ascent: f32,
     /// Глубина под базовой линией по Windows (`usWinDescent`).
     pub win_descent: f32,
+    /// Дополнительный промежуток над строкой по правилам Windows
+    /// («внешний интерлиньяж»): то, на что промежуток из `hhea` больше
+    /// разницы между размерами Windows и `hhea`. Одинарный интервал
+    /// в Word — `win_ascent + win_descent + external_leading`.
+    pub external_leading: f32,
     /// Положение линии подчёркивания (отрицательное — под базовой линией).
     pub underline_position: f32,
     /// Толщина линии подчёркивания.
@@ -211,6 +216,12 @@ impl Shaper {
             ),
             None => (units(face.ascender()), -units(face.descender())),
         };
+        let hhea = face.tables().hhea;
+        let hhea_height = i32::from(hhea.ascender) - i32::from(hhea.descender);
+        let external_leading = (i32::from(hhea.line_gap)
+            - ((win_ascent + win_descent) * em).round() as i32
+            + hhea_height)
+            .max(0);
         let underline = face.underline_metrics();
         let strikeout = face.strikeout_metrics();
         Some(FontMetrics {
@@ -219,6 +230,7 @@ impl Shaper {
             line_gap: units(line_gap),
             win_ascent,
             win_descent,
+            external_leading: external_leading as f32 / em,
             underline_position: underline.map_or(-0.1, |m| units(m.position)),
             underline_thickness: underline.map_or(0.05, |m| units(m.thickness)),
             strikeout_position: strikeout.map_or(0.3, |m| units(m.position)),
@@ -565,6 +577,16 @@ mod tests {
         assert!((m.win_ascent - 1825.0 / 2048.0).abs() < 1e-6);
         assert!((m.win_descent - 443.0 / 2048.0).abs() < 1e-6);
         assert!((m.line_gap - 87.0 / 2048.0).abs() < 1e-6);
+        // Одинарная строка Times New Roman 12 пт в Word — 13,8 пт.
+        let single = (m.win_ascent + m.win_descent + m.external_leading) * 12.0;
+        assert!((single - 13.799).abs() < 1e-3, "{single}");
+        // А Calibri (Carlito) 11 пт — 13,43 пт: промежуток уже внутри
+        // размеров Windows.
+        let carlito = library.find("Carlito", false, false).unwrap();
+        let c = shaper.metrics(&library, carlito.id).unwrap();
+        assert_eq!(c.external_leading, 0.0);
+        let single = (c.win_ascent + c.win_descent) * 11.0;
+        assert!((single - 13.428).abs() < 1e-3, "{single}");
         assert!(m.underline_position < 0.0 && m.underline_thickness > 0.0);
         // Caladea просит брать типографские размеры из OS/2.
         let caladea = library.find("Caladea", false, false).unwrap();

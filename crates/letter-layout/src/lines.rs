@@ -240,10 +240,20 @@ pub struct Line {
     pub ascent: f32,
     /// Глубина под базовой линией, пт.
     pub descent: f32,
+    /// Дополнительный промежуток над строкой (внешний интерлиньяж), пт.
+    pub leading: f32,
     /// Части строки в порядке показа слева направо.
     pub items: Vec<LineItem>,
     /// Чем кончается строка.
     pub end: LineEnd,
+}
+
+impl Line {
+    /// Высота строки при одинарном интервале, пт: как в Word, высота
+    /// шрифта по размерам Windows плюс внешний интерлиньяж.
+    pub fn natural_height(&self) -> f32 {
+        self.ascent + self.descent + self.leading
+    }
 }
 
 /// Абзац, разбитый на строки.
@@ -755,13 +765,14 @@ impl<'a> Builder<'a> {
             (Some(a), Some(b)) => a.range.start..b.range.end,
             _ => self.text.len()..self.text.len(),
         };
-        let (ascent, descent) = self.line_height(start..end, mark_style);
+        let (ascent, descent, leading) = self.line_height(start..end, mark_style);
         Line {
             range,
             x: line_start + offset,
             width: widths[..content_end].iter().sum(),
             ascent,
             descent,
+            leading,
             items,
             end: kind,
         }
@@ -814,7 +825,7 @@ impl<'a> Builder<'a> {
     }
 
     /// Высота строки по шрифтам её букв (по размерам Windows, как в Word).
-    fn line_height(&mut self, clusters: Range<usize>, mark_style: &TextStyle) -> (f32, f32) {
+    fn line_height(&mut self, clusters: Range<usize>, mark_style: &TextStyle) -> (f32, f32, f32) {
         let mut fonts: Vec<(crate::FontId, f32)> = Vec::new();
         for cluster in &self.clusters[clusters] {
             if let Kind::Text { run, .. } = cluster.kind
@@ -833,13 +844,15 @@ impl<'a> Builder<'a> {
         }
         let mut ascent: f32 = 0.0;
         let mut descent: f32 = 0.0;
+        let mut leading: f32 = 0.0;
         for (id, size) in fonts {
             if let Some(m) = self.shaper.metrics(self.library, id) {
                 ascent = ascent.max(m.win_ascent * size);
                 descent = descent.max(m.win_descent * size);
+                leading = leading.max(m.external_leading * size);
             }
         }
-        (ascent, descent)
+        (ascent, descent, leading)
     }
 }
 
