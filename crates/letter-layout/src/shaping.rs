@@ -588,11 +588,10 @@ mod tests {
         let single = (c.win_ascent + c.win_descent) * 11.0;
         assert!((single - 13.428).abs() < 1e-3, "{single}");
         assert!(m.underline_position < 0.0 && m.underline_thickness > 0.0);
-        // Caladea просит брать типографские размеры из OS/2.
+        // Caladea по высоте как Cambria: 950 + 222 на 1000 единиц.
         let caladea = library.find("Caladea", false, false).unwrap();
         let c = shaper.metrics(&library, caladea.id).unwrap();
-        assert!((c.ascent - 0.9).abs() < 1e-6 && (c.descent - 0.25).abs() < 1e-6);
-        assert!((c.win_ascent - 1.05).abs() < 1e-6);
+        assert!((c.win_ascent - 0.95).abs() < 1e-6 && (c.win_descent - 0.222).abs() < 1e-6);
     }
 
     #[test]
