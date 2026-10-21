@@ -1694,6 +1694,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "letter-cli"
+version = "0.1.0"
+dependencies = [
+ "letter-docx",
+ "letter-model",
+]
+
+[[package]]
 name = "letter-doc"
 version = "0.1.0"
 
