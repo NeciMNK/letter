@@ -164,7 +164,8 @@ mod tests {
         assert_eq!(heading.next.as_deref(), Some("Normal"));
         assert_eq!(heading.run.bold, Some(true));
         assert_eq!(heading.paragraph.spacing.before, Some(Twips(480)));
-        assert_eq!(heading.paragraph.unknown.len(), 1); // w:keepNext
+        assert_eq!(heading.paragraph.keep_next, Some(true));
+        assert!(heading.paragraph.unknown.is_empty());
 
         let mine = styles.get("Mine").unwrap();
         assert_eq!(mine.kind, StyleKind::Character);

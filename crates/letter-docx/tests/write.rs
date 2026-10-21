@@ -13,7 +13,8 @@ use letter_model::{
     Alignment, Block, BreakKind, Color, DocDefaults, Document, FirstLineIndent, HalfPoints,
     Highlight, Indentation, Inline, LineSpacing, PageMargins, PageSize, Paragraph, ParagraphProps,
     RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps, Spacing, Style, StyleKind,
-    Styles, Table, TableCell, TableRow, ThemeColor, ThemeFont, Twips, Underline, VerticalAlign,
+    Styles, TabLeader, TabStop, TabStopKind, Table, TableCell, TableRow, ThemeColor, ThemeFont,
+    Twips, Underline, VerticalAlign,
 };
 
 const FIXTURES: &[&str] = &[
@@ -200,8 +201,24 @@ fn everything() -> Document {
             line: Some(LineSpacing::AtLeast(Twips(300))),
         },
         contextual_spacing: Some(true),
+        keep_next: Some(true),
+        keep_lines: Some(false),
+        page_break_before: Some(true),
+        widow_control: Some(false),
+        tabs: vec![
+            TabStop {
+                position: Twips(720),
+                kind: TabStopKind::Clear,
+                leader: TabLeader::None,
+            },
+            TabStop {
+                position: Twips(9350),
+                kind: TabStopKind::Right,
+                leader: TabLeader::MiddleDot,
+            },
+        ],
         unknown: vec![RawXml::new(
-            r#"<w:keepNext xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>"#,
+            r#"<w:framePr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:wrap="around"/>"#,
         )],
     };
     let run = Run {

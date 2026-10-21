@@ -1,7 +1,7 @@
 //! Соответствие значений OOXML и типов модели. Таблицы общие для чтения
 //! и записи, чтобы оба направления не разошлись.
 
-use letter_model::{Alignment, Highlight, ThemeFont, Underline};
+use letter_model::{Alignment, Highlight, TabLeader, TabStopKind, ThemeFont, Underline};
 
 /// Значения `w:u/@w:val`.
 pub(crate) const UNDERLINES: &[(&str, Underline)] = &[
@@ -58,6 +58,29 @@ pub(crate) const ALIGNMENTS: &[(&str, Alignment)] = &[
     ("end", Alignment::Right),
 ];
 
+/// Значения `w:tab/@w:val`. `start` и `end` — синонимы `left` и `right`
+/// для письма в обе стороны.
+pub(crate) const TAB_KINDS: &[(&str, TabStopKind)] = &[
+    ("left", TabStopKind::Left),
+    ("center", TabStopKind::Center),
+    ("right", TabStopKind::Right),
+    ("decimal", TabStopKind::Decimal),
+    ("bar", TabStopKind::Bar),
+    ("clear", TabStopKind::Clear),
+    ("start", TabStopKind::Left),
+    ("end", TabStopKind::Right),
+];
+
+/// Значения `w:tab/@w:leader`.
+pub(crate) const TAB_LEADERS: &[(&str, TabLeader)] = &[
+    ("none", TabLeader::None),
+    ("dot", TabLeader::Dot),
+    ("hyphen", TabLeader::Hyphen),
+    ("underscore", TabLeader::Underscore),
+    ("heavy", TabLeader::Heavy),
+    ("middleDot", TabLeader::MiddleDot),
+];
+
 /// Значения `w:asciiTheme` и других ссылок на шрифты темы.
 pub(crate) const THEME_FONTS: &[(&str, ThemeFont)] = &[
     ("majorAscii", ThemeFont::MajorAscii),
@@ -97,6 +120,8 @@ mod tests {
         check(UNDERLINES);
         check(HIGHLIGHTS);
         check(ALIGNMENTS);
+        check(TAB_KINDS);
+        check(TAB_LEADERS);
         check(THEME_FONTS);
         assert_eq!(lookup(ALIGNMENTS, "both"), Some(Alignment::Justify));
         assert_eq!(lookup(UNDERLINES, "bogus"), None);

@@ -34,7 +34,7 @@ pub use document::{Document, Numbering, Settings};
 pub use package::{SourcePackage, SourcePart};
 pub use paragraph::{
     Alignment, FirstLineIndent, Indentation, Inline, LineSpacing, Paragraph, ParagraphProps,
-    Spacing,
+    Spacing, TabLeader, TabStop, TabStopKind,
 };
 pub use properties::{AppProperties, CoreProperties, Properties, Statistics};
 pub use raw::RawXml;
