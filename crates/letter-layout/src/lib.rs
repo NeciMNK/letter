@@ -9,21 +9,25 @@
 //! - [`lines`] — разбиение абзаца на строки: перенос по словам,
 //!   выравнивание, отступы, табуляции, порядок показа текста справа
 //!   налево;
+//! - [`pages`] — документ целиком: перевод модели в типы вёрстки
+//!   и раскладка строк по страницам;
 //! - [`spacing`] — межстрочный и межабзацный интервалы: строки и абзацы
 //!   по вертикали.
 
 pub mod fonts;
 pub mod lines;
+pub mod pages;
 pub mod shaping;
 pub mod spacing;
 
-pub use fonts::{FontId, FontLibrary, FontMatch};
+pub use fonts::{FontId, FontLibrary, FontMatch, microsoft_line_metrics};
 pub use lines::{
     Align, Line, LineEnd, LineItem, ParagraphFormat, ParagraphLines, TabItem, TabKind, TabLeader,
     TabStop, TextItem, TextSpan, break_lines,
 };
+pub use pages::{DocumentLayout, Margins, Page, PageLine, layout_document};
 pub use shaping::{FontMetrics, ShapedGlyph, ShapedRun, Shaper, TextStyle};
 pub use spacing::{
-    LineBox, LineRule, ParagraphBlock, ParagraphSpacing, PlacedParagraph, place_lines,
-    stack_paragraphs,
+    LineBox, LineRule, ParagraphBlock, ParagraphSpacing, PlacedParagraph, effective_spacing,
+    gap_between, place_lines, stack_paragraphs,
 };

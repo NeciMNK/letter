@@ -70,6 +70,25 @@ const SUBSTITUTES: &[(&str, &[&str])] = &[
     ("Aptos", &["Carlito", "Liberation Sans"]),
 ];
 
+/// Высота строки шрифтов Microsoft, у которых замена совпадает по
+/// ширине букв, но не по высоте: (над базовой линией, под ней,
+/// внешний интерлиньяж) в долях кегля, по таблицам самих шрифтов
+/// (`usWinAscent`, `usWinDescent`, `hhea.lineGap` на 2048 единиц).
+/// У Carlito и Liberation высота та же, что у Calibri, Arial,
+/// Times New Roman и Courier New, поэтому их здесь нет.
+const MICROSOFT_LINE_METRICS: &[(&str, [f32; 3])] =
+    &[("Cambria", [1946.0 / 2048.0, 455.0 / 2048.0, 0.0])];
+
+/// Высота строки шрифта Microsoft `family`, если его замена по высоте
+/// другая (пока только Cambria): над базовой линией, под ней
+/// и внешний интерлиньяж в долях кегля.
+pub fn microsoft_line_metrics(family: &str) -> Option<[f32; 3]> {
+    MICROSOFT_LINE_METRICS
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(family))
+        .map(|(_, m)| *m)
+}
+
 /// Последний запасной вариант, если не нашлось ни шрифта, ни замены.
 /// Word в таком случае тоже чаще всего берёт Times New Roman.
 const LAST_RESORT: &[&str] = &["Times New Roman", "Liberation Serif"];

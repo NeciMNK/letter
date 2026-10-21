@@ -17,4 +17,5 @@ path = "src/main.rs"
 
 [dependencies]
 letter-docx.workspace = true
+letter-layout.workspace = true
 letter-model.workspace = true

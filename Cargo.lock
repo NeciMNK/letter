@@ -1732,6 +1732,7 @@ name = "letter-cli"
 version = "0.1.0"
 dependencies = [
  "letter-docx",
+ "letter-layout",
  "letter-model",
 ]
 
@@ -1759,6 +1760,8 @@ version = "0.1.0"
 dependencies = [
  "fontdb",
  "harfrust 0.14.0",
+ "letter-docx",
+ "letter-model",
  "ttf-parser",
  "unicode-bidi",
  "unicode-linebreak",

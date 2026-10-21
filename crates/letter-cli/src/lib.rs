@@ -3,10 +3,14 @@
 //! - `letter-cli dump файл.docx` — печатает дерево модели документа;
 //! - `letter-cli dump --debug файл.docx` — то же, но все поля подряд;
 //! - `letter-cli roundtrip вход.docx выход.docx` — открывает, сохраняет,
-//!   открывает сохранённое и сравнивает модели.
+//!   открывает сохранённое и сравнивает модели;
+//! - `letter-cli pages [--embedded-fonts] файл.docx` — раскладывает
+//!   документ по страницам и печатает строки каждой страницы.
 
 use std::fmt::Write as _;
 use std::path::Path;
+
+use letter_layout::{FontLibrary, Shaper, layout_document};
 
 use letter_model::{
     Alignment, Block, BreakKind, Document, FirstLineIndent, Inline, LineSpacing, Paragraph,
@@ -17,7 +21,8 @@ use letter_model::{
 pub const USAGE: &str = "\
 Использование:
   letter-cli dump [--debug] файл.docx         напечатать дерево модели
-  letter-cli roundtrip вход.docx выход.docx  открыть → сохранить → открыть и сравнить";
+  letter-cli roundtrip вход.docx выход.docx  открыть → сохранить → открыть и сравнить
+  letter-cli pages [--embedded-fonts] файл.docx  разложить по страницам и напечатать строки";
 
 /// Выполняет команду и возвращает текст для вывода. Ошибка — текст
 /// для вывода в поток ошибок.
@@ -27,6 +32,10 @@ pub fn run(args: &[String]) -> Result<String, String> {
         ["dump", path] => Ok(dump(&open(path)?)),
         ["dump", "--debug", path] => Ok(format!("{:#?}\n", open(path)?)),
         ["roundtrip", input, output] => roundtrip(Path::new(input), Path::new(output)),
+        ["pages", path] => Ok(pages(&open(path)?, &FontLibrary::new())),
+        ["pages", "--embedded-fonts", path] => {
+            Ok(pages(&open(path)?, &FontLibrary::embedded_only()))
+        }
         _ => Err(USAGE.to_string()),
     }
 }
@@ -66,6 +75,34 @@ pub fn roundtrip(input: &Path, output: &Path) -> Result<String, String> {
             output.display()
         ))
     }
+}
+
+/// Страницы документа: размер, поля и строки с положением по вертикали.
+pub fn pages(doc: &Document, library: &FontLibrary) -> String {
+    let layout = layout_document(doc, &mut Shaper::new(), library);
+    let mut out = String::new();
+    let mm = |pt: f32| f64::from(pt) * 25.4 / 72.0;
+    for (i, page) in layout.pages.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "Страница {}: {:.1}×{:.1} мм, строк {}",
+            i + 1,
+            mm(page.width),
+            mm(page.height),
+            page.lines.len()
+        );
+        for line in &page.lines {
+            let text = line.text.get(line.line.range.clone()).unwrap_or_default();
+            let _ = writeln!(
+                out,
+                "  {:7.2} пт  абзац {:<3} {:?}",
+                line.top,
+                line.paragraph + 1,
+                text.trim_end()
+            );
+        }
+    }
+    out
 }
 
 /// Дерево модели документа в читаемом виде.

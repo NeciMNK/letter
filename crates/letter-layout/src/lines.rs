@@ -22,7 +22,7 @@ use std::ops::Range;
 use unicode_bidi::{BidiInfo, Level};
 use unicode_linebreak::{BreakOpportunity, linebreaks};
 
-use crate::fonts::FontLibrary;
+use crate::fonts::{FontLibrary, FontMatch, microsoft_line_metrics};
 use crate::shaping::{ShapedRun, Shaper, TextStyle};
 
 /// Допуск при сравнении ширин, пт: строка «влезает», если вылезает
@@ -30,7 +30,8 @@ use crate::shaping::{ShapedRun, Shaper, TextStyle};
 const EPSILON: f32 = 0.01;
 
 /// Кусок текста абзаца с одним оформлением. `'\t'` в тексте —
-/// табуляция, `'\n'` — разрыв строки (Shift+Enter).
+/// табуляция, `'\n'` — разрыв строки (Shift+Enter), `'\u{c}'` — разрыв
+/// страницы (Ctrl+Enter).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextSpan {
     /// Текст.
@@ -171,6 +172,8 @@ pub enum LineEnd {
     Wrap,
     /// Разрыв строки (Shift+Enter).
     Break,
+    /// Разрыв страницы (Ctrl+Enter): следующая строка — на новой странице.
+    Page,
     /// Конец абзаца.
     Paragraph,
 }
@@ -273,8 +276,8 @@ enum Kind {
     Text { run: usize, space: bool },
     /// Табуляция.
     Tab,
-    /// Разрыв строки.
-    Break,
+    /// Разрыв строки или страницы.
+    Break(LineEnd),
 }
 
 /// Неделимая часть текста.
@@ -385,7 +388,7 @@ pub fn break_lines(
         first = false;
         let finished = start >= builder.clusters.len();
         // После разрыва в самом конце абзаца — ещё одна пустая строка.
-        if finished && kind != LineEnd::Break {
+        if finished && !matches!(kind, LineEnd::Break | LineEnd::Page) {
             break;
         }
         if finished {
@@ -410,6 +413,8 @@ struct Builder<'a> {
     breaks: Vec<bool>,
     /// Заданные позиции табуляции по возрастанию, без черт.
     stops: Vec<TabStop>,
+    /// Шрифт, заданный в каждом куске (до замены).
+    families: Vec<String>,
 }
 
 impl<'a> Builder<'a> {
@@ -442,6 +447,7 @@ impl<'a> Builder<'a> {
             clusters: Vec::new(),
             breaks,
             stops,
+            families: spans.iter().map(|s| s.style.family.clone()).collect(),
         };
         builder.shape(spans);
         builder
@@ -460,7 +466,8 @@ impl<'a> Builder<'a> {
                 let at = span_range.start + i;
                 let special = match c {
                     '\t' => Some(Kind::Tab),
-                    '\n' => Some(Kind::Break),
+                    '\n' => Some(Kind::Break(LineEnd::Break)),
+                    '\u{c}' => Some(Kind::Break(LineEnd::Page)),
                     _ => None,
                 };
                 let level_changes = at > piece_start && levels[at] != levels[at - 1];
@@ -580,7 +587,7 @@ impl<'a> Builder<'a> {
         let mut has_content = false;
         for (i, cluster) in self.clusters.iter().enumerate().skip(start) {
             match cluster.kind {
-                Kind::Break => return (i + 1, LineEnd::Break),
+                Kind::Break(end) => return (i + 1, end),
                 Kind::Tab => {
                     let stop = self.next_stop(state.x(), first);
                     // Табуляция по умолчанию за правым краем переносит
@@ -628,7 +635,7 @@ impl<'a> Builder<'a> {
         // Пробелы и разрыв в конце строки не считаются в ширину.
         let content_end = clusters
             .iter()
-            .rposition(|c| !c.is_space() && c.kind != Kind::Break)
+            .rposition(|c| !c.is_space() && !matches!(c.kind, Kind::Break(_)))
             .map_or(0, |i| i + 1);
 
         // Ширины табуляций.
@@ -661,7 +668,7 @@ impl<'a> Builder<'a> {
                     cluster.width,
                     self.text[cluster.range.clone()].contains(format.decimal_separator),
                 ),
-                Kind::Break => {}
+                Kind::Break(_) => {}
             }
         }
         if let Some(p) = pending {
@@ -753,7 +760,7 @@ impl<'a> Builder<'a> {
                         span: cluster.span,
                     }));
                 }
-                Kind::Break => {}
+                Kind::Break(_) => {}
             }
             x += widths[i];
         }
@@ -825,41 +832,60 @@ impl<'a> Builder<'a> {
     }
 
     /// Высота строки по шрифтам её букв (по размерам Windows, как в Word).
+    /// Если вместо шрифта Microsoft взята замена другой высоты, берётся
+    /// высота настоящего шрифта.
     fn line_height(&mut self, clusters: Range<usize>, mark_style: &TextStyle) -> (f32, f32, f32) {
-        let mut fonts: Vec<(crate::FontId, f32)> = Vec::new();
+        let mut fonts: Vec<(&FontMatch, &str, f32)> = Vec::new();
         for cluster in &self.clusters[clusters] {
             if let Kind::Text { run, .. } = cluster.kind
                 && let Some(r) = self.runs.get(run)
-                && !fonts.contains(&(r.font.id, r.size))
             {
-                fonts.push((r.font.id, r.size));
+                let family = self.families.get(cluster.span).map_or("", String::as_str);
+                if !fonts
+                    .iter()
+                    .any(|(f, n, s)| f.id == r.font.id && *n == family && *s == r.size)
+                {
+                    fonts.push((&r.font, family, r.size));
+                }
             }
         }
+        let mark = self
+            .library
+            .find(&mark_style.family, mark_style.bold, mark_style.italic);
         if fonts.is_empty()
-            && let Some(m) =
-                self.library
-                    .find(&mark_style.family, mark_style.bold, mark_style.italic)
+            && let Some(m) = &mark
         {
-            fonts.push((m.id, mark_style.size));
+            fonts.push((m, &mark_style.family, mark_style.size));
         }
-        let mut ascent: f32 = 0.0;
-        let mut descent: f32 = 0.0;
-        let mut leading: f32 = 0.0;
-        for (id, size) in fonts {
-            if let Some(m) = self.shaper.metrics(self.library, id) {
-                ascent = ascent.max(m.win_ascent * size);
-                descent = descent.max(m.win_descent * size);
-                leading = leading.max(m.external_leading * size);
+        let mut sizes = Vec::new();
+        for (font, family, size) in fonts {
+            let real = font.family.eq_ignore_ascii_case(family);
+            if !real && let Some([a, d, l]) = microsoft_line_metrics(family) {
+                sizes.push((a * size, d * size, l * size));
+            } else if let Some(m) = self.shaper.metrics(self.library, font.id) {
+                sizes.push((
+                    m.win_ascent * size,
+                    m.win_descent * size,
+                    m.external_leading * size,
+                ));
             }
         }
-        (ascent, descent, leading)
+        sizes
+            .into_iter()
+            .fold((0.0, 0.0, 0.0), |(a, d, l), (a2, d2, l2)| {
+                (a.max(a2), d.max(d2), l.max(l2))
+            })
     }
 }
 
 /// Пробел, который может висеть в конце строки. Неразрывные пробелы
 /// ведут себя как буквы.
 fn is_hanging_space(c: char) -> bool {
-    c.is_whitespace() && !matches!(c, '\u{a0}' | '\u{202f}' | '\u{2007}' | '\t' | '\n')
+    c.is_whitespace()
+        && !matches!(
+            c,
+            '\u{a0}' | '\u{202f}' | '\u{2007}' | '\t' | '\n' | '\u{c}'
+        )
 }
 
 /// Порядок показа элементов с уровнями Bidi (правило L2): куски
@@ -1040,6 +1066,11 @@ mod tests {
         assert_eq!(p.lines[1].end, LineEnd::Paragraph);
         // Пустая строка берёт высоту у знака абзаца.
         assert!(close(p.lines[1].ascent, p.lines[0].ascent));
+
+        let p = lay_text("ab\u{c}cd", &ParagraphFormat::new(100.0));
+        assert_eq!(line_texts(&p), ["ab\u{c}", "cd"]);
+        assert_eq!(p.lines[0].end, LineEnd::Page);
+        assert!(close(p.lines[0].width, MONO * 2.0));
 
         let p = lay(&[], &ParagraphFormat::new(100.0));
         assert_eq!(p.lines.len(), 1);

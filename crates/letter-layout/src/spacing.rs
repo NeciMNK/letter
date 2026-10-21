@@ -7,7 +7,10 @@
 //!   задаёт высоту, «минимум» не даёт строке стать ниже заданного.
 //! - Лишнее место (или нехватка места) приходится на верх строки:
 //!   нижний край букв всегда остаётся у нижнего края строки.
-//! - Интервалы после абзаца и перед следующим складываются.
+//! - Между абзацами Word по умолчанию берёт больший из интервалов
+//!   «после» предыдущего и «перед» следующим (как в HTML). Складывает
+//!   их, только если в документе включена настройка совместимости
+//!   `w:doNotUseHTMLParagraphAutoSpacing`.
 //! - «Не добавлять интервал между абзацами одного стиля»: абзац с этим
 //!   флагом не получает свой интервал перед, если предыдущий абзац того
 //!   же стиля, и свой интервал после, если следующий того же стиля.
@@ -118,30 +121,58 @@ pub fn place_lines(lines: &[Line], rule: LineRule, top: f32) -> Vec<LineBox> {
         .collect()
 }
 
+/// Интервалы перед и после абзаца `blocks[index]` с учётом правила
+/// «не добавлять интервал между абзацами одного стиля».
+pub fn effective_spacing(blocks: &[ParagraphBlock<'_>], index: usize) -> (f32, f32) {
+    let Some(block) = blocks.get(index) else {
+        return (0.0, 0.0);
+    };
+    let same_as = |other: Option<&ParagraphBlock<'_>>| {
+        block.spacing.contextual && other.is_some_and(|o| o.style == block.style)
+    };
+    let previous = index.checked_sub(1).and_then(|p| blocks.get(p));
+    let before = if same_as(previous) {
+        0.0
+    } else {
+        block.spacing.before.max(0.0)
+    };
+    let after = if same_as(blocks.get(index + 1)) {
+        0.0
+    } else {
+        block.spacing.after.max(0.0)
+    };
+    (before, after)
+}
+
+/// Расстояние между низом предыдущего абзаца (с интервалом после
+/// `previous_after`) и верхом следующего (с интервалом перед `before`):
+/// сумма, если `add_spacing`, иначе больший из двух.
+pub fn gap_between(previous_after: f32, before: f32, add_spacing: bool) -> f32 {
+    if add_spacing {
+        previous_after + before
+    } else {
+        previous_after.max(before)
+    }
+}
+
 /// Расставляет абзацы друг под другом, начиная с `top` (верх интервала
-/// перед первым абзацем).
-pub fn stack_paragraphs(blocks: &[ParagraphBlock<'_>], top: f32) -> Vec<PlacedParagraph> {
+/// перед первым абзацем). `add_spacing` — складывать ли интервалы
+/// между абзацами (см. [`gap_between`]).
+pub fn stack_paragraphs(
+    blocks: &[ParagraphBlock<'_>],
+    top: f32,
+    add_spacing: bool,
+) -> Vec<PlacedParagraph> {
     let mut y = top;
+    let mut previous_after = 0.0;
     let mut placed = Vec::with_capacity(blocks.len());
     for (i, block) in blocks.iter().enumerate() {
-        let same_as = |other: Option<&ParagraphBlock<'_>>| {
-            block.spacing.contextual && other.is_some_and(|o| o.style == block.style)
-        };
-        let previous = i.checked_sub(1).and_then(|p| blocks.get(p));
-        let space_before = if same_as(previous) {
-            0.0
-        } else {
-            block.spacing.before.max(0.0)
-        };
-        let space_after = if same_as(blocks.get(i + 1)) {
-            0.0
-        } else {
-            block.spacing.after.max(0.0)
-        };
-        let first_top = y + space_before;
+        let (space_before, space_after) = effective_spacing(blocks, i);
+        let first_top = y + gap_between(previous_after, space_before, add_spacing);
         let lines = place_lines(block.lines, block.spacing.line, first_top);
         let bottom = lines.last().map_or(first_top, |l| l.top + l.height);
-        y = bottom + space_after;
+        y = bottom;
+        previous_after = space_after;
         placed.push(PlacedParagraph {
             space_before,
             top: first_top,
@@ -185,7 +216,7 @@ mod tests {
             let p = break_lines(
                 &mut shaper,
                 &library,
-                &[TextSpan::new("Текст", style.clone())],
+                &[TextSpan::new("Text", style.clone())],
                 &style,
                 &ParagraphFormat::new(400.0),
             );
@@ -195,6 +226,9 @@ mod tests {
         // 13,43 пт (через совместимые по размерам Liberation и Carlito).
         assert!((height("Times New Roman", 12.0) - 13.799).abs() < 1e-3);
         assert!((height("Calibri", 11.0) - 13.428).abs() < 1e-3);
+        // Caladea выше Cambria, поэтому берётся высота самой Cambria.
+        assert!((height("Cambria", 11.0) - 12.896).abs() < 1e-3);
+        assert!(height("Caladea", 11.0) > 14.0);
     }
 
     #[test]
@@ -256,12 +290,18 @@ mod tests {
                 style: None,
             },
         ];
-        let placed = stack_paragraphs(&blocks, 0.0);
+        let placed = stack_paragraphs(&blocks, 0.0, true);
         assert!(close(placed[0].top, 6.0) && close(placed[0].bottom, 20.0));
         // 10 после первого + 6 перед вторым.
         assert!(close(placed[1].top, 36.0) && close(placed[1].bottom, 64.0));
         assert!(close(placed[1].lines[1].top, 50.0));
-        assert!(stack_paragraphs(&[], 0.0).is_empty());
+        assert!(stack_paragraphs(&[], 0.0, true).is_empty());
+        // По умолчанию в Word — больший из двух: 10.
+        let placed = stack_paragraphs(&blocks, 0.0, false);
+        assert!(close(placed[0].top, 6.0) && close(placed[1].top, 30.0));
+        assert_eq!(gap_between(10.0, 6.0, false), 10.0);
+        assert_eq!(gap_between(4.0, 6.0, false), 6.0);
+        assert_eq!(gap_between(4.0, 6.0, true), 10.0);
     }
 
     #[test]
@@ -284,7 +324,7 @@ mod tests {
             block(None, list),
             block(None, ParagraphSpacing::default()),
         ];
-        let placed = stack_paragraphs(&blocks, 0.0);
+        let placed = stack_paragraphs(&blocks, 0.0, true);
         let spaces: Vec<_> = placed
             .iter()
             .map(|p| (p.space_before, p.space_after))
