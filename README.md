@@ -77,7 +77,12 @@ cargo run -p letter-cli -- dump документ.docx
 cargo run -p letter-cli -- roundtrip документ.docx копия.docx
 cargo run -p letter-cli -- pages документ.docx
 cargo run -p letter-cli -- render документ.docx папка
+cargo run -p letter-cli -- compare документ.docx эталон-из-word.pdf
 ```
+
+Сверка вёрстки с Word по всем эталонам — `cargo test -p letter-cli --test
+compare -- --nocapture` (подробнее в
+[tests/fixtures/reference/README.md](tests/fixtures/reference/README.md)).
 
 ## Лицензия
 

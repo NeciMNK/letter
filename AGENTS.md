@@ -34,5 +34,8 @@
 - `crates/letter-editor` — курсор, команды, отмена.
 - `crates/letter-app` — окно и интерфейс, бинарник `letter`.
 - `crates/letter-cli` — консольная утилита для отладки: `dump`, `roundtrip`, `pages`,
-  `render`.
+  `render`, `compare` (сверка вёрстки с PDF из Word), `pdf-lines`.
+- `tests/fixtures/reference/` — эталонные PDF для сверки вёрстки и
+  `baseline.txt`; если вёрстка стала лучше, обнови его
+  (`LETTER_UPDATE_BASELINE=1 cargo test -p letter-cli --test compare`).
 - `tests/fixtures/` — тестовые документы (источники в `tests/fixtures/README.md`).
