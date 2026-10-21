@@ -18,6 +18,7 @@ mod document;
 mod error;
 mod names;
 mod package;
+mod properties;
 mod serialize;
 mod styles;
 mod theme;
@@ -59,7 +60,34 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
     if let Some((_, root)) = read_related_xml(&mut package, &main, "theme") {
         doc.theme = theme::read_theme(&root);
     }
-    let mut source = read_source(&mut package, main, styles_part)?;
+    let mut core_part = None;
+    if let Some((name, root)) = read_related_xml(&mut package, "", "core-properties")
+        && let Some(core) = properties::read_core(&root)
+    {
+        doc.properties.core = core;
+        core_part = Some(name);
+    }
+    let mut app_part = None;
+    let app = read_related_xml(&mut package, "", "extended-properties")
+        .or_else(|| read_related_xml(&mut package, "", "extendedProperties"));
+    if let Some((name, root)) = app
+        && let Some(app) = properties::read_app(&root)
+    {
+        doc.properties.app = app;
+        app_part = Some(name);
+    }
+
+    let rebuilt = [
+        Some(main.clone()),
+        styles_part.clone(),
+        core_part.clone(),
+        app_part.clone(),
+    ];
+    let mut source = read_source(&mut package, &rebuilt)?;
+    source.main_part = main;
+    source.styles_part = styles_part;
+    source.core_part = core_part;
+    source.app_part = app_part;
     source.main_root_attributes = root.root_attributes();
     source.styles_root_attributes = styles_root_attributes;
     doc.source = Some(source);
@@ -70,21 +98,15 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
 /// чтобы вернуть их в файл без изменений.
 fn read_source<R: Read + Seek>(
     package: &mut package::Package<R>,
-    main_part: String,
-    styles_part: Option<String>,
+    rebuilt: &[Option<String>],
 ) -> Result<SourcePackage, ReadError> {
-    let mut source = SourcePackage {
-        main_part,
-        styles_part,
-        ..SourcePackage::default()
-    };
+    let mut source = SourcePackage::default();
     let rebuilt = |name: &str| {
         name.eq_ignore_ascii_case(CONTENT_TYPES_PART)
-            || name.eq_ignore_ascii_case(&source.main_part)
-            || source
-                .styles_part
-                .as_deref()
-                .is_some_and(|s| name.eq_ignore_ascii_case(s))
+            || rebuilt
+                .iter()
+                .flatten()
+                .any(|r| name.eq_ignore_ascii_case(r))
     };
     let mut parts = Vec::new();
     for name in package.part_names() {

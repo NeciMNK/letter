@@ -74,6 +74,8 @@ fn untouched_parts_are_copied_byte_for_byte() {
             "[Content_Types].xml",
             "word/document.xml",
             "word/styles.xml",
+            "docProps/core.xml",
+            "docProps/app.xml",
         ];
         for (part, data) in &before {
             let copy = after
@@ -319,5 +321,50 @@ fn styles_are_added_to_a_file_without_them() {
     assert_eq!(
         reopened.source.unwrap().styles_part.as_deref(),
         Some("word/styles.xml")
+    );
+}
+
+#[test]
+fn document_properties_are_read_and_written() {
+    let mut doc = read_bytes(&fixture_bytes("headings.docx")).unwrap();
+    let core = &doc.properties.core;
+    assert_eq!(core.title.as_deref(), Some("Заголовки"));
+    assert_eq!(core.creator.as_deref(), Some("letter"));
+    assert_eq!(core.created.as_deref(), Some("2013-12-23T23:15:00Z"));
+    assert_eq!(doc.properties.app.template.as_deref(), Some("Normal.dotm"));
+
+    doc.properties.core.title = Some("Новое название".into());
+    doc.properties.core.last_modified_by = Some("Никита".into());
+    let stats = doc.statistics();
+    doc.properties.app.words = Some(stats.words);
+    let reopened = round_trip(&doc);
+    assert_eq!(reopened.properties, doc.properties);
+    assert_eq!(reopened.properties.app.words, Some(stats.words));
+    assert!(stats.words > 0);
+}
+
+#[test]
+fn properties_of_a_new_document_get_their_own_parts() {
+    let mut doc = Document::new();
+    doc.properties.core.creator = Some("Никита".into());
+    doc.properties.app.application = Some("letter".into());
+    let bytes = write_bytes(&doc).unwrap();
+    let names: Vec<_> = zip_parts(&bytes).into_keys().collect();
+    assert_eq!(
+        names,
+        [
+            "[Content_Types].xml",
+            "_rels/.rels",
+            "docProps/app.xml",
+            "docProps/core.xml",
+            "word/document.xml"
+        ]
+    );
+    let reopened = read_bytes(&bytes).unwrap();
+    assert_eq!(reopened.properties, doc.properties);
+    // Повторное сохранение ничего не добавляет.
+    assert_eq!(
+        write_bytes(&reopened).unwrap(),
+        write_bytes(&round_trip(&reopened)).unwrap()
     );
 }

@@ -8,12 +8,13 @@
 use std::borrow::Cow;
 use std::io::{Seek, Write};
 
-use letter_model::{Document, SourcePackage, Styles};
+use letter_model::{AppProperties, CoreProperties, Document, SourcePackage, Styles};
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
 use crate::WriteError;
 use crate::package::{CONTENT_TYPES_PART, attr, normalize_part_name, rels_part_for};
+use crate::properties;
 use crate::serialize::{self, escape_attr};
 use crate::xml;
 
@@ -26,6 +27,12 @@ const REL_OFFICE_DOCUMENT: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
 const REL_STYLES: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
+const REL_CORE: &str =
+    "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties";
+const REL_APP: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties";
+const CT_CORE: &str = "application/vnd.openxmlformats-package.core-properties+xml";
+const CT_APP: &str = "application/vnd.openxmlformats-officedocument.extended-properties+xml";
 const NS_RELS: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
 const NS_CONTENT_TYPES: &str = "http://schemas.openxmlformats.org/package/2006/content-types";
 
@@ -55,17 +62,20 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
     ));
     ensure_override(&mut overrides, &main, CT_MAIN);
 
-    // Связи главного документа могут поменяться, если добавляются стили.
-    let main_rels = rels_part_for(&main);
+    let mut links = Links::new(source);
+    links.find_or_add("", REL_OFFICE_DOCUMENT, &["/officeDocument"], &main, true);
     let mut replaced = vec![main.clone()];
+
+    let base_dir = main.rsplit_once('/').map_or("", |(dir, _)| dir);
     let styles_part = match &source.styles_part {
         Some(name) => Some(name.clone()),
-        None if doc.styles != Styles::default() => {
-            let (rels, name) = add_styles_relationship(source, &main, &main_rels);
-            parts.push((main_rels.clone(), rels.into_bytes().into()));
-            replaced.push(main_rels.clone());
-            Some(name)
-        }
+        None if doc.styles != Styles::default() => Some(links.find_or_add(
+            &main,
+            REL_STYLES,
+            &["/styles"],
+            &join(base_dir, "styles.xml"),
+            false,
+        )),
         None => None,
     };
     if let Some(name) = &styles_part {
@@ -77,14 +87,45 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
         replaced.push(name.clone());
     }
 
-    if source.part("_rels/.rels").is_none() {
-        let rels = relationships_xml(&[Relationship {
-            id: "rId1".into(),
-            kind: REL_OFFICE_DOCUMENT.into(),
-            target: main.clone(),
-            external: false,
-        }]);
-        parts.push(("_rels/.rels".into(), rels.into_bytes().into()));
+    let core = &doc.properties.core;
+    let core_part = match &source.core_part {
+        Some(name) => Some(name.clone()),
+        None if *core != CoreProperties::default() => Some(links.find_or_add(
+            "",
+            REL_CORE,
+            &["/core-properties"],
+            "docProps/core.xml",
+            false,
+        )),
+        None => None,
+    };
+    if let Some(name) = &core_part {
+        parts.push((name.clone(), properties::core_xml(core).into_bytes().into()));
+        ensure_override(&mut overrides, name, CT_CORE);
+        replaced.push(name.clone());
+    }
+
+    let app = &doc.properties.app;
+    let app_part = match &source.app_part {
+        Some(name) => Some(name.clone()),
+        None if *app != AppProperties::default() => Some(links.find_or_add(
+            "",
+            REL_APP,
+            &["/extended-properties", "/extendedProperties"],
+            "docProps/app.xml",
+            false,
+        )),
+        None => None,
+    };
+    if let Some(name) = &app_part {
+        parts.push((name.clone(), properties::app_xml(app).into_bytes().into()));
+        ensure_override(&mut overrides, name, CT_APP);
+        replaced.push(name.clone());
+    }
+
+    for (name, xml) in links.changed() {
+        parts.push((name.clone(), xml.into_bytes().into()));
+        replaced.push(name);
     }
     for part in &source.parts {
         if !replaced.iter().any(|r| r.eq_ignore_ascii_case(&part.name)) {
@@ -121,68 +162,135 @@ struct Relationship {
     external: bool,
 }
 
-/// Связи главного документа с добавленной связью на стили. Возвращает
-/// новый файл связей и имя части стилей.
-fn add_styles_relationship(
-    source: &SourcePackage,
-    main: &str,
-    main_rels: &str,
-) -> (String, String) {
-    let base_dir = main.rsplit_once('/').map_or("", |(dir, _)| dir);
-    let mut rels: Vec<Relationship> = source
-        .part(main_rels)
-        .and_then(|p| xml::parse(&p.data).ok())
-        .map(|root| {
-            root.elements()
-                .filter(|e| e.local == "Relationship")
-                .filter_map(|e| {
-                    let external = attr(e, "TargetMode") == Some("External");
-                    let target = attr(e, "Target")?;
-                    Some(Relationship {
-                        id: attr(e, "Id")?.to_string(),
-                        kind: attr(e, "Type")?.to_string(),
-                        target: if external {
-                            target.to_string()
-                        } else {
-                            resolve_target(base_dir, target)
-                        },
-                        external,
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+/// Файлы связей, которые нужно изменить при записи.
+struct Links<'a> {
+    source: &'a SourcePackage,
+    /// Изменённые файлы связей: имя файла связей и связи в нём.
+    changed: Vec<(String, Vec<Relationship>)>,
+}
 
-    // Связь на стили может уже быть, если сама часть стилей испорчена:
-    // тогда пишем стили на её место.
-    if let Some(existing) = rels
-        .iter()
-        .find(|r| !r.external && r.kind.ends_with("/styles"))
-    {
-        let name = existing.target.clone();
-        return (relationships_xml(&rels), name);
-    }
-    let mut name = join(base_dir, "styles.xml");
-    let mut n = 1;
-    while source.part(&name).is_some() || name.eq_ignore_ascii_case(main) {
-        n += 1;
-        name = join(base_dir, &format!("styles{n}.xml"));
-    }
-    let mut id_number = rels.len() + 1;
-    let id = loop {
-        let id = format!("rId{id_number}");
-        if !rels.iter().any(|r| r.id == id) {
-            break id;
+impl<'a> Links<'a> {
+    fn new(source: &'a SourcePackage) -> Links<'a> {
+        Links {
+            source,
+            changed: Vec::new(),
         }
-        id_number += 1;
-    };
-    rels.push(Relationship {
-        id,
-        kind: REL_STYLES.into(),
-        target: name.clone(),
-        external: false,
-    });
-    (relationships_xml(&rels), name)
+    }
+
+    /// Ищет у части `from` (пустая строка — сам пакет) связь, тип которой
+    /// оканчивается на один из `suffixes`, и возвращает имя её цели. Если
+    /// связи нет, добавляет связь типа `kind` на свободное имя рядом
+    /// с `wanted` (или ровно на `wanted`, если `exact`). Если связь есть,
+    /// а часть-цель испорчена, новая часть запишется на её место.
+    fn find_or_add(
+        &mut self,
+        from: &str,
+        kind: &str,
+        suffixes: &[&str],
+        wanted: &str,
+        exact: bool,
+    ) -> String {
+        let rels_name = rels_part_for(from);
+        let index = match self.changed.iter().position(|(n, _)| *n == rels_name) {
+            Some(i) => i,
+            None => {
+                let rels = self.load(from, &rels_name);
+                if let Some(target) = find(&rels, suffixes) {
+                    return target;
+                }
+                self.changed.push((rels_name, rels));
+                self.changed.len() - 1
+            }
+        };
+        if let Some(target) = find(&self.changed[index].1, suffixes) {
+            return target;
+        }
+        let name = if exact {
+            wanted.to_string()
+        } else {
+            self.free_name(wanted)
+        };
+        let rels = &mut self.changed[index].1;
+        let mut number = rels.len() + 1;
+        let id = loop {
+            let id = format!("rId{number}");
+            if !rels.iter().any(|r| r.id == id) {
+                break id;
+            }
+            number += 1;
+        };
+        rels.push(Relationship {
+            id,
+            kind: kind.into(),
+            target: name.clone(),
+            external: false,
+        });
+        name
+    }
+
+    /// Связи из исходного файла (битый или отсутствующий файл — нет связей).
+    fn load(&self, from: &str, rels_name: &str) -> Vec<Relationship> {
+        let base_dir = from.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let Some(root) = self
+            .source
+            .part(rels_name)
+            .and_then(|p| xml::parse(&p.data).ok())
+        else {
+            return Vec::new();
+        };
+        root.elements()
+            .filter(|e| e.local == "Relationship")
+            .filter_map(|e| {
+                let external = attr(e, "TargetMode") == Some("External");
+                let target = attr(e, "Target")?;
+                Some(Relationship {
+                    id: attr(e, "Id")?.to_string(),
+                    kind: attr(e, "Type")?.to_string(),
+                    target: if external {
+                        target.to_string()
+                    } else {
+                        resolve_target(base_dir, target)
+                    },
+                    external,
+                })
+            })
+            .collect()
+    }
+
+    /// `wanted`, если такое имя свободно, иначе `имя2.xml`, `имя3.xml`…
+    fn free_name(&self, wanted: &str) -> String {
+        let taken = |name: &str| {
+            self.source.part(name).is_some()
+                || name.eq_ignore_ascii_case(&self.source.main_part)
+                || self
+                    .changed
+                    .iter()
+                    .flat_map(|(_, rels)| rels)
+                    .any(|r| !r.external && r.target.eq_ignore_ascii_case(name))
+        };
+        let (stem, ext) = wanted.rsplit_once('.').unwrap_or((wanted, ""));
+        let mut name = wanted.to_string();
+        let mut n = 1;
+        while taken(&name) {
+            n += 1;
+            name = format!("{stem}{n}.{ext}");
+        }
+        name
+    }
+
+    /// Изменённые файлы связей: имя и содержимое.
+    fn changed(self) -> Vec<(String, String)> {
+        self.changed
+            .into_iter()
+            .map(|(name, rels)| (name, relationships_xml(&rels)))
+            .collect()
+    }
+}
+
+fn find(rels: &[Relationship], suffixes: &[&str]) -> Option<String> {
+    rels.iter()
+        .find(|r| !r.external && suffixes.iter().any(|s| r.kind.ends_with(s)))
+        .map(|r| r.target.clone())
 }
 
 fn resolve_target(base_dir: &str, target: &str) -> String {
@@ -298,8 +406,18 @@ mod tests {
             ],
             ..SourcePackage::default()
         };
-        let (xml, name) =
-            add_styles_relationship(&source, "word/document.xml", "word/_rels/document.xml.rels");
+        let mut links = Links::new(&source);
+        let name = links.find_or_add(
+            "word/document.xml",
+            REL_STYLES,
+            &["/styles"],
+            "word/styles.xml",
+            false,
+        );
+        let changed = links.changed();
+        assert_eq!(changed.len(), 1);
+        let (rels_name, xml) = &changed[0];
+        assert_eq!(rels_name, "word/_rels/document.xml.rels");
         assert_eq!(name, "word/styles2.xml");
         assert!(xml.contains(r#"Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="/word/styles2.xml""#));
         assert!(xml.contains(r#"Target="/word/media/a.png""#));

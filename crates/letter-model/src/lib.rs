@@ -20,6 +20,7 @@
 mod document;
 mod package;
 mod paragraph;
+mod properties;
 mod raw;
 mod resolve;
 mod run;
@@ -35,6 +36,7 @@ pub use paragraph::{
     Alignment, FirstLineIndent, Indentation, Inline, LineSpacing, Paragraph, ParagraphProps,
     Spacing,
 };
+pub use properties::{AppProperties, CoreProperties, Properties, Statistics};
 pub use raw::RawXml;
 pub use resolve::{ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps};
 pub use run::{

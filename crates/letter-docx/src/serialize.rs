@@ -579,7 +579,7 @@ fn raws(raws: &[RawXml]) -> String {
 }
 
 /// Добавляет к корневому элементу заголовок XML.
-fn xml_part(root: &str) -> String {
+pub(crate) fn xml_part(root: &str) -> String {
     format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n{root}")
 }
 
