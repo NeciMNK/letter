@@ -215,6 +215,18 @@ impl FontLibrary {
         })
     }
 
+    /// Все начертания: идентификатор и имя семейства.
+    pub fn faces(&self) -> impl Iterator<Item = (FontId, String)> + '_ {
+        self.db.faces().map(|face| {
+            let family = face
+                .families
+                .first()
+                .map(|(name, _)| name.clone())
+                .unwrap_or_default();
+            (FontId(face.id), family)
+        })
+    }
+
     /// Вызывает `f` с байтами файла шрифта и номером начертания внутри
     /// файла (в коллекциях `.ttc` их несколько). `None`, если файл
     /// не удалось прочитать.
