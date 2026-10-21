@@ -10,3 +10,12 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+egui.workspace = true
+letter-layout.workspace = true
+letter-model.workspace = true
+swash = "0.2"
+
+[dev-dependencies]
+letter-docx.workspace = true

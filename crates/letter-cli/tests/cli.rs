@@ -77,3 +77,21 @@ fn pages_prints_lines_of_each_page() {
     assert!(out.contains("абзац 2   \"Heading 1\""), "{out}");
     assert!(run(&args(&["pages"])).is_err());
 }
+
+#[test]
+fn render_writes_png_pages() {
+    let dir = std::env::temp_dir().join(format!("letter-cli-render-{}", std::process::id()));
+    let out = run(&args(&[
+        "render",
+        "--embedded-fonts",
+        &fixture("headings.docx"),
+        &dir.to_string_lossy(),
+    ]))
+    .unwrap();
+    // Letter 8,5×11 дюймов при 96 точках на дюйм.
+    assert!(out.contains("page-1.png (816×1056)"), "{out}");
+    let bytes = std::fs::read(dir.join("page-1.png")).unwrap();
+    assert!(bytes.starts_with(b"\x89PNG"));
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(run(&args(&["render", &fixture("headings.docx")])).is_err());
+}

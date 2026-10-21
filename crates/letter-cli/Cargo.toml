@@ -19,3 +19,5 @@ path = "src/main.rs"
 letter-docx.workspace = true
 letter-layout.workspace = true
 letter-model.workspace = true
+letter-render.workspace = true
+png = "0.18"

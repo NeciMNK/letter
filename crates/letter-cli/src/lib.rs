@@ -5,12 +5,15 @@
 //! - `letter-cli roundtrip вход.docx выход.docx` — открывает, сохраняет,
 //!   открывает сохранённое и сравнивает модели;
 //! - `letter-cli pages [--embedded-fonts] файл.docx` — раскладывает
-//!   документ по страницам и печатает строки каждой страницы.
+//!   документ по страницам и печатает строки каждой страницы;
+//! - `letter-cli render [--embedded-fonts] файл.docx папка` — рисует
+//!   страницы в картинки PNG (96 точек на дюйм, как Word при 100 %).
 
 use std::fmt::Write as _;
 use std::path::Path;
 
 use letter_layout::{FontLibrary, Shaper, layout_document};
+use letter_render::{GlyphCache, RgbaImage, SCREEN_PIXELS_PER_POINT, render_page};
 
 use letter_model::{
     Alignment, Block, BreakKind, Document, FirstLineIndent, Inline, LineSpacing, Paragraph,
@@ -22,7 +25,8 @@ pub const USAGE: &str = "\
 Использование:
   letter-cli dump [--debug] файл.docx         напечатать дерево модели
   letter-cli roundtrip вход.docx выход.docx  открыть → сохранить → открыть и сравнить
-  letter-cli pages [--embedded-fonts] файл.docx  разложить по страницам и напечатать строки";
+  letter-cli pages [--embedded-fonts] файл.docx  разложить по страницам и напечатать строки
+  letter-cli render [--embedded-fonts] файл.docx папка  нарисовать страницы в PNG";
 
 /// Выполняет команду и возвращает текст для вывода. Ошибка — текст
 /// для вывода в поток ошибок.
@@ -36,8 +40,38 @@ pub fn run(args: &[String]) -> Result<String, String> {
         ["pages", "--embedded-fonts", path] => {
             Ok(pages(&open(path)?, &FontLibrary::embedded_only()))
         }
+        ["render", path, dir] => render(&open(path)?, &FontLibrary::new(), Path::new(dir)),
+        ["render", "--embedded-fonts", path, dir] => {
+            render(&open(path)?, &FontLibrary::embedded_only(), Path::new(dir))
+        }
         _ => Err(USAGE.to_string()),
     }
+}
+
+/// Рисует страницы документа в `dir/page-1.png`, `dir/page-2.png`, …
+pub fn render(doc: &Document, library: &FontLibrary, dir: &Path) -> Result<String, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let layout = layout_document(doc, &mut Shaper::new(), library);
+    let mut cache = GlyphCache::new();
+    let mut out = String::new();
+    for (i, page) in layout.pages.iter().enumerate() {
+        let image = render_page(page, SCREEN_PIXELS_PER_POINT, library, &mut cache);
+        let path = dir.join(format!("page-{}.png", i + 1));
+        write_png(&image, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let _ = writeln!(out, "{} ({}×{})", path.display(), image.width, image.height);
+    }
+    Ok(out)
+}
+
+fn write_png(image: &RgbaImage, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let file = std::io::BufWriter::new(std::fs::File::create(path)?);
+    let mut encoder = png::Encoder::new(file, image.width, image.height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(&image.pixels)?;
+    writer.finish()?;
+    Ok(())
 }
 
 fn open(path: &str) -> Result<Document, String> {

@@ -20,6 +20,7 @@ letter-editor = { path = "crates/letter-editor" }
 letter-cli = { path = "crates/letter-cli" }
 
 eframe = "0.37"
+egui = { version = "0.37", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
