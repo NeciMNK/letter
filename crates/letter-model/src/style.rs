@@ -16,11 +16,15 @@ pub struct Styles {
 
 impl Styles {
     /// Стиль по идентификатору (`w:styleId`), например `"Heading1"`.
+    ///
+    /// Если в файле несколько стилей с одним идентификатором, берётся первый.
     pub fn get(&self, id: &str) -> Option<&Style> {
         self.styles.iter().find(|s| s.id == id)
     }
 
     /// Стиль по умолчанию для данного вида (например, «Обычный» для абзацев).
+    ///
+    /// Если таких стилей несколько, берётся первый.
     pub fn default_for(&self, kind: StyleKind) -> Option<&Style> {
         self.styles.iter().find(|s| s.kind == kind && s.is_default)
     }
