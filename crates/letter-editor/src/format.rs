@@ -2,7 +2,10 @@
 //! шрифта (Ctrl+B, Ctrl+I, Ctrl+U, Ctrl+] и Ctrl+[) и выравнивание
 //! абзацев (Ctrl+L, Ctrl+E, Ctrl+R, Ctrl+J).
 
-use letter_model::{Alignment, Document, HalfPoints, Inline, Paragraph, Run, RunProps, Underline};
+use letter_model::{
+    Alignment, Document, HalfPoints, Inline, Paragraph, ResolvedParagraphProps, ResolvedRunProps,
+    Run, RunProps, Underline,
+};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::edit::{paragraph_mut, paragraph_ref, split_content, text_len, tidy};
@@ -117,6 +120,43 @@ pub fn align_paragraphs(doc: &mut Document, start: Position, end: Position, alig
             paragraph.props.alignment = Some(value);
         }
     }
+}
+
+/// Оформление в позиции `at`, как его показывает лента Word: абзаца
+/// и буквы перед курсором (в начале абзаца — первой буквы). `None`,
+/// если такого абзаца нет.
+pub fn formatting_at(
+    doc: &Document,
+    at: Position,
+) -> Option<(ResolvedParagraphProps, ResolvedRunProps)> {
+    let paragraph = paragraph_ref(doc, at.paragraph)?;
+    let mut pos = 0;
+    let mut chosen: Option<&RunProps> = None;
+    for inline in &paragraph.content {
+        let Inline::Run(run) = inline else { continue };
+        let len: usize = run
+            .content
+            .iter()
+            .map(|c| match c {
+                letter_model::RunContent::Text(t) => t.len(),
+                letter_model::RunContent::Unknown(_) => 0,
+                _ => 1,
+            })
+            .sum();
+        if chosen.is_none() || (len > 0 && pos < at.offset) {
+            chosen = Some(&run.props);
+        }
+        pos += len;
+        if pos >= at.offset && at.offset > 0 && len > 0 {
+            break;
+        }
+    }
+    let default = RunProps::default();
+    let run = chosen.unwrap_or(&default);
+    Some((
+        doc.resolve_paragraph(&paragraph.props),
+        doc.resolve_run(&paragraph.props, run),
+    ))
 }
 
 fn ordered(a: Position, b: Position) -> (Position, Position) {
@@ -390,6 +430,41 @@ mod tests {
             sizes,
             vec![Some(HalfPoints(base - 4)), Some(HalfPoints(MIN_SIZE))]
         );
+    }
+
+    #[test]
+    fn formatting_is_read_before_the_cursor() {
+        let mut d = doc(vec![Paragraph::from_runs([
+            Run::text("ab"),
+            Run::text("cd").with_props(RunProps {
+                bold: Some(true),
+                ..RunProps::default()
+            }),
+        ])]);
+        let bold = |d: &Document, o| formatting_at(d, Position::new(0, o)).map(|(_, r)| r.bold);
+        assert_eq!(bold(&d, 0), Some(false));
+        assert_eq!(bold(&d, 2), Some(false));
+        assert_eq!(bold(&d, 3), Some(true));
+        assert_eq!(bold(&d, 4), Some(true));
+        assert_eq!(bold(&d, 9), Some(true));
+        align_paragraphs(
+            &mut d,
+            Position::new(0, 0),
+            Position::new(0, 0),
+            Alignment::Right,
+        );
+        let (paragraph, _) = formatting_at(&d, Position::new(0, 1)).unwrap();
+        assert_eq!(paragraph.alignment, Alignment::Right);
+        assert!(formatting_at(&d, Position::new(5, 0)).is_none());
+        // Первая буква, если курсор в начале абзаца.
+        let d = doc(vec![Paragraph::from_runs([Run::text("x").with_props(
+            RunProps {
+                italic: Some(true),
+                ..RunProps::default()
+            },
+        )])]);
+        let (_, run) = formatting_at(&d, Position::new(0, 0)).unwrap();
+        assert!(run.italic);
     }
 
     #[test]

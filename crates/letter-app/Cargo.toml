@@ -29,3 +29,7 @@ letter-rtf.workspace = true
 letter-text.workspace = true
 # Системное окно выбора файла (Windows, macOS, Linux через XDG-портал).
 rfd = "0.17"
+
+[dev-dependencies]
+# Тесты интерфейса: найти кнопку по надписи и нажать (от авторов egui).
+egui_kittest = { version = "0.37", default-features = false }
