@@ -1,31 +1,52 @@
 //! Абзацы ([`Paragraph`]) и оформление абзаца ([`ParagraphProps`]).
 
-use crate::{Run, Twips};
+use crate::{RawXml, Run, Twips};
 
 /// Абзац: последовательность фрагментов текста с общим оформлением абзаца.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Paragraph {
     /// Оформление абзаца.
     pub props: ParagraphProps,
-    /// Фрагменты текста по порядку.
-    pub runs: Vec<Run>,
+    /// Содержимое абзаца по порядку: фрагменты текста и непонятые элементы.
+    pub content: Vec<Inline>,
+}
+
+/// Элемент содержимого абзаца.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Inline {
+    /// Фрагмент текста.
+    Run(Run),
+    /// Непонятый элемент (гиперссылка, закладка, исправление и т. п.),
+    /// сохранённый как есть.
+    Unknown(RawXml),
+}
+
+impl From<Run> for Inline {
+    fn from(run: Run) -> Inline {
+        Inline::Run(run)
+    }
 }
 
 impl Paragraph {
     /// Абзац из одного фрагмента с обычным текстом.
     pub fn text(text: impl Into<String>) -> Paragraph {
-        Paragraph {
-            props: ParagraphProps::default(),
-            runs: vec![Run::text(text)],
-        }
+        Paragraph::from_runs([Run::text(text)])
     }
 
     /// Абзац из готовых фрагментов.
     pub fn from_runs(runs: impl IntoIterator<Item = Run>) -> Paragraph {
         Paragraph {
             props: ParagraphProps::default(),
-            runs: runs.into_iter().collect(),
+            content: runs.into_iter().map(Inline::Run).collect(),
         }
+    }
+
+    /// Фрагменты текста абзаца (без непонятых элементов).
+    pub fn runs(&self) -> impl Iterator<Item = &Run> {
+        self.content.iter().filter_map(|item| match item {
+            Inline::Run(run) => Some(run),
+            Inline::Unknown(_) => None,
+        })
     }
 
     /// Тот же абзац, но с другим оформлением.
@@ -36,7 +57,7 @@ impl Paragraph {
 
     /// Текст абзаца без оформления (см. [`Run::plain_text`]).
     pub fn plain_text(&self) -> String {
-        self.runs.iter().map(Run::plain_text).collect()
+        self.runs().map(Run::plain_text).collect()
     }
 }
 
@@ -53,6 +74,8 @@ pub struct ParagraphProps {
     pub spacing: Spacing,
     /// «Не добавлять интервал между абзацами одного стиля».
     pub contextual_spacing: Option<bool>,
+    /// Свойства, которые программа пока не понимает, в порядке из файла.
+    pub unknown: Vec<RawXml>,
 }
 
 /// Выравнивание абзаца.
@@ -140,7 +163,18 @@ mod tests {
         };
         let p = Paragraph::from_runs([Run::text("Привет, "), Run::text("мир").with_props(bold)]);
         assert_eq!(p.plain_text(), "Привет, мир");
-        assert_eq!(p.runs.len(), 2);
+        assert_eq!(p.runs().count(), 2);
+    }
+
+    #[test]
+    fn unknown_inlines_are_kept_but_not_text() {
+        let mut p = Paragraph::text("до");
+        p.content
+            .push(Inline::Unknown(RawXml::new("<w:bookmarkEnd w:id=\"0\"/>")));
+        p.content.push(Run::text(" после").into());
+        assert_eq!(p.plain_text(), "до после");
+        assert_eq!(p.runs().count(), 2);
+        assert_eq!(p.content.len(), 3);
     }
 
     #[test]

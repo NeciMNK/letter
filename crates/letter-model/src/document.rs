@@ -1,6 +1,6 @@
 //! Документ целиком.
 
-use crate::{Block, Paragraph, Section, Styles, Twips};
+use crate::{Block, Paragraph, RawXml, Section, Styles, Twips};
 
 /// Документ: разделы с содержимым, стили, нумерация списков и настройки.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +15,8 @@ pub struct Document {
     pub numbering: Numbering,
     /// Настройки документа.
     pub settings: Settings,
+    /// Непонятые элементы уровня документа (например, фон страницы `w:background`).
+    pub unknown: Vec<RawXml>,
 }
 
 impl Document {
@@ -29,6 +31,7 @@ impl Document {
             styles: Styles::default(),
             numbering: Numbering::default(),
             settings: Settings::default(),
+            unknown: Vec::new(),
         }
     }
 
@@ -99,7 +102,9 @@ mod tests {
             Paragraph::from_runs([Run::text("Hello, "), Run::text("world").with_props(italic)])
                 .into(),
             Table {
+                raw_props: Vec::new(),
                 rows: vec![TableRow {
+                    raw_props: Vec::new(),
                     cells: vec![TableCell::text("1"), TableCell::text("2")],
                 }],
             }

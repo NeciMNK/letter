@@ -13,9 +13,13 @@
 //! Все свойства оформления необязательны (`Option`): `None` значит
 //! «не задано здесь, взять из стиля или значений по умолчанию».
 //! Расстояния хранятся в твипах ([`Twips`]), как в Word.
+//!
+//! То, что программа пока не понимает, хранится как [`RawXml`] и при
+//! сохранении записывается обратно без изменений.
 
 mod document;
 mod paragraph;
+mod raw;
 mod run;
 mod section;
 mod style;
@@ -24,8 +28,10 @@ mod units;
 
 pub use document::{Document, Numbering, Settings};
 pub use paragraph::{
-    Alignment, FirstLineIndent, Indentation, LineSpacing, Paragraph, ParagraphProps, Spacing,
+    Alignment, FirstLineIndent, Indentation, Inline, LineSpacing, Paragraph, ParagraphProps,
+    Spacing,
 };
+pub use raw::RawXml;
 pub use run::{
     BreakKind, Color, Highlight, Run, RunContent, RunFonts, RunProps, Underline, VerticalAlign,
 };

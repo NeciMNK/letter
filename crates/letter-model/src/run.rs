@@ -1,5 +1,7 @@
 //! Фрагменты текста ([`Run`]) и оформление символов ([`RunProps`]).
 
+use crate::RawXml;
+
 /// Фрагмент абзаца: кусок содержимого с одинаковым оформлением символов.
 ///
 /// Абзац «Привет, **мир**» состоит из двух фрагментов: «Привет, » и «мир»
@@ -47,6 +49,8 @@ pub enum RunContent {
     Tab,
     /// Принудительный разрыв.
     Break(BreakKind),
+    /// Непонятый элемент (рисунок, поле, символ и т. п.), сохранённый как есть.
+    Unknown(RawXml),
 }
 
 impl RunContent {
@@ -56,6 +60,7 @@ impl RunContent {
             RunContent::Tab => out.push('\t'),
             RunContent::Break(BreakKind::Line) => out.push('\n'),
             RunContent::Break(BreakKind::Page | BreakKind::Column) => out.push('\u{c}'),
+            RunContent::Unknown(_) => {}
         }
     }
 }
@@ -99,6 +104,8 @@ pub struct RunProps {
     pub highlight: Option<Highlight>,
     /// Надстрочный или подстрочный знак.
     pub vertical_align: Option<VerticalAlign>,
+    /// Свойства, которые программа пока не понимает, в порядке из файла.
+    pub unknown: Vec<RawXml>,
 }
 
 /// Шрифты фрагмента. Word выбирает шрифт по виду символа: латиница и

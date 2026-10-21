@@ -1,6 +1,6 @@
 //! Разделы документа: размер страницы, поля, ориентация.
 
-use crate::{Block, Twips};
+use crate::{Block, RawXml, Twips};
 
 /// Раздел документа. У каждого раздела свои размер страницы и поля;
 /// документ из одного раздела — самый частый случай.
@@ -25,12 +25,15 @@ impl Section {
 
 /// Параметры страницы раздела. `None` — не задано в файле;
 /// тогда используются [`PageSize::A4`] и [`PageMargins::default`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SectionProps {
     /// Размер и ориентация листа.
     pub page_size: Option<PageSize>,
     /// Поля страницы.
     pub margins: Option<PageMargins>,
+    /// Свойства, которые программа пока не понимает (колонтитулы, колонки,
+    /// сетка и т. п.), в порядке из файла.
+    pub unknown: Vec<RawXml>,
 }
 
 /// Размер листа.
