@@ -15,8 +15,8 @@
 
 use crate::{
     Alignment, Color, Document, FirstLineIndent, HalfPoints, Highlight, LineSpacing,
-    ParagraphProps, RunFonts, RunProps, Style, StyleKind, Styles, ThemeFont, Twips, Underline,
-    VerticalAlign,
+    ParagraphProps, RunFonts, RunProps, Style, StyleKind, Styles, TabStop, TabStopKind, ThemeFont,
+    Twips, Underline, VerticalAlign,
 };
 
 /// Шрифт, который используется, если ни один слой его не задал.
@@ -47,6 +47,18 @@ pub struct ResolvedParagraphProps {
     pub line_spacing: LineSpacing,
     /// «Не добавлять интервал между абзацами одного стиля».
     pub contextual_spacing: bool,
+    /// «Не отрывать от следующего».
+    pub keep_next: bool,
+    /// «Не разрывать абзац».
+    pub keep_lines: bool,
+    /// «С новой страницы».
+    pub page_break_before: bool,
+    /// «Запрет висячих строк». Если ни один слой его не задал —
+    /// включён, как в Word.
+    pub widow_control: bool,
+    /// Позиции табуляции из всех слоёв по возрастанию, без
+    /// [`TabStopKind::Clear`].
+    pub tabs: Vec<TabStop>,
 }
 
 /// Итоговые шрифты фрагмента: ссылки на тему заменены именами.
@@ -127,7 +139,14 @@ impl Document {
             .chain(std::iter::once(direct));
 
         let mut acc = ParagraphProps::default();
+        let mut tabs: Vec<TabStop> = Vec::new();
         for layer in layers {
+            for stop in &layer.tabs {
+                tabs.retain(|t| t.position != stop.position);
+                if stop.kind != TabStopKind::Clear {
+                    tabs.push(*stop);
+                }
+            }
             overlay(&mut acc.alignment, &layer.alignment);
             overlay(&mut acc.indentation.left, &layer.indentation.left);
             overlay(&mut acc.indentation.right, &layer.indentation.right);
@@ -139,7 +158,12 @@ impl Document {
             overlay(&mut acc.spacing.after, &layer.spacing.after);
             overlay(&mut acc.spacing.line, &layer.spacing.line);
             overlay(&mut acc.contextual_spacing, &layer.contextual_spacing);
+            overlay(&mut acc.keep_next, &layer.keep_next);
+            overlay(&mut acc.keep_lines, &layer.keep_lines);
+            overlay(&mut acc.page_break_before, &layer.page_break_before);
+            overlay(&mut acc.widow_control, &layer.widow_control);
         }
+        tabs.sort_by_key(|t| t.position);
         ResolvedParagraphProps {
             style: chain.last().map(|s| s.id.clone()),
             alignment: acc.alignment.unwrap_or(Alignment::Left),
@@ -150,6 +174,11 @@ impl Document {
             space_after: acc.spacing.after.unwrap_or_default(),
             line_spacing: acc.spacing.line.unwrap_or(LineSpacing::SINGLE),
             contextual_spacing: acc.contextual_spacing.unwrap_or(false),
+            keep_next: acc.keep_next.unwrap_or(false),
+            keep_lines: acc.keep_lines.unwrap_or(false),
+            page_break_before: acc.page_break_before.unwrap_or(false),
+            widow_control: acc.widow_control.unwrap_or(true),
+            tabs,
         }
     }
 
@@ -382,6 +411,42 @@ mod tests {
         let p = doc.resolve_paragraph(&direct);
         assert_eq!(p.alignment, Alignment::Right);
         assert_eq!(p.indent_left, Twips(720));
+    }
+
+    #[test]
+    fn page_flow_and_tab_stops() {
+        let mut doc = sample();
+        let tab = |position, kind| TabStop {
+            position: Twips(position),
+            kind,
+            leader: crate::TabLeader::None,
+        };
+        doc.styles.styles[1].paragraph.keep_next = Some(true);
+        doc.styles.styles[1].paragraph.tabs =
+            vec![tab(2000, TabStopKind::Right), tab(1000, TabStopKind::Left)];
+        let p = doc.resolve_paragraph(&ParagraphProps::default());
+        assert!(!p.keep_next && !p.keep_lines && !p.page_break_before);
+        // Запрет висячих строк включён, если его никто не выключал.
+        assert!(p.widow_control && p.tabs.is_empty());
+
+        let mut direct = with_style("Title");
+        direct.widow_control = Some(false);
+        direct.page_break_before = Some(true);
+        direct.tabs = vec![
+            tab(1000, TabStopKind::Clear),
+            tab(3000, TabStopKind::Center),
+            tab(2000, TabStopKind::Decimal),
+        ];
+        let p = doc.resolve_paragraph(&direct);
+        assert!(p.keep_next && p.page_break_before && !p.widow_control);
+        // Позиция 1000 убрана, 2000 заменена, 3000 добавлена.
+        assert_eq!(
+            p.tabs,
+            [
+                tab(2000, TabStopKind::Decimal),
+                tab(3000, TabStopKind::Center)
+            ]
+        );
     }
 
     #[test]

@@ -12,7 +12,9 @@ use letter_model::{
 };
 
 use crate::document::{W_NS, is_w_ns};
-use crate::names::{ALIGNMENTS, HIGHLIGHTS, THEME_FONTS, UNDERLINES, name_of};
+use crate::names::{
+    ALIGNMENTS, HIGHLIGHTS, TAB_KINDS, TAB_LEADERS, THEME_FONTS, UNDERLINES, name_of,
+};
 use crate::xml;
 
 /// Пространство имён связей (`r:id`).
@@ -265,6 +267,37 @@ fn paragraph_props(props: &ParagraphProps, section: Option<&SectionProps>) -> St
     let mut children = Children::new(PPR_ORDER);
     if let Some(style) = &props.style {
         children.push("pStyle", val("w:pStyle", style));
+    }
+    let toggles = [
+        ("keepNext", props.keep_next),
+        ("keepLines", props.keep_lines),
+        ("pageBreakBefore", props.page_break_before),
+        ("widowControl", props.widow_control),
+    ];
+    for (name, value) in toggles {
+        if let Some(on) = value {
+            children.push(name, toggle(&format!("w:{name}"), on));
+        }
+    }
+    if !props.tabs.is_empty() {
+        let mut tabs = String::new();
+        for stop in &props.tabs {
+            let mut attrs = vec![(
+                "w:val",
+                name_of(TAB_KINDS, stop.kind).unwrap_or("left").to_string(),
+            )];
+            if stop.leader != Default::default() {
+                attrs.push((
+                    "w:leader",
+                    name_of(TAB_LEADERS, stop.leader)
+                        .unwrap_or("none")
+                        .to_string(),
+                ));
+            }
+            attrs.push(("w:pos", stop.position.0.to_string()));
+            tabs.push_str(&empty("w:tab", &attrs));
+        }
+        children.push("tabs", element("w:tabs", &tabs));
     }
     let spacing = &props.spacing;
     let mut attrs = Vec::new();

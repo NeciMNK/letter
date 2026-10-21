@@ -76,6 +76,19 @@ pub struct ParagraphProps {
     pub spacing: Spacing,
     /// «Не добавлять интервал между абзацами одного стиля».
     pub contextual_spacing: Option<bool>,
+    /// «Не отрывать от следующего»: абзац на той же странице, что
+    /// и следующий.
+    pub keep_next: Option<bool>,
+    /// «Не разрывать абзац»: все строки на одной странице.
+    pub keep_lines: Option<bool>,
+    /// «С новой страницы».
+    pub page_break_before: Option<bool>,
+    /// «Запрет висячих строк»: одна строка абзаца не остаётся одна
+    /// внизу или вверху страницы.
+    pub widow_control: Option<bool>,
+    /// Позиции табуляции. Пусто — в этом слое не заданы. Позиция вида
+    /// [`TabStopKind::Clear`] убирает унаследованную от стиля.
+    pub tabs: Vec<TabStop>,
     /// Свойства, которые программа пока не понимает, в порядке из файла.
     pub unknown: Vec<RawXml>,
 }
@@ -193,4 +206,50 @@ mod tests {
         assert_eq!(p.props.indentation.left, None);
         assert_eq!(p.props.spacing.line, None);
     }
+}
+
+/// Позиция табуляции.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TabStop {
+    /// Расстояние от левого поля.
+    pub position: Twips,
+    /// Вид.
+    pub kind: TabStopKind,
+    /// Заполнитель.
+    pub leader: TabLeader,
+}
+
+/// Вид позиции табуляции.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TabStopKind {
+    /// По левому краю.
+    Left,
+    /// По центру.
+    Center,
+    /// По правому краю.
+    Right,
+    /// По десятичному разделителю.
+    Decimal,
+    /// Вертикальная черта.
+    Bar,
+    /// Убирает унаследованную позицию в этом месте.
+    Clear,
+}
+
+/// Заполнитель перед позицией табуляции.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TabLeader {
+    /// Нет.
+    #[default]
+    None,
+    /// Точки.
+    Dot,
+    /// Дефисы.
+    Hyphen,
+    /// Линия.
+    Underscore,
+    /// Толстая линия.
+    Heavy,
+    /// Точки по центру строки.
+    MiddleDot,
 }

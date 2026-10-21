@@ -7,12 +7,14 @@
 use letter_model::{
     Block, BreakKind, Color, Document, FirstLineIndent, HalfPoints, Indentation, Inline,
     LineSpacing, Orientation, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run,
-    RunContent, RunFonts, RunProps, Section, SectionProps, Spacing, Table, TableCell, TableRow,
-    ThemeColor, Twips, VerticalAlign,
+    RunContent, RunFonts, RunProps, Section, SectionProps, Spacing, TabStop, Table, TableCell,
+    TableRow, ThemeColor, Twips, VerticalAlign,
 };
 
 use crate::ReadError;
-use crate::names::{ALIGNMENTS, HIGHLIGHTS, THEME_FONTS, UNDERLINES, lookup};
+use crate::names::{
+    ALIGNMENTS, HIGHLIGHTS, TAB_KINDS, TAB_LEADERS, THEME_FONTS, UNDERLINES, lookup,
+};
 use crate::xml::Element;
 
 /// Пространство имён WordprocessingML (обычный вариант OOXML).
@@ -147,6 +149,13 @@ pub(crate) fn read_paragraph_props(
                     .is_some(),
                 "spacing" => read_spacing(child).map(|s| props.spacing = s).is_some(),
                 "contextualSpacing" => set(&mut props.contextual_spacing, toggle(child)),
+                "keepNext" => set(&mut props.keep_next, toggle(child)),
+                "keepLines" => set(&mut props.keep_lines, toggle(child)),
+                "pageBreakBefore" => set(&mut props.page_break_before, toggle(child)),
+                "widowControl" => set(&mut props.widow_control, toggle(child)),
+                "tabs" if props.tabs.is_empty() => {
+                    read_tabs(child).map(|t| props.tabs = t).is_some()
+                }
                 "sectPr" if allow_section => {
                     section = Some(read_section_props(child));
                     true
@@ -183,6 +192,29 @@ fn read_indentation(ind: &Element) -> Option<Indentation> {
         right,
         first_line,
     })
+}
+
+/// `w:tabs`. `None`, если список пуст или в нём что-то непонятное:
+/// тогда он сохраняется как есть.
+fn read_tabs(tabs: &Element) -> Option<Vec<TabStop>> {
+    if !tabs.attrs.is_empty() {
+        return None;
+    }
+    let mut stops = Vec::new();
+    for tab in tabs.elements() {
+        if !tab.is_w("tab") || !tab.only_attrs(&["val", "pos", "leader"]) {
+            return None;
+        }
+        stops.push(TabStop {
+            position: parse_twips(tab.w_attr("pos")?)?,
+            kind: lookup(TAB_KINDS, tab.w_attr("val")?)?,
+            leader: match tab.w_attr("leader") {
+                Some(leader) => lookup(TAB_LEADERS, leader)?,
+                None => Default::default(),
+            },
+        });
+    }
+    (!stops.is_empty()).then_some(stops)
 }
 
 fn read_spacing(spacing: &Element) -> Option<Spacing> {
@@ -545,7 +577,7 @@ fn universal_measure_points(value: &str) -> Option<f64> {
 mod tests {
     use super::*;
     use crate::xml;
-    use letter_model::{Alignment, Highlight, Underline};
+    use letter_model::{Alignment, Highlight, TabLeader, TabStopKind, Underline};
 
     const NS: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml""#;
 
@@ -652,7 +684,10 @@ mod tests {
                 <w:pStyle w:val="Heading1"/><w:jc w:val="both"/>
                 <w:ind w:left="720" w:right="360" w:hanging="360" w:firstLine="100"/>
                 <w:spacing w:before="240" w:after="120" w:line="276" w:lineRule="auto"/>
-                <w:contextualSpacing/><w:keepNext/>
+                <w:contextualSpacing/><w:keepNext/><w:keepLines w:val="0"/>
+                <w:pageBreakBefore/><w:widowControl w:val="false"/>
+                <w:tabs><w:tab w:val="clear" w:pos="720"/><w:tab w:val="end" w:leader="dot" w:pos="9350"/></w:tabs>
+                <w:framePr/>
             </w:pPr></w:p>"#,
         );
         let p = &first_paragraph(&doc).props;
@@ -668,7 +703,41 @@ mod tests {
         assert_eq!(p.spacing.after, Some(Twips(120)));
         assert_eq!(p.spacing.line, Some(LineSpacing::Multiple(276)));
         assert_eq!(p.contextual_spacing, Some(true));
+        assert_eq!(p.keep_next, Some(true));
+        assert_eq!(p.keep_lines, Some(false));
+        assert_eq!(p.page_break_before, Some(true));
+        assert_eq!(p.widow_control, Some(false));
+        assert_eq!(
+            p.tabs,
+            [
+                TabStop {
+                    position: Twips(720),
+                    kind: TabStopKind::Clear,
+                    leader: TabLeader::None,
+                },
+                TabStop {
+                    position: Twips(9350),
+                    kind: TabStopKind::Right,
+                    leader: TabLeader::Dot,
+                },
+            ]
+        );
         assert_eq!(p.unknown.len(), 1);
+    }
+
+    #[test]
+    fn odd_tab_lists_are_kept_as_is() {
+        for tabs in [
+            "<w:tabs/>",
+            r#"<w:tabs><w:tab w:val="num" w:pos="1"/></w:tabs>"#,
+            r#"<w:tabs><w:tab w:val="left"/></w:tabs>"#,
+            r#"<w:tabs><w:tab w:val="left" w:pos="1" w:leader="stars"/></w:tabs>"#,
+        ] {
+            let doc = read_body_xml(&format!("<w:p><w:pPr>{tabs}</w:pPr></w:p>"));
+            let p = &first_paragraph(&doc).props;
+            assert!(p.tabs.is_empty(), "{tabs}");
+            assert_eq!(p.unknown.len(), 1, "{tabs}");
+        }
     }
 
     #[test]
