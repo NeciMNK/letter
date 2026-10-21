@@ -279,19 +279,36 @@ impl Shaper {
         text: &str,
         style: &TextStyle,
     ) -> Vec<ShapedRun> {
-        if text.is_empty() {
+        let mut runs = Vec::new();
+        for (range, level) in direction_runs(text) {
+            runs.extend(self.shape_range(library, text, range, level, style));
+        }
+        runs
+    }
+
+    /// Превращает в глифы кусок `range` текста `text`, который весь
+    /// пишется в одном направлении (`level` — уровень Bidi, его считает
+    /// вызывающий для всего абзаца). Кусок делится по шрифтам, если
+    /// каких-то букв нет в основном. Позиции в результате — в байтах
+    /// всего `text`.
+    pub fn shape_range(
+        &mut self,
+        library: &FontLibrary,
+        text: &str,
+        range: Range<usize>,
+        level: u8,
+        style: &TextStyle,
+    ) -> Vec<ShapedRun> {
+        if range.is_empty() || text.get(range.clone()).is_none() {
             return Vec::new();
         }
         let Some(primary) = library.find(&style.family, style.bold, style.italic) else {
             return Vec::new();
         };
         let mut runs = Vec::new();
-        for (range, level) in direction_runs(text) {
-            for (font_range, font) in self.split_by_font(library, text, range, &primary, style) {
-                if let Some(run) = self.shape_segment(library, text, font_range, font, level, style)
-                {
-                    runs.push(run);
-                }
+        for (font_range, font) in self.split_by_font(library, text, range, &primary, style) {
+            if let Some(run) = self.shape_segment(library, text, font_range, font, level, style) {
+                runs.push(run);
             }
         }
         runs
@@ -506,6 +523,29 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].glyphs[1].glyph_id, 0);
         assert!(shape("", &TextStyle::new("Carlito", 11.0)).is_empty());
+    }
+
+    #[test]
+    fn part_of_a_text_is_shaped_in_place() {
+        let library = FontLibrary::embedded_only();
+        let style = TextStyle::new("Carlito", 11.0);
+        let mut shaper = Shaper::new();
+        let runs = shaper.shape_range(&library, "ab cd", 3..5, 0, &style);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].range, 3..5);
+        let clusters: Vec<_> = runs[0].glyphs.iter().map(|g| g.cluster).collect();
+        assert_eq!(clusters, [3, 4]);
+        // Пустой кусок и кусок за концом текста — пусто.
+        assert!(
+            shaper
+                .shape_range(&library, "ab", 1..1, 0, &style)
+                .is_empty()
+        );
+        assert!(
+            shaper
+                .shape_range(&library, "ab", 1..9, 0, &style)
+                .is_empty()
+        );
     }
 
     #[test]
