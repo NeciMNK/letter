@@ -220,6 +220,8 @@ pub struct TextItem {
 /// Табуляция на своём месте в строке.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabItem {
+    /// Где знак табуляции в тексте абзаца, байты.
+    pub at: usize,
     /// Левый край, пт от левого поля.
     pub x: f32,
     /// Ширина, пт.
@@ -754,6 +756,7 @@ impl<'a> Builder<'a> {
                 }
                 Kind::Tab => {
                     items.push(LineItem::Tab(TabItem {
+                        at: cluster.range.start,
                         x,
                         width: widths[i],
                         leader: leaders[i],
@@ -1098,6 +1101,7 @@ mod tests {
             panic!();
         };
         assert!(close(tab.x, MONO) && close(tab.width, 36.0 - MONO));
+        assert_eq!(tab.at, 1);
         // Табуляция по умолчанию за правым краем — перенос.
         let p = lay_text("a\tb", &ParagraphFormat::new(30.0));
         assert_eq!(line_texts(&p), ["a", "\tb"]);
