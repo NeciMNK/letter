@@ -7,11 +7,13 @@
 //! - [`edit`] — ввод и удаление текста;
 //! - [`selection`] — выделение;
 //! - [`history`] — команды правки, отмена и повтор;
-//! - [`clipboard`] — копирование и вставка.
+//! - [`clipboard`] — копирование и вставка;
+//! - [`format`] — оформление выделенного.
 
 pub mod caret;
 pub mod clipboard;
 pub mod edit;
+pub mod format;
 pub mod history;
 pub mod navigation;
 pub mod position;
@@ -23,6 +25,7 @@ pub use edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, paragraph_mut,
     split_paragraph,
 };
+pub use format::{RunFormat, align_paragraphs, format_runs};
 pub use history::{Command, History};
 pub use navigation::{Motion, Moved, move_cursor};
 pub use position::{Affinity, Position};

@@ -9,6 +9,9 @@
 //! Shift+щелчок, двойной щелчок — слово, тройной — абзац) и Ctrl+A.
 //! Ctrl+Z отменяет правку, Ctrl+Y (и Ctrl+Shift+Z) повторяет.
 //! Ctrl+C, Ctrl+X, Ctrl+V — копировать, вырезать, вставить.
+//! Ctrl+B, Ctrl+I, Ctrl+U — полужирный, курсив, подчёркивание; Ctrl+] и
+//! Ctrl+[ — шрифт больше и меньше; Ctrl+L, Ctrl+E, Ctrl+R, Ctrl+J —
+//! выравнивание абзаца.
 
 use std::path::{Path, PathBuf};
 
@@ -19,11 +22,11 @@ use eframe::egui::{
     Pos2, Rect, Sense, Vec2, ViewportCommand, emath::GuiRounding,
 };
 use letter_editor::{
-    Command, History, Motion, Position, Selection, caret, copy_range, hit_test, move_cursor,
-    paragraph_at, select_all, selection_rects, word_at,
+    Command, History, Motion, Position, RunFormat, Selection, caret, copy_range, hit_test,
+    move_cursor, paragraph_at, select_all, selection_rects, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, Shaper, layout_document};
-use letter_model::Document;
+use letter_model::{Alignment, Document};
 use letter_render::{DESK_COLOR, PagePainter, SCREEN_PIXELS_PER_POINT};
 
 use crate::clipboard::{Clipboard, SystemBuffer};
@@ -760,6 +763,23 @@ fn key_action(event: &egui::Event, screen: f32) -> Option<Action> {
                 Key::Z if ctrl => return Some(Action::Redo),
                 _ => {}
             }
+            if ctrl && !modifiers.shift {
+                let command = match key {
+                    Key::B => Some(Command::Format(RunFormat::Bold)),
+                    Key::I => Some(Command::Format(RunFormat::Italic)),
+                    Key::U => Some(Command::Format(RunFormat::Underline)),
+                    Key::CloseBracket => Some(Command::Format(RunFormat::Grow)),
+                    Key::OpenBracket => Some(Command::Format(RunFormat::Shrink)),
+                    Key::L => Some(Command::Align(Alignment::Left)),
+                    Key::E => Some(Command::Align(Alignment::Center)),
+                    Key::R => Some(Command::Align(Alignment::Right)),
+                    Key::J => Some(Command::Align(Alignment::Justify)),
+                    _ => None,
+                };
+                if let Some(command) = command {
+                    return Some(Action::Edit(command));
+                }
+            }
             edit.map(Action::Edit).or_else(|| {
                 key_motion(*key, *modifiers, screen).map(|m| Action::Move(m, modifiers.shift))
             })
@@ -1445,5 +1465,48 @@ mod tests {
             events(vec![press(Key::Z, Modifiers::COMMAND)]),
         );
         assert_eq!(viewer.cursor(), Some(Position::new(0, 4)));
+    }
+
+    #[test]
+    fn ctrl_b_and_ctrl_e_format_the_selection() {
+        let ctrl = Modifiers::COMMAND;
+        assert_eq!(
+            key_action(&press(Key::CloseBracket, ctrl), 0.0),
+            Some(Action::Edit(Command::Format(RunFormat::Grow)))
+        );
+        assert_eq!(
+            key_action(&press(Key::J, ctrl), 0.0),
+            Some(Action::Edit(Command::Align(Alignment::Justify)))
+        );
+
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let right = || press(Key::ArrowRight, Modifiers::SHIFT);
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![
+                right(),
+                right(),
+                press(Key::B, ctrl),
+                press(Key::E, ctrl),
+            ]),
+        );
+        // Выделение осталось, первые две буквы полужирные, абзац по центру.
+        let selection = viewer.selection().unwrap();
+        assert_eq!(selection.end().offset, 2);
+        let document = viewer.document.as_mut().unwrap();
+        let paragraph = letter_editor::paragraph_mut(&mut document.doc, 0).unwrap();
+        assert_eq!(paragraph.props.alignment, Some(Alignment::Center));
+        let first = paragraph.runs().next().unwrap();
+        // Заголовок образца уже полужирный (по стилю) — Ctrl+B его снял.
+        assert!(first.props.bold.is_some());
+        assert_eq!(first.plain_text().len(), 2);
+        frame(&ctx, &mut viewer, events(vec![press(Key::Z, ctrl)]));
+        let document = viewer.document.as_mut().unwrap();
+        let paragraph = letter_editor::paragraph_mut(&mut document.doc, 0).unwrap();
+        assert_eq!(paragraph.props.alignment, None);
     }
 }

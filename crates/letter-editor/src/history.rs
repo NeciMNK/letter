@@ -7,13 +7,14 @@
 //! операцию к каждой правке, а память тратится только на задетые абзацы.
 //! Набор текста объединяется в один шаг по словам, как в Word.
 
-use letter_model::{Block, Document, Section};
+use letter_model::{Alignment, Block, Document, Section};
 
 use crate::clipboard::{insert_fragment, insert_plain_text};
 use crate::edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, split_paragraph,
     top_level,
 };
+use crate::format::{RunFormat, align_paragraphs, format_runs};
 use crate::selection::Selection;
 
 /// Правка документа.
@@ -33,6 +34,10 @@ pub enum Command {
     Paste(Box<Document>),
     /// Вставить простой текст: строки — абзацы.
     PasteText(String),
+    /// Поменять оформление символов выделенного (Ctrl+B и т. п.).
+    Format(RunFormat),
+    /// Выровнять абзацы выделенного (Ctrl+L, Ctrl+E, Ctrl+R, Ctrl+J).
+    Align(Alignment),
 }
 
 /// Сколько шагов помнить.
@@ -127,7 +132,9 @@ impl History {
         let (start, end) = (selection.start(), selection.end());
         // Какие абзацы правка может задеть: Backspace и Delete на краю
         // абзаца соединяют его с соседним.
-        let erasing = !selection.is_empty();
+        // Оформление меняет выделенное, а не заменяет его.
+        let formatting = matches!(command, Command::Format(_) | Command::Align(_));
+        let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
             Command::DeleteBackward if !erasing => {
                 (start.paragraph.saturating_sub(1), end.paragraph)
@@ -153,7 +160,19 @@ impl History {
         } else {
             selection.focus
         };
+        let after = match &command {
+            Command::Format(format) => {
+                format_runs(doc, start, end, *format);
+                Some(selection)
+            }
+            Command::Align(alignment) => {
+                align_paragraphs(doc, start, end, *alignment);
+                Some(selection)
+            }
+            _ => None,
+        };
         let focus = match &command {
+            _ if after.is_some() => at,
             Command::Type(text) => insert_text(doc, at, text),
             Command::SplitParagraph => split_paragraph(doc, at),
             Command::LineBreak => insert_line_break(doc, at),
@@ -162,8 +181,9 @@ impl History {
             Command::DeleteForward => delete_forward(doc, at),
             Command::Paste(fragment) => insert_fragment(doc, at, fragment),
             Command::PasteText(text) => insert_plain_text(doc, at, text),
+            Command::Format(_) | Command::Align(_) => at,
         };
-        let after = Selection::caret(focus);
+        let after = after.unwrap_or(Selection::caret(focus));
 
         let patch = match saved {
             Saved::Blocks(before) => {
@@ -412,6 +432,23 @@ mod tests {
         assert_eq!(texts(&d), vec!["a1", "2bc"]);
         h.undo(&mut d);
         assert_eq!(texts(&d), vec!["abc"]);
+    }
+
+    #[test]
+    fn formatting_keeps_the_selection_and_is_undone() {
+        let mut d = doc(&["one two"]);
+        let mut h = History::new();
+        let sel = Selection::new(Position::new(0, 4), Position::new(0, 0));
+        assert_eq!(h.run(&mut d, sel, Command::Format(RunFormat::Bold)), sel);
+        assert_eq!(h.run(&mut d, sel, Command::Align(Alignment::Center)), sel);
+        assert_eq!(texts(&d), vec!["one two"]);
+        let changed = d.clone();
+        h.undo(&mut d);
+        h.undo(&mut d);
+        assert_eq!(d, doc(&["one two"]));
+        h.redo(&mut d);
+        h.redo(&mut d);
+        assert_eq!(d, changed);
     }
 
     #[test]
