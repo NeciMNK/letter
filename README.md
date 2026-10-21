@@ -69,6 +69,13 @@ cargo test --workspace
 То же самое проверяет CI на Windows, macOS и Linux. Правила работы и
 архитектура описаны в [plan.md](plan.md).
 
+Посмотреть, как программа поняла файл .docx, и проверить сохранение:
+
+```sh
+cargo run -p letter-cli -- dump документ.docx
+cargo run -p letter-cli -- roundtrip документ.docx копия.docx
+```
+
 ## Лицензия
 
 [MIT](LICENSE). Проект не связан с Microsoft; «Microsoft Word» — товарный

@@ -17,6 +17,7 @@ letter-rtf = { path = "crates/letter-rtf" }
 letter-layout = { path = "crates/letter-layout" }
 letter-render = { path = "crates/letter-render" }
 letter-editor = { path = "crates/letter-editor" }
+letter-cli = { path = "crates/letter-cli" }
 
 eframe = "0.37"
 

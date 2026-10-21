@@ -1,0 +1,20 @@
+[package]
+name = "letter-cli"
+description = "Консольная утилита для отладки: печать модели документа, пробное сохранение."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "letter-cli"
+path = "src/main.rs"
+
+[dependencies]
+letter-docx.workspace = true
+letter-model.workspace = true
