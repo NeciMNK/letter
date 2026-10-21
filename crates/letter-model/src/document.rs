@@ -1,6 +1,6 @@
 //! Документ целиком.
 
-use crate::{Block, Paragraph, RawXml, Section, SourcePackage, Styles, Theme, Twips};
+use crate::{Block, Paragraph, Properties, RawXml, Section, SourcePackage, Styles, Theme, Twips};
 
 /// Документ: разделы с содержимым, стили, нумерация списков и настройки.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +17,8 @@ pub struct Document {
     pub theme: Theme,
     /// Настройки документа.
     pub settings: Settings,
+    /// Свойства документа: название, автор, даты, статистика.
+    pub properties: Properties,
     /// Непонятые элементы уровня документа (например, фон страницы `w:background`).
     pub unknown: Vec<RawXml>,
     /// Части исходного файла, которые программа не разбирает и при
@@ -37,6 +39,7 @@ impl Document {
             numbering: Numbering::default(),
             theme: Theme::default(),
             settings: Settings::default(),
+            properties: Properties::default(),
             unknown: Vec::new(),
             source: None,
         }
