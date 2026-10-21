@@ -27,7 +27,7 @@ use letter_editor::{
     Command, History, Motion, Position, RunFormat, Selection, caret, copy_range, hit_test,
     move_cursor, paragraph_at, select_all, selection_rects, word_at,
 };
-use letter_layout::{DocumentLayout, FontLibrary, Shaper, layout_document};
+use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
 use letter_model::{Alignment, Document};
 use letter_render::{DESK_COLOR, PagePainter, SCREEN_PIXELS_PER_POINT};
 
@@ -92,6 +92,9 @@ struct OpenDocument {
     history: History,
     /// Свёрстанные страницы.
     layout: DocumentLayout,
+    /// Абзацы прошлой вёрстки: после правки заново верстаются только
+    /// изменённые.
+    cache: LayoutCache,
     /// Где стоит курсор.
     cursor: Position,
     /// Где начато выделение; выделено всё от него до курсора. Совпадает
@@ -106,8 +109,14 @@ struct OpenDocument {
 
 impl OpenDocument {
     /// Новый открытый документ, курсор в начале.
-    fn new(path: Option<PathBuf>, doc: Document, layout: DocumentLayout) -> OpenDocument {
+    fn new(
+        path: Option<PathBuf>,
+        doc: Document,
+        layout: DocumentLayout,
+        cache: LayoutCache,
+    ) -> OpenDocument {
         OpenDocument {
+            cache,
             path,
             saved: 0,
             autosaved: 0,
@@ -148,7 +157,7 @@ impl OpenDocument {
 
     /// Верстает документ заново после правки.
     fn relayout(&mut self, shaper: &mut Shaper, library: &FontLibrary) {
-        self.layout = layout_document(&self.doc, shaper, library);
+        self.layout = layout_document_cached(&self.doc, shaper, library, &mut self.cache);
     }
 }
 
@@ -310,8 +319,9 @@ impl Viewer {
 
     /// Показывает документ вместо прежнего.
     fn show(&mut self, path: Option<PathBuf>, doc: Document) {
-        let layout = layout_document(&doc, &mut self.shaper, &self.library);
-        self.document = Some(OpenDocument::new(path, doc, layout));
+        let mut cache = LayoutCache::default();
+        let layout = layout_document_cached(&doc, &mut self.shaper, &self.library, &mut cache);
+        self.document = Some(OpenDocument::new(path, doc, layout, cache));
         if let Some(autosave) = &self.autosave {
             autosave.clear();
         }
@@ -1641,6 +1651,8 @@ mod tests {
             ]),
         );
         assert_eq!(first_text(&mut viewer), format!("acb{before}"));
+        // Заново свёрстан только изменённый абзац.
+        assert_eq!(viewer.document.as_ref().unwrap().cache.rebuilt(), 1);
         assert_eq!(viewer.cursor(), Some(Position::new(0, 2)));
 
         // Enter делит абзац: на листе на строку больше.
