@@ -39,3 +39,15 @@ PDF-эталоны для сверки вёрстки с Word (задача F2.8
 Файлы в `reference/word/` сохранены из наших `docx/` программой Microsoft
 Word 2024 (сделал владелец проекта), в `reference/libreoffice/` — программой
 LibreOffice; все распространяются по лицензии проекта (MIT).
+
+## `rtf/`
+
+Файлы RTF для проверки чтения (задача F8.3): `plain-text`, `bold-italic`,
+`ru-en`, `table`, `headings`, `lists`, `pages`. Они сохранены программой
+LibreOffice из одноимённых файлов `docx/` и распространяются по лицензии
+проекта (MIT). Чтобы пересоздать:
+
+```sh
+cd tests/fixtures/rtf
+soffice --headless --convert-to rtf ../docx/имя.docx
+```

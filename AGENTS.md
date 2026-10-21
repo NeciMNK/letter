@@ -28,7 +28,8 @@
 
 - `crates/letter-model` — модель документа.
 - `crates/letter-docx` — чтение/запись .docx.
-- `crates/letter-doc`, `crates/letter-rtf` — другие форматы (позже).
+- `crates/letter-doc`, `crates/letter-rtf` — другие форматы (.doc позже, RTF готов).
+- `crates/letter-text` — TXT, HTML, Markdown.
 - `crates/letter-layout` — вёрстка.
 - `crates/letter-render` — отрисовка.
 - `crates/letter-editor` — курсор, команды, отмена.
