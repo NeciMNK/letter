@@ -1728,6 +1728,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "letter-docx",
+ "letter-editor",
  "letter-layout",
  "letter-render",
  "rfd",
@@ -1761,6 +1762,11 @@ dependencies = [
 [[package]]
 name = "letter-editor"
 version = "0.1.0"
+dependencies = [
+ "letter-layout",
+ "letter-model",
+ "unicode-segmentation",
+]
 
 [[package]]
 name = "letter-layout"

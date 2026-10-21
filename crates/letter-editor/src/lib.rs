@@ -1,3 +1,11 @@
 //! Редактирование: курсор, выделение, команды, отмена и повтор.
 //!
-//! Крейт пока пустой; работа над ним начинается в задаче F3.1 из `plan.md`.
+//! - [`position`] — позиция курсора в документе;
+//! - [`caret`](mod@caret) — где на странице нарисовать курсор и какая позиция под
+//!   указателем мыши.
+
+pub mod caret;
+pub mod position;
+
+pub use caret::{Caret, CaretStop, caret, hit_test, line_stops};
+pub use position::{Affinity, Position};

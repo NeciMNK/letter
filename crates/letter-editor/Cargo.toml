@@ -10,3 +10,10 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+letter-layout.workspace = true
+unicode-segmentation = "1"
+
+[dev-dependencies]
+letter-model.workspace = true

@@ -1,15 +1,18 @@
-//! Просмотрщик документа: меню «Файл», листы с прокруткой, масштаб
-//! (Ctrl+колесо, кнопки, ползунок, «по ширине страницы») и строка
-//! состояния.
+//! Окно документа: меню «Файл», листы с прокруткой, масштаб
+//! (Ctrl+колесо, кнопки, ползунок, «по ширине страницы»), строка
+//! состояния и мигающий курсор, который ставится щелчком мыши.
 
 use std::path::{Path, PathBuf};
 
+use std::time::Duration;
+
 use eframe::egui::{
-    self, Align, Align2, Context, Key, KeyboardShortcut, Layout, Modifiers, Sense, Vec2,
-    ViewportCommand, emath::GuiRounding,
+    self, Align, Align2, Color32, Context, CursorIcon, Key, KeyboardShortcut, Layout, Modifiers,
+    Pos2, Rect, Sense, Vec2, ViewportCommand, emath::GuiRounding,
 };
+use letter_editor::{Position, caret, hit_test};
 use letter_layout::{DocumentLayout, FontLibrary, Shaper, layout_document};
-use letter_render::{DESK_COLOR, PagePainter};
+use letter_render::{DESK_COLOR, PagePainter, SCREEN_PIXELS_PER_POINT};
 
 use crate::view::{
     MAX_ZOOM, MIN_ZOOM, PAGE_GAP, Zoom, anchored_offset, clamp_zoom, current_page, page_width_zoom,
@@ -25,12 +28,33 @@ const ZOOM_IN_PLUS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND,
 const ZOOM_OUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Minus);
 const ZOOM_RESET: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num0);
 
+/// Сколько курсор виден и сколько скрыт при мигании, секунды (как
+/// в Windows по умолчанию).
+const CARET_BLINK: f64 = 0.53;
+
+/// Виден ли курсор через `elapsed` секунд после того, как его поставили,
+/// и через сколько секунд это изменится.
+fn caret_phase(elapsed: f64) -> (bool, f64) {
+    let elapsed = elapsed.max(0.0);
+    let phase = elapsed % (2.0 * CARET_BLINK);
+    if phase < CARET_BLINK {
+        (true, CARET_BLINK - phase)
+    } else {
+        (false, 2.0 * CARET_BLINK - phase)
+    }
+}
+
 /// Открытый документ.
 struct OpenDocument {
     /// Откуда открыт.
     path: PathBuf,
     /// Свёрстанные страницы.
     layout: DocumentLayout,
+    /// Где стоит курсор.
+    cursor: Position,
+    /// Когда курсор поставили (время egui, секунды): от этого момента
+    /// он мигает, начиная с «виден».
+    cursor_since: f64,
 }
 
 /// Состояние окна просмотра.
@@ -82,6 +106,8 @@ impl Viewer {
         self.document = Some(OpenDocument {
             path: path.to_owned(),
             layout,
+            cursor: Position::default(),
+            cursor_since: 0.0,
         });
         self.pending_offset = Some(Vec2::ZERO);
         self.current_page = 0;
@@ -128,6 +154,12 @@ impl Viewer {
     /// Масштаб, которым сейчас нарисованы листы (1.0 — 100 %).
     pub fn zoom(&self) -> f32 {
         self.effective_zoom(self.view_size.x)
+    }
+
+    /// Где стоит курсор. `None`, если документ не открыт.
+    #[cfg(test)]
+    pub fn cursor(&self) -> Option<Position> {
+        self.document.as_ref().map(|d| d.cursor)
     }
 
     /// Сколько страниц в открытом документе.
@@ -347,20 +379,61 @@ impl Viewer {
         }
         let output = area.show_viewport(ui, |ui, viewport| {
             let origin = ui.max_rect().min;
-            ui.allocate_rect(
-                egui::Rect::from_min_size(origin, placement.size),
-                Sense::hover(),
-            );
+            let response = ui
+                .allocate_rect(Rect::from_min_size(origin, placement.size), Sense::click())
+                .on_hover_cursor(CursorIcon::Text);
+            let ppp = ui.ctx().pixels_per_point();
+            // Лист с целого пикселя экрана — буквы чётче.
+            let screen_rect = |i: usize| {
+                placement.rects[i]
+                    .translate(origin.to_vec2())
+                    .round_to_pixels(ppp)
+            };
+            // Пунктов документа на точку экрана.
+            let points = 1.0 / (zoom * SCREEN_PIXELS_PER_POINT);
+
+            // Щелчок ставит курсор, как в Word — сразу при нажатии.
+            let now = ui.input(|i| i.time);
+            let press = ui.input(|i| {
+                i.pointer
+                    .primary_pressed()
+                    .then(|| i.pointer.interact_pos())
+            });
+            if let Some(Some(pointer)) = press
+                && response.hovered()
+                && let Some(page) = nearest_page(&placement.rects, pointer - origin.to_vec2())
+            {
+                let local = (pointer - screen_rect(page).min) * points;
+                if let Some(position) = hit_test(&document.layout, page, local.x, local.y) {
+                    document.cursor = position;
+                    document.cursor_since = now;
+                }
+            }
+
             // Тень листа выходит за его края: рисуем и чуть невидимые.
             let visible = viewport.expand(PAGE_GAP);
-            let ppp = ui.ctx().pixels_per_point();
-            for (page, rect) in pages.iter().zip(&placement.rects) {
-                if !rect.intersects(visible) {
-                    continue;
+            for (i, page) in pages.iter().enumerate() {
+                if placement.rects[i].intersects(visible) {
+                    painter.paint_page(ui.painter(), library, page, screen_rect(i));
                 }
-                // Лист с целого пикселя экрана — буквы чётче.
-                let rect = rect.translate(origin.to_vec2()).round_to_pixels(ppp);
-                painter.paint_page(ui.painter(), library, page, rect);
+            }
+
+            if let Some(c) = caret(&document.layout, document.cursor) {
+                let (shown, next) = caret_phase(now - document.cursor_since);
+                if shown && c.page < placement.rects.len() {
+                    let page = screen_rect(c.page);
+                    let scale = 1.0 / points;
+                    // Курсор — один пиксель экрана шириной.
+                    let x = (page.min.x + c.x * scale).round_to_pixels(ppp);
+                    let top = page.min.y + c.top * scale;
+                    let bar = Rect::from_min_max(
+                        Pos2::new(x, top),
+                        Pos2::new(x + 1.0 / ppp, top + c.height * scale),
+                    );
+                    ui.painter().rect_filled(bar, 0.0, Color32::BLACK);
+                }
+                ui.ctx()
+                    .request_repaint_after(Duration::from_secs_f64(next.max(0.01)));
             }
         });
         self.offset = output.state.clamped_offset();
@@ -388,6 +461,25 @@ impl Viewer {
             self.error = None;
         }
     }
+}
+
+/// Лист под точкой `point` (координаты содержимого прокрутки) или,
+/// если точка между листами, ближайший по вертикали.
+fn nearest_page(rects: &[Rect], point: Pos2) -> Option<usize> {
+    rects
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            let distance = |r: &Rect| {
+                if point.y < r.min.y {
+                    r.min.y - point.y
+                } else {
+                    (point.y - r.max.y).max(0.0)
+                }
+            };
+            distance(a).total_cmp(&distance(b))
+        })
+        .map(|(i, _)| i)
 }
 
 #[cfg(test)]
@@ -511,5 +603,60 @@ mod tests {
         frame(&ctx, &mut viewer, narrow);
         assert!(viewer.zoom() < wide, "{} vs {wide}", viewer.zoom());
         assert_eq!(viewer.zoom, Zoom::PageWidth);
+    }
+
+    #[test]
+    fn caret_blinks() {
+        assert_eq!(caret_phase(0.0), (true, CARET_BLINK));
+        let (shown, next) = caret_phase(CARET_BLINK + 0.1);
+        assert!(!shown && (next - (CARET_BLINK - 0.1)).abs() < 1e-9);
+        assert!(caret_phase(2.0 * CARET_BLINK + 0.01).0);
+        assert!(caret_phase(-1.0).0);
+    }
+
+    #[test]
+    fn nearest_page_between_sheets() {
+        let placement = place_pages(&[(612.0, 792.0); 2], 1.0, 1000.0);
+        let rects = &placement.rects;
+        assert_eq!(nearest_page(rects, Pos2::new(5.0, 5.0)), Some(0));
+        assert_eq!(nearest_page(rects, rects[1].center()), Some(1));
+        // Чуть ниже первого листа — он ближе второго.
+        let gap = Pos2::new(500.0, rects[0].max.y + 2.0);
+        assert_eq!(nearest_page(rects, gap), Some(0));
+        assert_eq!(nearest_page(&[], gap), None);
+    }
+
+    #[test]
+    fn click_puts_the_cursor() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        assert_eq!(viewer.cursor(), None);
+        viewer.open(&fixture("plain-text.docx")).unwrap();
+        assert_eq!(viewer.cursor(), Some(Position::default()));
+        let before = frame(&ctx, &mut viewer, screen());
+
+        // Щелчок далеко внизу первого листа — конец последнего абзаца.
+        let point = Pos2::new(500.0, 700.0);
+        let mut input = screen();
+        input.events = vec![
+            Event::PointerMoved(point),
+            Event::PointerButton {
+                pos: point,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ];
+        frame(&ctx, &mut viewer, input);
+        let cursor = viewer.cursor().unwrap();
+        let document = viewer.document.as_ref().unwrap();
+        let last = document.layout.pages[0].lines.last().unwrap();
+        assert_eq!(cursor.paragraph, last.paragraph);
+        assert_eq!(cursor.offset, last.line.range.end);
+        // Курсор мигает: через полпериода его нет — на одну фигуру меньше.
+        let mut later = screen();
+        later.time = Some(CARET_BLINK + 0.1);
+        let hidden = frame(&ctx, &mut viewer, later);
+        assert_eq!(hidden + 1, before, "{before} → {hidden}");
     }
 }
