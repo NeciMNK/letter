@@ -1,0 +1,6 @@
+# Настройки линтера clippy (`cargo clippy`). Список предупреждений
+# включается в `[workspace.lints.clippy]` в корневом Cargo.toml.
+msrv = "1.95"
+# В тестах unwrap()/expect() допустимы: падение теста и есть сигнал ошибки.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

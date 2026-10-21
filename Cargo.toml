@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/bikhe/letter"
+rust-version = "1.95"
+
+[workspace.dependencies]
+letter-model = { path = "crates/letter-model" }
+letter-docx = { path = "crates/letter-docx" }
+letter-doc = { path = "crates/letter-doc" }
+letter-rtf = { path = "crates/letter-rtf" }
+letter-layout = { path = "crates/letter-layout" }
+letter-render = { path = "crates/letter-render" }
+letter-editor = { path = "crates/letter-editor" }
+
+eframe = "0.37"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
