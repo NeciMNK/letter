@@ -5,6 +5,8 @@
 //! по словам, абзацам и к краям документа). Текст можно набирать
 //! (в том числе через IME), Enter делит абзац, Shift+Enter переносит
 //! строку, Backspace и Delete стирают, Tab вставляет табуляцию.
+//! Выделение — Shift с клавишами перемещения, мышью (протянуть,
+//! Shift+щелчок, двойной щелчок — слово, тройной — абзац) и Ctrl+A.
 
 use std::path::{Path, PathBuf};
 
@@ -15,8 +17,9 @@ use eframe::egui::{
     Pos2, Rect, Sense, Vec2, ViewportCommand, emath::GuiRounding,
 };
 use letter_editor::{
-    Motion, Position, caret, delete_backward, delete_forward, hit_test, insert_line_break,
-    insert_text, move_cursor, split_paragraph,
+    Motion, Position, Selection, caret, delete_backward, delete_forward, delete_range, hit_test,
+    insert_line_break, insert_text, move_cursor, paragraph_at, select_all, selection_rects,
+    split_paragraph, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, Shaper, layout_document};
 use letter_model::Document;
@@ -35,6 +38,9 @@ const ZOOM_IN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key:
 const ZOOM_IN_PLUS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Plus);
 const ZOOM_OUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Minus);
 const ZOOM_RESET: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num0);
+
+/// Заливка выделения: полупрозрачная серо-голубая, текст под ней виден.
+const SELECTION_COLOR: Color32 = Color32::from_rgba_premultiplied(0, 50, 110, 70);
 
 /// Сколько курсор виден и сколько скрыт при мигании, секунды (как
 /// в Windows по умолчанию).
@@ -62,6 +68,9 @@ struct OpenDocument {
     layout: DocumentLayout,
     /// Где стоит курсор.
     cursor: Position,
+    /// Где начато выделение; выделено всё от него до курсора. Совпадает
+    /// с курсором, если ничего не выделено.
+    anchor: Position,
     /// Когда курсор поставили (время egui, секунды): от этого момента
     /// он мигает, начиная с «виден».
     cursor_since: f64,
@@ -70,6 +79,11 @@ struct OpenDocument {
 }
 
 impl OpenDocument {
+    /// Выделение от якоря до курсора.
+    fn selection(&self) -> Selection {
+        Selection::new(self.anchor, self.cursor)
+    }
+
     /// Верстает документ заново после правки.
     fn relayout(&mut self, shaper: &mut Shaper, library: &FontLibrary) {
         self.layout = layout_document(&self.doc, shaper, library);
@@ -79,7 +93,9 @@ impl OpenDocument {
 /// Что сделать по событию клавиатуры.
 #[derive(Debug, Clone, PartialEq)]
 enum Action {
-    Move(Motion),
+    /// Сдвинуть курсор; `true` — с Shift, выделение растёт.
+    Move(Motion, bool),
+    SelectAll,
     Edit(Edit),
 }
 
@@ -106,6 +122,8 @@ pub struct Viewer {
     /// Прокрутка и размер видимой части в прошлом кадре.
     offset: Vec2,
     view_size: Vec2,
+    /// Левый верхний угол видимой части на экране.
+    view_origin: Pos2,
     /// Прокрутка, которую надо поставить в следующем кадре.
     pending_offset: Option<Vec2>,
     /// Лист в середине окна, с нуля.
@@ -130,6 +148,7 @@ impl Viewer {
             error: None,
             offset: Vec2::ZERO,
             view_size: Vec2::ZERO,
+            view_origin: Pos2::ZERO,
             pending_offset: None,
             current_page: 0,
             title_changed: false,
@@ -148,6 +167,7 @@ impl Viewer {
             doc,
             layout,
             cursor: Position::default(),
+            anchor: Position::default(),
             cursor_since: 0.0,
             goal_x: None,
         });
@@ -202,6 +222,12 @@ impl Viewer {
     #[cfg(test)]
     pub fn cursor(&self) -> Option<Position> {
         self.document.as_ref().map(|d| d.cursor)
+    }
+
+    /// Выделение (пустое, если ничего не выделено), когда документ открыт.
+    #[cfg(test)]
+    pub fn selection(&self) -> Option<Selection> {
+        self.document.as_ref().map(OpenDocument::selection)
     }
 
     /// Сколько страниц в открытом документе.
@@ -306,26 +332,60 @@ impl Viewer {
         let mut stale = false;
         for action in actions {
             match action {
-                Action::Move(motion) => {
+                Action::Move(motion, extend) => {
                     if std::mem::take(&mut stale) {
                         document.relayout(&mut self.shaper, &self.library);
                     }
-                    let moved =
-                        move_cursor(&document.layout, document.cursor, motion, document.goal_x);
-                    document.cursor = moved.position;
-                    document.goal_x = moved.goal_x;
+                    let selection = document.selection();
+                    // ← и → при выделении только снимают его, оставляя
+                    // курсор у его края, как в Word.
+                    let collapse = match motion {
+                        Motion::Left if !extend && !selection.is_empty() => Some(selection.start()),
+                        Motion::Right if !extend && !selection.is_empty() => Some(selection.end()),
+                        _ => None,
+                    };
+                    if let Some(edge) = collapse {
+                        document.cursor = edge;
+                        document.goal_x = None;
+                    } else {
+                        let moved =
+                            move_cursor(&document.layout, document.cursor, motion, document.goal_x);
+                        document.cursor = moved.position;
+                        document.goal_x = moved.goal_x;
+                    }
+                    if !extend {
+                        document.anchor = document.cursor;
+                    }
+                }
+                Action::SelectAll => {
+                    if std::mem::take(&mut stale) {
+                        document.relayout(&mut self.shaper, &self.library);
+                    }
+                    let all = select_all(&document.layout);
+                    document.anchor = all.anchor;
+                    document.cursor = all.focus;
+                    document.goal_x = None;
                 }
                 Action::Edit(edit) => {
+                    let selection = document.selection();
                     let doc = &mut document.doc;
-                    let at = document.cursor;
+                    // Выделенное заменяется набранным или просто стирается.
+                    let at = if selection.is_empty() {
+                        document.cursor
+                    } else {
+                        delete_range(doc, selection.start(), selection.end())
+                    };
+                    let erased = !selection.is_empty();
                     document.cursor = match edit {
                         Edit::Text(text) => insert_text(doc, at, &text),
                         Edit::Enter => split_paragraph(doc, at),
                         Edit::LineBreak => insert_line_break(doc, at),
                         Edit::Tab => insert_text(doc, at, "\t"),
+                        Edit::Backspace | Edit::Delete if erased => at,
                         Edit::Backspace => delete_backward(doc, at),
                         Edit::Delete => delete_forward(doc, at),
                     };
+                    document.anchor = document.cursor;
                     document.goal_x = None;
                     stale = true;
                 }
@@ -454,6 +514,7 @@ impl Viewer {
 
         let area_rect = ui.available_rect_before_wrap();
         self.view_size = area_rect.size();
+        self.view_origin = area_rect.min;
         // Ctrl+колесо (и щипок на тачпаде) меняет масштаб вокруг мыши.
         let zoom_delta = ui.input(|i| i.zoom_delta());
         if zoom_delta != 1.0 && ui.rect_contains_pointer(area_rect) {
@@ -498,7 +559,10 @@ impl Viewer {
         let output = area.show_viewport(ui, |ui, viewport| {
             let origin = ui.max_rect().min;
             let response = ui
-                .allocate_rect(Rect::from_min_size(origin, placement.size), Sense::click())
+                .allocate_rect(
+                    Rect::from_min_size(origin, placement.size),
+                    Sense::click_and_drag(),
+                )
                 .on_hover_cursor(CursorIcon::Text);
             let ppp = ui.ctx().pixels_per_point();
             // Лист с целого пикселя экрана — буквы чётче.
@@ -510,21 +574,46 @@ impl Viewer {
             // Пунктов документа на точку экрана.
             let points = 1.0 / (zoom * SCREEN_PIXELS_PER_POINT);
 
-            // Щелчок ставит курсор, как в Word — сразу при нажатии.
+            // Щелчок ставит курсор, как в Word — сразу при нажатии;
+            // с Shift — выделяет до места щелчка. Если тянуть мышь с
+            // нажатой кнопкой, выделение идёт за ней.
             let now = ui.input(|i| i.time);
-            let press = ui.input(|i| {
-                i.pointer
-                    .primary_pressed()
-                    .then(|| i.pointer.interact_pos())
+            let (press, dragging, pointer, shift) = ui.input(|i| {
+                (
+                    i.pointer.primary_pressed(),
+                    i.pointer.primary_down(),
+                    i.pointer.interact_pos(),
+                    i.modifiers.shift,
+                )
             });
-            if let Some(Some(pointer)) = press
-                && response.hovered()
-                && let Some(page) = nearest_page(&placement.rects, pointer - origin.to_vec2())
-            {
+            let under_pointer = pointer.and_then(|pointer| {
+                let page = nearest_page(&placement.rects, pointer - origin.to_vec2())?;
                 let local = (pointer - screen_rect(page).min) * points;
-                if let Some(position) = hit_test(&document.layout, page, local.x, local.y) {
+                hit_test(&document.layout, page, local.x, local.y)
+            });
+            if let Some(position) = under_pointer {
+                if press && response.hovered() {
                     document.cursor = position;
+                    if !shift {
+                        document.anchor = position;
+                    }
                     document.cursor_since = now;
+                    document.goal_x = None;
+                } else if dragging && response.is_pointer_button_down_on() {
+                    document.cursor = position;
+                    document.goal_x = None;
+                }
+                // Двойной щелчок — слово, тройной — абзац.
+                let picked = if response.triple_clicked() {
+                    Some(paragraph_at(&document.layout, position.paragraph))
+                } else if response.double_clicked() {
+                    Some(word_at(&document.layout, position))
+                } else {
+                    None
+                };
+                if let Some(picked) = picked {
+                    document.anchor = picked.anchor;
+                    document.cursor = picked.focus;
                     document.goal_x = None;
                 }
             }
@@ -537,8 +626,24 @@ impl Viewer {
                 }
             }
 
+            // Выделение — полупрозрачная заливка поверх текста.
+            let selection = Selection::new(document.anchor, document.cursor);
+            for r in selection_rects(&document.layout, selection) {
+                if r.page < placement.rects.len() {
+                    let page = screen_rect(r.page);
+                    let scale = 1.0 / points;
+                    let rect = Rect::from_min_max(
+                        page.min + Vec2::new(r.left, r.top) * scale,
+                        page.min + Vec2::new(r.right, r.bottom) * scale,
+                    );
+                    ui.painter().rect_filled(rect, 0.0, SELECTION_COLOR);
+                }
+            }
+
             if let Some(c) = caret(&document.layout, document.cursor) {
-                let (shown, next) = caret_phase(now - document.cursor_since);
+                let (blink, next) = caret_phase(now - document.cursor_since);
+                // При выделении курсор не рисуется, как в Word.
+                let shown = blink && selection.is_empty();
                 if c.page < placement.rects.len() {
                     let page = screen_rect(c.page);
                     let scale = 1.0 / points;
@@ -621,8 +726,12 @@ fn key_action(event: &egui::Event, screen: f32) -> Option<Action> {
                 Key::Delete if plain => Some(Edit::Delete),
                 _ => None,
             };
-            edit.map(Action::Edit)
-                .or_else(|| key_motion(*key, *modifiers, screen).map(Action::Move))
+            if *key == Key::A && modifiers.command && !modifiers.alt && !modifiers.shift {
+                return Some(Action::SelectAll);
+            }
+            edit.map(Action::Edit).or_else(|| {
+                key_motion(*key, *modifiers, screen).map(|m| Action::Move(m, modifiers.shift))
+            })
         }
         _ => None,
     }
@@ -630,7 +739,7 @@ fn key_action(event: &egui::Event, screen: f32) -> Option<Action> {
 
 /// пунктов документа видно на экране по высоте (для PageUp/PageDown).
 fn key_motion(key: Key, modifiers: Modifiers, screen: f32) -> Option<Motion> {
-    // Alt — для меню, Shift пока двигает курсор так же (выделение — F3.4).
+    // Alt — для меню; Shift выделяет, а куда идти — так же.
     if modifiers.alt {
         return None;
     }
@@ -1018,7 +1127,7 @@ mod tests {
         assert_eq!(action(press(Key::Enter, Modifiers::COMMAND)), None);
         assert_eq!(
             action(press(Key::ArrowLeft, none)),
-            Some(Action::Move(Motion::Left))
+            Some(Action::Move(Motion::Left, false))
         );
     }
 
@@ -1066,5 +1175,132 @@ mod tests {
         // Курсор после правки рисуется, IME знает, где он.
         let output = ctx.run_ui(screen(), |ui| viewer.ui(ui));
         assert!(output.platform_output.ime.is_some());
+    }
+
+    #[test]
+    fn shift_selects_and_typing_replaces_the_selection() {
+        let none = Modifiers::NONE;
+        assert_eq!(
+            key_action(&press(Key::ArrowRight, Modifiers::SHIFT), 0.0),
+            Some(Action::Move(Motion::Right, true))
+        );
+        assert_eq!(
+            key_action(&press(Key::A, Modifiers::COMMAND), 0.0),
+            Some(Action::SelectAll)
+        );
+
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let before = first_text(&mut viewer);
+
+        // Shift+→ три раза: выделены три буквы, курсор не рисуется.
+        let right = || press(Key::ArrowRight, Modifiers::SHIFT);
+        frame(&ctx, &mut viewer, events(vec![right(), right(), right()]));
+        let selection = viewer.selection().unwrap();
+        assert_eq!(selection.start(), Position::new(0, 0));
+        assert_eq!(selection.end().offset, 3);
+
+        // ← снимает выделение и ставит курсор в его начало.
+        frame(&ctx, &mut viewer, events(vec![press(Key::ArrowLeft, none)]));
+        assert!(viewer.selection().unwrap().is_empty());
+        assert_eq!(viewer.cursor(), Some(Position::new(0, 0)));
+
+        // Набранная буква заменяет выделенное.
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![right(), right(), Event::Text("Я".into())]),
+        );
+        assert_eq!(first_text(&mut viewer), format!("Я{}", &before[2..]));
+        assert_eq!(viewer.cursor(), Some(Position::new(0, 2)));
+
+        // Ctrl+A и Delete — документ пуст.
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![
+                press(Key::A, Modifiers::COMMAND),
+                press(Key::Delete, none),
+            ]),
+        );
+        assert_eq!(first_text(&mut viewer), "");
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(document.layout.pages.len(), 1);
+        assert_eq!(document.layout.pages[0].lines.len(), 1);
+    }
+
+    #[test]
+    fn mouse_drag_and_double_click_select() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        frame(&ctx, &mut viewer, screen());
+
+        // Где на экране первая строка: от левого края текста вправо.
+        let document = viewer.document.as_ref().unwrap();
+        let line = document.layout.pages[0].lines[0].clone();
+        let scale = viewer.zoom() * SCREEN_PIXELS_PER_POINT;
+        let page = place_pages(
+            &[(
+                document.layout.pages[0].width,
+                document.layout.pages[0].height,
+            )],
+            viewer.zoom(),
+            viewer.view_size.x,
+        )
+        .rects[0];
+        let origin = viewer.view_origin;
+        let at = move |x: f32| {
+            origin + page.min.to_vec2() + vec2(line.x + x, line.top + line.height / 2.0) * scale
+        };
+        let button = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+
+        // Нажали у начала строки, протянули вправо, отпустили.
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![Event::PointerMoved(at(0.0)), button(at(0.0), true)]),
+        );
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![Event::PointerMoved(at(60.0))]),
+        );
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![Event::PointerMoved(at(60.0)), button(at(60.0), false)]),
+        );
+        let selection = viewer.selection().unwrap();
+        assert_eq!(selection.anchor, Position::new(0, 0));
+        assert!(selection.focus.offset > 3, "{selection:?}");
+
+        // Двойной щелчок по первому слову выделяет его.
+        let mut input = events(vec![
+            button(at(2.0), true),
+            button(at(2.0), false),
+            button(at(2.0), true),
+            button(at(2.0), false),
+        ]);
+        input.time = Some(10.0);
+        frame(&ctx, &mut viewer, input);
+        let selection = viewer.selection().unwrap();
+        let word = word_at(
+            &viewer.document.as_ref().unwrap().layout,
+            Position::new(0, 0),
+        );
+        assert_eq!(
+            (selection.start(), selection.end()),
+            (word.start(), word.end())
+        );
+        assert!(!selection.is_empty());
     }
 }
