@@ -13,6 +13,8 @@ pub struct Paragraph {
 
 /// Элемент содержимого абзаца.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Фрагменты текста — основной случай, поэтому их не прячем в `Box`.
+#[allow(clippy::large_enum_variant)]
 pub enum Inline {
     /// Фрагмент текста.
     Run(Run),

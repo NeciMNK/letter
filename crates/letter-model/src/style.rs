@@ -3,7 +3,7 @@
 //! Здесь только хранение. Вычисление итоговых свойств с учётом наследования
 //! (`basedOn`) появится в задаче F1.4.
 
-use crate::{ParagraphProps, RunProps};
+use crate::{ParagraphProps, RawXml, RunProps};
 
 /// Все стили документа (содержимое `word/styles.xml`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -12,6 +12,8 @@ pub struct Styles {
     pub defaults: DocDefaults,
     /// Стили в порядке, в котором они записаны в файле.
     pub styles: Vec<Style>,
+    /// Непонятые элементы `w:styles` (например, `w:latentStyles`).
+    pub unknown: Vec<RawXml>,
 }
 
 impl Styles {
@@ -59,6 +61,11 @@ pub struct Style {
     pub paragraph: ParagraphProps,
     /// Оформление символов, заданное стилем.
     pub run: RunProps,
+    /// Стиль создан пользователем, а не встроен в Word (`w:customStyle`).
+    pub custom: bool,
+    /// Непонятые элементы стиля (`w:uiPriority`, `w:qFormat`, свойства
+    /// таблиц и т. п.) в порядке из файла.
+    pub unknown: Vec<RawXml>,
 }
 
 impl Style {
@@ -73,6 +80,8 @@ impl Style {
             next: None,
             paragraph: ParagraphProps::default(),
             run: RunProps::default(),
+            custom: false,
+            unknown: Vec::new(),
         }
     }
 }
@@ -103,6 +112,7 @@ mod tests {
         let styles = Styles {
             defaults: DocDefaults::default(),
             styles: vec![normal, heading],
+            unknown: Vec::new(),
         };
         assert_eq!(
             styles.get("Heading1").and_then(|s| s.based_on.as_deref()),

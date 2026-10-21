@@ -230,3 +230,42 @@ fn broken_files_are_errors_not_crashes() {
         Err(ReadError::Io(_))
     ));
 }
+
+#[test]
+fn styles_and_theme_resolve_like_word() {
+    let doc = fixture("headings.docx");
+    assert!(doc.styles.styles.len() > 50, "styles.xml was not read");
+    // В шаблоне python-docx заголовки — Calibri, основной текст — Cambria.
+    assert_eq!(doc.theme.major.latin.as_deref(), Some("Calibri"));
+    assert_eq!(doc.theme.minor.latin.as_deref(), Some("Cambria"));
+
+    let ps = paragraphs(&doc);
+    let resolve = |p: &Paragraph| {
+        let run = p.runs().next().expect("run");
+        doc.resolve_run(&p.props, &run.props)
+    };
+
+    // «Heading 1»: шрифт заголовков темы, 14 пт, жирный, цвет 365F91;
+    // интервал перед 24 пт.
+    let heading = resolve(ps[1]);
+    assert_eq!(heading.fonts.ascii, "Calibri");
+    assert_eq!(heading.size, HalfPoints(28));
+    assert!(heading.bold);
+    assert_eq!(heading.color, Color::Rgb(0x36, 0x5F, 0x91));
+    let heading_para = doc.resolve_paragraph(&ps[1].props);
+    assert_eq!(heading_para.space_before, letter_model::Twips(480));
+
+    // Обычный текст: шрифт текста темы, 11 пт, интервал после 10 пт,
+    // множитель 1,15.
+    let body = resolve(ps[2]);
+    assert_eq!(body.fonts.ascii, "Cambria");
+    assert_eq!(body.size, HalfPoints(22));
+    assert!(!body.bold);
+    let body_para = doc.resolve_paragraph(&ps[2].props);
+    assert_eq!(body_para.style.as_deref(), Some("Normal"));
+    assert_eq!(body_para.space_after, letter_model::Twips(200));
+    assert_eq!(
+        body_para.line_spacing,
+        letter_model::LineSpacing::Multiple(276)
+    );
+}
