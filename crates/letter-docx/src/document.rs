@@ -378,14 +378,20 @@ fn read_margins(margins: &Element) -> Option<PageMargins> {
         return None;
     }
     let get = |name: &str| margins.w_attr(name).and_then(parse_twips);
+    // Стандарт требует все семь атрибутов, но некоторые программы не пишут
+    // колонтитулы и переплёт; тогда считаем их нулевыми.
+    let optional = |name: &str| match margins.w_attr(name) {
+        Some(value) => parse_twips(value),
+        None => Some(Twips::ZERO),
+    };
     Some(PageMargins {
         top: get("top")?,
         right: get("right")?,
         bottom: get("bottom")?,
         left: get("left")?,
-        header: get("header")?,
-        footer: get("footer")?,
-        gutter: get("gutter")?,
+        header: optional("header")?,
+        footer: optional("footer")?,
+        gutter: optional("gutter")?,
     })
 }
 
@@ -648,6 +654,18 @@ mod tests {
         let names: Vec<_> = last.unknown.iter().map(RawXml::local_name).collect();
         assert_eq!(names, ["headerReference", "cols"]);
         assert_eq!(doc.plain_text(), "one\n\ntwo");
+    }
+
+    #[test]
+    fn margins_without_header_footer_gutter() {
+        let doc = read_body_xml(
+            r#"<w:sectPr><w:pgMar w:top="1" w:right="2" w:bottom="3" w:left="4"/></w:sectPr>"#,
+        );
+        let margins = doc.sections[0].props.margins.unwrap();
+        assert_eq!(margins.left, Twips(4));
+        assert_eq!(margins.gutter, Twips::ZERO);
+        let broken = read_body_xml(r#"<w:sectPr><w:pgMar w:top="1" w:right="2"/></w:sectPr>"#);
+        assert_eq!(broken.sections[0].props.margins, None);
     }
 
     #[test]

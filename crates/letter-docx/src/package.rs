@@ -143,7 +143,29 @@ fn normalize_part_name(target: &str) -> String {
             s => parts.push(s),
         }
     }
-    parts.join("/")
+    percent_decode(&parts.join("/"))
+}
+
+/// Раскодирует `%XX` в адресе (например, `%20` — пробел). Неправильные
+/// последовательности оставляет как есть.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && let (Some(&h), Some(&l)) = (bytes.get(i + 1), bytes.get(i + 2))
+            && let (Some(h), Some(l)) = (hex(h), hex(l))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
 #[cfg(test)]
@@ -165,6 +187,10 @@ mod tests {
             "word/doc.xml"
         );
         assert_eq!(normalize_part_name("../../x.xml"), "x.xml");
+        assert_eq!(normalize_part_name("word/my%20doc.xml"), "word/my doc.xml");
+        assert_eq!(normalize_part_name("word/%D0%96.xml"), "word/Ж.xml");
+        assert_eq!(normalize_part_name("word/100%.xml"), "word/100%.xml");
+        assert_eq!(normalize_part_name("word/%FF.xml"), "word/%FF.xml");
     }
 
     #[test]
