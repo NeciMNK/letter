@@ -1,6 +1,6 @@
 //! Документ целиком.
 
-use crate::{Block, Paragraph, RawXml, Section, Styles, Twips};
+use crate::{Block, Paragraph, RawXml, Section, Styles, Theme, Twips};
 
 /// Документ: разделы с содержимым, стили, нумерация списков и настройки.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,6 +13,8 @@ pub struct Document {
     pub styles: Styles,
     /// Определения списков.
     pub numbering: Numbering,
+    /// Тема документа (шрифты).
+    pub theme: Theme,
     /// Настройки документа.
     pub settings: Settings,
     /// Непонятые элементы уровня документа (например, фон страницы `w:background`).
@@ -30,6 +32,7 @@ impl Document {
             }],
             styles: Styles::default(),
             numbering: Numbering::default(),
+            theme: Theme::default(),
             settings: Settings::default(),
             unknown: Vec::new(),
         }

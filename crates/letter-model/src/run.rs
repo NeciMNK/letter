@@ -98,8 +98,11 @@ pub struct RunProps {
     pub strike: Option<bool>,
     /// Зачёркивание двойной линией.
     pub double_strike: Option<bool>,
-    /// Цвет текста.
+    /// Цвет текста. Если цвет взят из темы, здесь лежит готовое значение,
+    /// которое Word посчитал при сохранении, а ссылка на тему — в `theme_color`.
     pub color: Option<Color>,
+    /// Ссылка на цвет темы документа (`w:themeColor` и оттенки).
+    pub theme_color: Option<ThemeColor>,
     /// Выделение цветом (маркер).
     pub highlight: Option<Highlight>,
     /// Надстрочный или подстрочный знак.
@@ -111,6 +114,9 @@ pub struct RunProps {
 /// Шрифты фрагмента. Word выбирает шрифт по виду символа: латиница и
 /// кириллица берут `ascii`/`h_ansi`, иероглифы — `east_asia`,
 /// арабское письмо и иврит — `complex_script`.
+///
+/// Вместо имени шрифта может стоять ссылка на шрифт темы (`*_theme`);
+/// если заданы оба, Word использует тему.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RunFonts {
     /// Шрифт для символов ASCII (`w:ascii`).
@@ -121,6 +127,56 @@ pub struct RunFonts {
     pub east_asia: Option<String>,
     /// Шрифт для сложного письма: арабского, иврита и др. (`w:cs`).
     pub complex_script: Option<String>,
+    /// Шрифт темы вместо `ascii` (`w:asciiTheme`).
+    pub ascii_theme: Option<ThemeFont>,
+    /// Шрифт темы вместо `h_ansi` (`w:hAnsiTheme`).
+    pub h_ansi_theme: Option<ThemeFont>,
+    /// Шрифт темы вместо `east_asia` (`w:eastAsiaTheme`).
+    pub east_asia_theme: Option<ThemeFont>,
+    /// Шрифт темы вместо `complex_script` (`w:cstheme`).
+    pub complex_script_theme: Option<ThemeFont>,
+    /// Подсказка, каким шрифтом показывать символы, общие для нескольких
+    /// письменностей (`w:hint`, например `"eastAsia"`).
+    pub hint: Option<String>,
+}
+
+/// Ссылка на шрифт темы документа: основной (`major`, для заголовков)
+/// или дополнительный (`minor`, для текста) набор, и вид письменности.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(missing_docs)]
+pub enum ThemeFont {
+    MajorAscii,
+    MajorHAnsi,
+    MajorEastAsia,
+    MajorBidi,
+    MinorAscii,
+    MinorHAnsi,
+    MinorEastAsia,
+    MinorBidi,
+}
+
+impl ThemeFont {
+    /// Основной набор шрифтов темы (для заголовков)?
+    pub fn is_major(self) -> bool {
+        matches!(
+            self,
+            ThemeFont::MajorAscii
+                | ThemeFont::MajorHAnsi
+                | ThemeFont::MajorEastAsia
+                | ThemeFont::MajorBidi
+        )
+    }
+}
+
+/// Цвет из темы документа с необязательным затемнением или осветлением.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ThemeColor {
+    /// Имя цвета темы, как в файле: `"accent1"`, `"text1"`, `"hyperlink"`…
+    pub name: String,
+    /// Затемнение (`w:themeShade`), 0–255.
+    pub shade: Option<u8>,
+    /// Осветление (`w:themeTint`), 0–255.
+    pub tint: Option<u8>,
 }
 
 impl RunFonts {
@@ -130,8 +186,7 @@ impl RunFonts {
         RunFonts {
             ascii: Some(name.clone()),
             h_ansi: Some(name),
-            east_asia: None,
-            complex_script: None,
+            ..RunFonts::default()
         }
     }
 }

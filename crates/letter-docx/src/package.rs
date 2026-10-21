@@ -87,18 +87,70 @@ impl<R: Read + Seek> Package<R> {
         }
         Ok(main)
     }
+
+    /// Связи части `part` (из `<папка>/_rels/<имя>.rels`). Внешние связи
+    /// (ссылки на сайты) пропускаются. Битый или отсутствующий файл связей
+    /// означает «связей нет».
+    pub fn relationships(&mut self, part: &str) -> Vec<Relationship> {
+        let (dir, name) = part.rsplit_once('/').unwrap_or(("", part));
+        let rels_name = if dir.is_empty() {
+            format!("_rels/{name}.rels")
+        } else {
+            format!("{dir}/_rels/{name}.rels")
+        };
+        match self.read_part(&rels_name) {
+            Ok(Some(bytes)) => match xml::parse(&bytes) {
+                Ok(root) => parse_relationships(&root, dir),
+                Err(_) => Vec::new(),
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    /// Первая связь части `part` с типом, оканчивающимся на `/<kind>`
+    /// (например, `styles`), — имя части-цели.
+    pub fn related_part(&mut self, part: &str, kind: &str) -> Option<String> {
+        let suffix = format!("/{kind}");
+        self.relationships(part)
+            .into_iter()
+            .find(|r| r.kind.ends_with(&suffix))
+            .map(|r| r.target)
+    }
+}
+
+/// Связь между частями пакета.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Relationship {
+    /// Тип связи (URI).
+    pub kind: String,
+    /// Имя части-цели внутри архива.
+    pub target: String,
+}
+
+/// Разбирает файл связей. Цели считаются относительно папки `base_dir`.
+fn parse_relationships(rels: &xml::Element, base_dir: &str) -> Vec<Relationship> {
+    rels.elements()
+        .filter(|e| e.local == "Relationship")
+        .filter(|e| attr(e, "TargetMode") != Some("External"))
+        .filter_map(|e| {
+            let kind = attr(e, "Type")?.to_string();
+            let target = attr(e, "Target")?;
+            let target = if target.starts_with('/') || base_dir.is_empty() {
+                normalize_part_name(target)
+            } else {
+                normalize_part_name(&format!("{base_dir}/{target}"))
+            };
+            Some(Relationship { kind, target })
+        })
+        .collect()
 }
 
 /// Ищет в `_rels/.rels` связь с главным документом.
 fn find_office_document(rels: &xml::Element) -> Option<String> {
-    rels.elements()
-        .filter(|e| e.local == "Relationship")
-        .find(|e| {
-            attr(e, "Type")
-                .is_some_and(|t| t == REL_OFFICE_DOCUMENT || t == REL_OFFICE_DOCUMENT_STRICT)
-        })
-        .and_then(|e| attr(e, "Target"))
-        .map(normalize_part_name)
+    parse_relationships(rels, "")
+        .into_iter()
+        .find(|r| r.kind == REL_OFFICE_DOCUMENT || r.kind == REL_OFFICE_DOCUMENT_STRICT)
+        .map(|r| r.target)
 }
 
 /// Тип содержимого части по `[Content_Types].xml`: сначала точное
@@ -191,6 +243,33 @@ mod tests {
         assert_eq!(normalize_part_name("word/%D0%96.xml"), "word/Ж.xml");
         assert_eq!(normalize_part_name("word/100%.xml"), "word/100%.xml");
         assert_eq!(normalize_part_name("word/%FF.xml"), "word/%FF.xml");
+    }
+
+    #[test]
+    fn relationships_are_relative_to_the_source_part() {
+        let rels = xml::parse(
+            br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://x/relationships/styles" Target="styles.xml"/>
+<Relationship Id="rId2" Type="http://x/relationships/theme" Target="theme/theme1.xml"/>
+<Relationship Id="rId3" Type="http://x/relationships/customXml" Target="../customXml/item1.xml"/>
+<Relationship Id="rId4" Type="http://x/relationships/hyperlink" Target="https://example.com" TargetMode="External"/>
+<Relationship Id="rId5" Type="http://x/relationships/image" Target="/media/a.png"/>
+</Relationships>"#,
+        )
+        .unwrap();
+        let targets: Vec<_> = parse_relationships(&rels, "word")
+            .into_iter()
+            .map(|r| r.target)
+            .collect();
+        assert_eq!(
+            targets,
+            [
+                "word/styles.xml",
+                "word/theme/theme1.xml",
+                "customXml/item1.xml",
+                "media/a.png"
+            ]
+        );
     }
 
     #[test]

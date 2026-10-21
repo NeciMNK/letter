@@ -8,11 +8,11 @@ use letter_model::{
     Block, BreakKind, Color, Document, FirstLineIndent, HalfPoints, Indentation, Inline,
     LineSpacing, Orientation, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run,
     RunContent, RunFonts, RunProps, Section, SectionProps, Spacing, Table, TableCell, TableRow,
-    Twips, VerticalAlign,
+    ThemeColor, Twips, VerticalAlign,
 };
 
 use crate::ReadError;
-use crate::names::{ALIGNMENTS, HIGHLIGHTS, UNDERLINES, lookup};
+use crate::names::{ALIGNMENTS, HIGHLIGHTS, THEME_FONTS, UNDERLINES, lookup};
 use crate::xml::Element;
 
 /// Пространство имён WordprocessingML (обычный вариант OOXML).
@@ -20,18 +20,18 @@ pub(crate) const W_NS: &str = "http://schemas.openxmlformats.org/wordprocessingm
 /// Пространство имён WordprocessingML в строгом (Strict) варианте OOXML.
 pub(crate) const W_NS_STRICT: &str = "http://purl.oclc.org/ooxml/wordprocessingml/main";
 
-fn is_w_ns(ns: Option<&str>) -> bool {
+pub(crate) fn is_w_ns(ns: Option<&str>) -> bool {
     matches!(ns, Some(W_NS | W_NS_STRICT))
 }
 
 impl Element {
     /// Элемент `w:<local>`.
-    fn is_w(&self, local: &str) -> bool {
+    pub(crate) fn is_w(&self, local: &str) -> bool {
         self.local == local && is_w_ns(self.ns.as_deref())
     }
 
     /// Атрибут `w:<local>` (или без префикса — так пишут некоторые программы).
-    fn w_attr(&self, local: &str) -> Option<&str> {
+    pub(crate) fn w_attr(&self, local: &str) -> Option<&str> {
         self.attrs
             .iter()
             .find(|a| a.local == local && (a.ns.is_none() || is_w_ns(a.ns.as_deref())))
@@ -39,13 +39,13 @@ impl Element {
     }
 
     /// Все атрибуты элемента входят в список понятных.
-    fn only_attrs(&self, allowed: &[&str]) -> bool {
+    pub(crate) fn only_attrs(&self, allowed: &[&str]) -> bool {
         self.attrs.iter().all(|a| {
             (a.ns.is_none() || is_w_ns(a.ns.as_deref())) && allowed.contains(&a.local.as_str())
         })
     }
 
-    fn raw(&self) -> RawXml {
+    pub(crate) fn raw(&self) -> RawXml {
         RawXml::new(self.to_xml_fragment())
     }
 }
@@ -131,7 +131,7 @@ fn read_paragraph(p: &Element, allow_section: bool) -> (Paragraph, Option<Sectio
     (paragraph, section)
 }
 
-fn read_paragraph_props(
+pub(crate) fn read_paragraph_props(
     ppr: &Element,
     allow_section: bool,
 ) -> (ParagraphProps, Option<SectionProps>) {
@@ -243,7 +243,7 @@ fn read_run(r: &Element) -> Run {
     run
 }
 
-fn read_run_props(rpr: &Element) -> RunProps {
+pub(crate) fn read_run_props(rpr: &Element) -> RunProps {
     let mut props = RunProps::default();
     for child in rpr.elements() {
         let understood = is_w_ns(child.ns.as_deref())
@@ -255,7 +255,12 @@ fn read_run_props(rpr: &Element) -> RunProps {
                 "strike" => set(&mut props.strike, toggle(child)),
                 "dstrike" => set(&mut props.double_strike, toggle(child)),
                 "u" => set(&mut props.underline, enum_val(child, UNDERLINES)),
-                "color" => set(&mut props.color, color_val(child)),
+                "color" => read_color(child)
+                    .map(|(color, theme)| {
+                        props.color = Some(color);
+                        props.theme_color = theme;
+                    })
+                    .is_some(),
                 "highlight" => set(&mut props.highlight, enum_val(child, HIGHLIGHTS)),
                 "sz" => set(
                     &mut props.size,
@@ -279,18 +284,40 @@ fn read_run_props(rpr: &Element) -> RunProps {
     props
 }
 
-/// Шрифты. Ссылки на шрифты темы (`w:asciiTheme` и т. п.) пока не
-/// понимаем — такой элемент сохраняется целиком (это задача F1.4).
+/// Шрифты: имена, ссылки на шрифты темы и подсказка `w:hint`.
 fn read_fonts(fonts: &Element) -> Option<RunFonts> {
-    if !fonts.only_attrs(&["ascii", "hAnsi", "eastAsia", "cs"]) {
+    let names = [
+        "ascii",
+        "hAnsi",
+        "eastAsia",
+        "cs",
+        "asciiTheme",
+        "hAnsiTheme",
+        "eastAsiaTheme",
+        "cstheme",
+        "hint",
+    ];
+    if !fonts.only_attrs(&names) {
         return None;
     }
     let get = |name: &str| fonts.w_attr(name).map(str::to_string);
+    // Неизвестное имя шрифта темы — повод сохранить элемент целиком.
+    let theme = |name: &str| -> Result<Option<_>, ()> {
+        match fonts.w_attr(name) {
+            Some(value) => lookup(THEME_FONTS, value).map(Some).ok_or(()),
+            None => Ok(None),
+        }
+    };
     Some(RunFonts {
         ascii: get("ascii"),
         h_ansi: get("hAnsi"),
         east_asia: get("eastAsia"),
         complex_script: get("cs"),
+        ascii_theme: theme("asciiTheme").ok()?,
+        h_ansi_theme: theme("hAnsiTheme").ok()?,
+        east_asia_theme: theme("eastAsiaTheme").ok()?,
+        complex_script_theme: theme("cstheme").ok()?,
+        hint: get("hint"),
     })
 }
 
@@ -435,8 +462,34 @@ fn toggle(element: &Element) -> Option<bool> {
     }
 }
 
-fn color_val(element: &Element) -> Option<Color> {
-    match single_val(element)? {
+/// Цвет `w:color`: значение и, возможно, ссылка на цвет темы.
+fn read_color(element: &Element) -> Option<(Color, Option<ThemeColor>)> {
+    if !element.only_attrs(&["val", "themeColor", "themeShade", "themeTint"]) {
+        return None;
+    }
+    let color = parse_color(element.w_attr("val")?)?;
+    let byte = |name: &str| -> Result<Option<u8>, ()> {
+        match element.w_attr(name) {
+            Some(v) => u8::from_str_radix(v, 16).map(Some).map_err(|_| ()),
+            None => Ok(None),
+        }
+    };
+    let theme = match element.w_attr("themeColor") {
+        Some(name) => Some(ThemeColor {
+            name: name.to_string(),
+            shade: byte("themeShade").ok()?,
+            tint: byte("themeTint").ok()?,
+        }),
+        None if element.w_attr("themeShade").is_some() || element.w_attr("themeTint").is_some() => {
+            return None;
+        }
+        None => None,
+    };
+    Some((color, theme))
+}
+
+fn parse_color(value: &str) -> Option<Color> {
+    match value {
         "auto" => Some(Color::Auto),
         hex if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => {
             let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
@@ -541,8 +594,8 @@ mod tests {
     fn partially_understood_properties_are_kept_whole() {
         let doc = read_body_xml(
             r#"<w:p><w:r><w:rPr>
-                <w:rFonts w:asciiTheme="minorHAnsi" w:ascii="Calibri"/>
-                <w:color w:val="FF0000" w:themeColor="accent1"/>
+                <w:rFonts w:asciiTheme="bogusTheme" w:ascii="Calibri"/>
+                <w:color w:val="FF0000" w:themeShade="80"/>
                 <w:u w:val="bogus"/>
             </w:rPr></w:r></w:p>"#,
         );
@@ -552,6 +605,33 @@ mod tests {
         assert_eq!(p.underline, None);
         let names: Vec<_> = p.unknown.iter().map(RawXml::local_name).collect();
         assert_eq!(names, ["rFonts", "color", "u"]);
+    }
+
+    #[test]
+    fn theme_fonts_and_colors() {
+        let doc = read_body_xml(
+            r#"<w:p><w:r><w:rPr>
+                <w:rFonts w:asciiTheme="majorHAnsi" w:hAnsiTheme="majorHAnsi" w:cstheme="minorBidi" w:hint="eastAsia"/>
+                <w:color w:val="365F91" w:themeColor="accent1" w:themeShade="BF"/>
+            </w:rPr></w:r></w:p>"#,
+        );
+        let p = &first_paragraph(&doc).runs().next().unwrap().props;
+        assert_eq!(
+            p.fonts.ascii_theme,
+            Some(letter_model::ThemeFont::MajorHAnsi)
+        );
+        assert_eq!(
+            p.fonts.complex_script_theme,
+            Some(letter_model::ThemeFont::MinorBidi)
+        );
+        assert_eq!(p.fonts.hint.as_deref(), Some("eastAsia"));
+        assert_eq!(p.color, Some(Color::Rgb(0x36, 0x5F, 0x91)));
+        let theme = p.theme_color.as_ref().unwrap();
+        assert_eq!(
+            (theme.name.as_str(), theme.shade, theme.tint),
+            ("accent1", Some(0xBF), None)
+        );
+        assert!(p.unknown.is_empty());
     }
 
     #[test]

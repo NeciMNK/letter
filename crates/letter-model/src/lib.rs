@@ -20,10 +20,12 @@
 mod document;
 mod paragraph;
 mod raw;
+mod resolve;
 mod run;
 mod section;
 mod style;
 mod table;
+mod theme;
 mod units;
 
 pub use document::{Document, Numbering, Settings};
@@ -32,10 +34,13 @@ pub use paragraph::{
     Spacing,
 };
 pub use raw::RawXml;
+pub use resolve::{ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps};
 pub use run::{
-    BreakKind, Color, Highlight, Run, RunContent, RunFonts, RunProps, Underline, VerticalAlign,
+    BreakKind, Color, Highlight, Run, RunContent, RunFonts, RunProps, ThemeColor, ThemeFont,
+    Underline, VerticalAlign,
 };
 pub use section::{Orientation, PageMargins, PageSize, Section, SectionProps};
 pub use style::{DocDefaults, Style, StyleKind, Styles};
 pub use table::{Block, Table, TableCell, TableRow};
+pub use theme::{Theme, ThemeFontSet};
 pub use units::{HalfPoints, Twips};

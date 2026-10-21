@@ -2,8 +2,8 @@
 //!
 //! Сейчас умеет читать главную часть документа (`word/document.xml`):
 //! абзацы, фрагменты текста, свойства символов и абзацев, таблицы,
-//! разделы. Всё непонятое сохраняется в модели как
-//! [`RawXml`](letter_model::RawXml).
+//! разделы; стили (`word/styles.xml`) и шрифты темы. Всё непонятое
+//! сохраняется в модели как [`RawXml`](letter_model::RawXml).
 //!
 //! ```no_run
 //! let doc = letter_docx::read_file("пример.docx")?;
@@ -15,6 +15,8 @@ mod document;
 mod error;
 mod names;
 mod package;
+mod styles;
+mod theme;
 mod xml;
 
 use std::fs::File;
@@ -35,7 +37,29 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
     let bytes = package
         .read_part(&main)?
         .ok_or_else(|| ReadError::MissingPart(main.clone()))?;
-    document::read_document(&xml::parse(&bytes)?)
+    let mut doc = document::read_document(&xml::parse(&bytes)?)?;
+
+    // Стили и тема необязательны: если их нет или они испорчены,
+    // документ всё равно открывается со значениями по умолчанию.
+    if let Some(root) = read_related_xml(&mut package, &main, "styles") {
+        doc.styles = styles::read_styles(&root);
+    }
+    if let Some(root) = read_related_xml(&mut package, &main, "theme") {
+        doc.theme = theme::read_theme(&root);
+    }
+    Ok(doc)
+}
+
+/// Читает и разбирает часть, связанную с `part` связью вида `kind`.
+/// Любая ошибка означает «части нет».
+fn read_related_xml<R: Read + Seek>(
+    package: &mut package::Package<R>,
+    part: &str,
+    kind: &str,
+) -> Option<xml::Element> {
+    let target = package.related_part(part, kind)?;
+    let bytes = package.read_part(&target).ok()??;
+    xml::parse(&bytes).ok()
 }
 
 /// Читает документ .docx из байтов в памяти.
