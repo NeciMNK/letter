@@ -133,6 +133,45 @@ pub fn delete_forward(doc: &mut Document, at: Position) -> Position {
     merge_with_next(doc, at.paragraph).unwrap_or(Position::new(at.paragraph, offset))
 }
 
+/// Удаляет текст от `start` до `end` (выделение; порядок неважен)
+/// и возвращает позицию курсора — начало удалённого. Абзацы целиком
+/// внутри удаляются, первый и последний соединяются. Абзацы в ячейках
+/// таблиц только очищаются: строки и ячейки остаются.
+pub fn delete_range(doc: &mut Document, start: Position, end: Position) -> Position {
+    let (start, end) = if (start.paragraph, start.offset) <= (end.paragraph, end.offset) {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    let Some(first) = paragraph_mut(doc, start.paragraph) else {
+        return start;
+    };
+    let from = clamp_offset(first, start.offset);
+    if start.paragraph == end.paragraph {
+        let to = clamp_offset(first, end.offset).max(from);
+        remove_range(first, from, to);
+        return Position::new(start.paragraph, from);
+    }
+    let len = text_len(first);
+    remove_range(first, from, len);
+    for index in start.paragraph + 1..=end.paragraph {
+        let Some(paragraph) = paragraph_mut(doc, index) else {
+            break;
+        };
+        let to = if index == end.paragraph {
+            clamp_offset(paragraph, end.offset)
+        } else {
+            text_len(paragraph)
+        };
+        remove_range(paragraph, 0, to);
+    }
+    // Соединяем с конца, чтобы номера ещё не тронутых абзацев не менялись.
+    for index in (start.paragraph..end.paragraph).rev() {
+        merge_with_next(doc, index);
+    }
+    Position::new(start.paragraph, from)
+}
+
 /// Присоединяет к абзацу `index` следующий. Работает, только если
 /// следующий абзац стоит сразу за ним в том же месте (разделе, ячейке);
 /// иначе (между ними таблица, граница ячейки) ничего не делает.
@@ -664,6 +703,46 @@ mod tests {
         };
         assert_eq!(middle.props.style.as_deref(), Some("Heading1"));
         assert_eq!(texts(&d), vec!["Глав", "а", ""]);
+    }
+
+    #[test]
+    fn deleting_a_selection() {
+        let mut d = doc(vec![
+            Paragraph::text("first"),
+            Paragraph::from_runs([Run::text("sec"), Run::text("ond").with_props(bold())]),
+            Paragraph::text("third"),
+        ]);
+        // Внутри абзаца, задом наперёд.
+        let p = delete_range(&mut d, Position::new(1, 4), Position::new(1, 2));
+        assert_eq!(p, Position::new(1, 2));
+        assert_eq!(texts(&d), vec!["first", "send", "third"]);
+        // Через три абзаца: «fi» + «rd».
+        let p = delete_range(&mut d, Position::new(0, 2), Position::new(2, 3));
+        assert_eq!(p, Position::new(0, 2));
+        assert_eq!(texts(&d), vec!["fird"]);
+        // Всё.
+        let p = delete_range(&mut d, Position::new(0, 0), Position::new(0, 99));
+        assert_eq!(p, Position::new(0, 0));
+        assert_eq!(texts(&d), vec![""]);
+    }
+
+    #[test]
+    fn deleting_across_a_table_keeps_its_cells() {
+        let table = Table {
+            raw_props: Vec::new(),
+            rows: vec![TableRow {
+                raw_props: Vec::new(),
+                cells: vec![TableCell::text("A"), TableCell::text("B")],
+            }],
+        };
+        let mut d = Document::new();
+        d.sections[0].blocks = vec![
+            Paragraph::text("до").into(),
+            table.into(),
+            Paragraph::text("после").into(),
+        ];
+        delete_range(&mut d, Position::new(0, 2), Position::new(3, 4));
+        assert_eq!(texts(&d), vec!["д", "", "", "сле"]);
     }
 
     #[test]
