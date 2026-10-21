@@ -20,4 +20,5 @@ letter-docx.workspace = true
 letter-layout.workspace = true
 letter-model.workspace = true
 letter-render.workspace = true
+lopdf = { version = "0.46", default-features = false }
 png = "0.18"
