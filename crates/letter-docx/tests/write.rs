@@ -385,3 +385,12 @@ fn properties_of_a_new_document_get_their_own_parts() {
         write_bytes(&round_trip(&reopened)).unwrap()
     );
 }
+
+#[test]
+fn settings_are_read() {
+    let doc = read_bytes(&fixture_bytes("headings.docx")).unwrap();
+    assert_eq!(doc.settings.default_tab_stop, Twips(720));
+    assert!(!doc.settings.add_paragraph_spacing);
+    // Часть настроек не пересобирается, поэтому после сохранения те же.
+    assert_eq!(round_trip(&doc).settings, doc.settings);
+}

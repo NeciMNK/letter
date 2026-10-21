@@ -20,6 +20,7 @@ mod names;
 mod package;
 mod properties;
 mod serialize;
+mod settings;
 mod styles;
 mod theme;
 mod write;
@@ -59,6 +60,9 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
     }
     if let Some((_, root)) = read_related_xml(&mut package, &main, "theme") {
         doc.theme = theme::read_theme(&root);
+    }
+    if let Some((_, root)) = read_related_xml(&mut package, &main, "settings") {
+        doc.settings = settings::read_settings(&root);
     }
     let mut core_part = None;
     if let Some((name, root)) = read_related_xml(&mut package, "", "core-properties")

@@ -33,5 +33,5 @@
 - `crates/letter-render` — отрисовка.
 - `crates/letter-editor` — курсор, команды, отмена.
 - `crates/letter-app` — окно и интерфейс, бинарник `letter`.
-- `crates/letter-cli` — консольная утилита для отладки: `dump`, `roundtrip`.
+- `crates/letter-cli` — консольная утилита для отладки: `dump`, `roundtrip`, `pages`.
 - `tests/fixtures/` — тестовые документы (источники в `tests/fixtures/README.md`).

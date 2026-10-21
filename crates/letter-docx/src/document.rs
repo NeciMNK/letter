@@ -483,7 +483,7 @@ fn enum_val<T: Copy>(element: &Element, table: &[(&str, T)]) -> Option<T> {
 }
 
 /// Переключатель (`ST_OnOff`): без `w:val` означает «включено».
-fn toggle(element: &Element) -> Option<bool> {
+pub(crate) fn toggle(element: &Element) -> Option<bool> {
     if !element.only_attrs(&["val"]) {
         return None;
     }

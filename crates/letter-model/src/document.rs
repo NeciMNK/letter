@@ -76,6 +76,11 @@ pub struct Numbering {}
 pub struct Settings {
     /// Шаг табуляции по умолчанию.
     pub default_tab_stop: Twips,
+    /// Интервал после абзаца и интервал перед следующим складываются
+    /// (настройка совместимости `w:doNotUseHTMLParagraphAutoSpacing`).
+    /// Если нет — между абзацами берётся больший из двух, как в HTML;
+    /// так Word делает по умолчанию.
+    pub add_paragraph_spacing: bool,
 }
 
 impl Default for Settings {
@@ -83,6 +88,7 @@ impl Default for Settings {
     fn default() -> Settings {
         Settings {
             default_tab_stop: Twips(708),
+            add_paragraph_spacing: false,
         }
     }
 }

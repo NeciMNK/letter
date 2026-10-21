@@ -64,3 +64,16 @@ fn errors_are_reported() {
     let missing = run(&args(&["dump", "нет-такого-файла.docx"])).unwrap_err();
     assert!(missing.starts_with("нет-такого-файла.docx: "), "{missing}");
 }
+
+#[test]
+fn pages_prints_lines_of_each_page() {
+    let out = run(&args(&[
+        "pages",
+        "--embedded-fonts",
+        &fixture("headings.docx"),
+    ]))
+    .unwrap();
+    assert!(out.starts_with("Страница 1: "), "{out}");
+    assert!(out.contains("абзац 2   \"Heading 1\""), "{out}");
+    assert!(run(&args(&["pages"])).is_err());
+}
