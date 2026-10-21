@@ -1,0 +1,5 @@
+# Настройки автоформатирования кода (`cargo fmt`).
+edition = "2024"
+max_width = 100
+newline_style = "Unix"
+use_field_init_shorthand = true

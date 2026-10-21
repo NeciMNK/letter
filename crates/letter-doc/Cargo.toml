@@ -1,0 +1,12 @@
+[package]
+name = "letter-doc"
+description = "Чтение старого двоичного формата .doc (Word 97–2003)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
