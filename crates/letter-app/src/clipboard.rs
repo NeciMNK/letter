@@ -17,6 +17,8 @@ pub trait SystemClipboard {
     fn put(&mut self, text: &str, html: &str);
     /// HTML из буфера, если он там есть.
     fn html(&mut self) -> Option<String>;
+    /// Простой текст из буфера.
+    fn text(&mut self) -> Option<String>;
 }
 
 /// Настоящий системный буфер (библиотека `arboard`). Подключается при
@@ -44,6 +46,10 @@ impl SystemClipboard for SystemBuffer {
     fn html(&mut self) -> Option<String> {
         self.get()?.get().html().ok()
     }
+
+    fn text(&mut self) -> Option<String> {
+        self.get()?.get_text().ok()
+    }
 }
 
 /// Буфер обмена программы.
@@ -65,6 +71,12 @@ impl Clipboard {
         let html = letter_text::write_html(&fragment);
         self.system.put(&text, &html);
         self.own = Some((text, fragment));
+    }
+
+    /// Текст из системного буфера (для кнопки «Вставить» на ленте:
+    /// при Ctrl+V текст передаёт сама система).
+    pub fn text(&mut self) -> Option<String> {
+        self.system.text().filter(|t| !t.is_empty())
     }
 
     /// Что вставить, если система передала текст `text` (Ctrl+V).
@@ -129,6 +141,10 @@ pub mod tests {
 
         fn html(&mut self) -> Option<String> {
             self.content.borrow().1.clone()
+        }
+
+        fn text(&mut self) -> Option<String> {
+            Some(self.content.borrow().0.clone())
         }
     }
 

@@ -21,11 +21,11 @@ use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui::{
     self, Align, Align2, Color32, Context, CursorIcon, Key, KeyboardShortcut, Layout, Modifiers,
-    Pos2, Rect, Sense, Vec2, ViewportCommand, emath::GuiRounding,
+    Pos2, Rect, Sense, Vec2, ViewportCommand, emath::GuiRounding, pos2,
 };
 use letter_editor::{
-    Command, History, Motion, Position, RunFormat, Selection, caret, copy_range, hit_test,
-    move_cursor, paragraph_at, select_all, selection_rects, word_at,
+    Command, History, Motion, Position, RunFormat, Selection, caret, copy_range, formatting_at,
+    hit_test, move_cursor, paragraph_at, select_all, selection_rects, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
 use letter_model::{Alignment, Document};
@@ -33,6 +33,8 @@ use letter_render::{DESK_COLOR, PagePainter, SCREEN_PIXELS_PER_POINT};
 
 use crate::clipboard::{Clipboard, SystemBuffer};
 use crate::files::{self, Autosave, OPEN_FILTERS, Recent, Recovered, SAVE_FILTERS};
+use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
+use crate::ruler::{self, RULER_SIZE};
 use crate::view::{
     MAX_ZOOM, MIN_ZOOM, PAGE_GAP, Zoom, anchored_offset, clamp_zoom, current_page, page_width_zoom,
     place_pages, step_zoom,
@@ -250,6 +252,12 @@ pub struct Viewer {
     reveal_cursor: bool,
     /// Буфер обмена.
     clipboard: Clipboard,
+    /// Лента.
+    ribbon: Ribbon,
+    /// Показывать линейки.
+    show_ruler: bool,
+    /// Лист для линеек (с курсором) и где он на экране в прошлом кадре.
+    ruler_page: Option<(usize, Rect)>,
 }
 
 impl Viewer {
@@ -290,6 +298,9 @@ impl Viewer {
             open_requested: false,
             reveal_cursor: false,
             clipboard: Clipboard::new(Box::new(SystemBuffer::default())),
+            ribbon: Ribbon::default(),
+            show_ruler: true,
+            ruler_page: None,
         }
     }
 
@@ -498,11 +509,15 @@ impl Viewer {
         }
         self.handle_input(&ctx);
 
-        egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
+        let info = self.ribbon_info();
+        let commands = egui::Panel::top("ribbon")
+            .show(ui, |ui| self.ribbon.ui(ui, &info))
+            .inner;
+        self.run_ribbon(&ctx, commands);
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         egui::CentralPanel::no_frame()
             .frame(egui::Frame::new().fill(DESK_COLOR))
-            .show(ui, |ui| self.pages(ui));
+            .show(ui, |ui| self.document_area(ui));
         self.error_window(&ctx);
         self.save_changes_window(&ctx);
         self.recovery_window(&ctx);
@@ -640,9 +655,9 @@ impl Viewer {
     fn keyboard(&mut self, ctx: &Context) {
         let points = 1.0 / (self.zoom() * SCREEN_PIXELS_PER_POINT);
         let screen = self.view_size.y * points;
-        let Some(document) = &mut self.document else {
+        if self.document.is_none() {
             return;
-        };
+        }
         let actions = ctx.input_mut(|i| {
             let mut actions = Vec::new();
             i.events.retain(|event| match key_action(event, screen) {
@@ -654,9 +669,17 @@ impl Viewer {
             });
             actions
         });
+        self.apply_actions(ctx, actions);
+    }
+
+    /// Выполняет действия с клавиатуры и ленты по порядку.
+    fn apply_actions(&mut self, ctx: &Context, actions: Vec<Action>) {
         if actions.is_empty() {
             return;
         }
+        let Some(document) = &mut self.document else {
+            return;
+        };
         // Вёрстка устаревает после правки; обновляем её перед следующим
         // движением курсора и в конце.
         let mut stale = false;
@@ -755,84 +778,116 @@ impl Viewer {
         }
     }
 
-    fn menu_bar(&mut self, ui: &mut egui::Ui) {
-        egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("Файл", |ui| {
-                let ctx = ui.ctx().clone();
-                let new = egui::Button::new("Создать").shortcut_text(ctx.format_shortcut(&NEW));
-                if ui.add(new).clicked() {
-                    self.request(Intent::New);
-                }
-                let open = egui::Button::new("Открыть…").shortcut_text(ctx.format_shortcut(&OPEN));
-                if ui.add(open).clicked() {
-                    self.open_requested = true;
-                }
-                ui.add_enabled_ui(!self.recent.items().is_empty(), |ui| {
-                    ui.menu_button("Последние", |ui| {
-                        let mut chosen = None;
-                        for path in self.recent.items() {
-                            let name = path.file_name().map_or_else(
-                                || path.display().to_string(),
-                                |n| n.to_string_lossy().into_owned(),
-                            );
-                            if ui
-                                .button(name)
-                                .on_hover_text(path.display().to_string())
-                                .clicked()
-                            {
-                                chosen = Some(path.clone());
-                            }
-                        }
-                        if let Some(path) = chosen {
-                            self.request(Intent::Open(Some(path)));
-                        }
-                    });
-                });
-                ui.separator();
-                let has_document = self.document.is_some();
-                let save = egui::Button::new("Сохранить").shortcut_text(ctx.format_shortcut(&SAVE));
-                if ui.add_enabled(has_document, save).clicked() {
+    /// Что показать на ленте: состояние документа и оформление у курсора.
+    fn ribbon_info(&self) -> RibbonInfo {
+        let mut info = RibbonInfo {
+            recent: self.recent.items().to_vec(),
+            page_width: self.zoom == Zoom::PageWidth,
+            ruler: self.show_ruler,
+            ..RibbonInfo::default()
+        };
+        if let Some(document) = &self.document {
+            info.has_document = true;
+            info.can_undo = document.history.can_undo();
+            info.can_redo = document.history.can_redo();
+            info.has_selection = !document.selection().is_empty();
+            if let Some((paragraph, run)) = formatting_at(&document.doc, document.cursor) {
+                info.bold = run.bold;
+                info.italic = run.italic;
+                info.underline = run.underline != letter_model::Underline::None;
+                info.alignment = Some(paragraph.alignment);
+            }
+        }
+        info
+    }
+
+    /// Выполняет команды ленты.
+    fn run_ribbon(&mut self, ctx: &Context, commands: Vec<RibbonCommand>) {
+        let mut actions = Vec::new();
+        for command in commands {
+            match command {
+                RibbonCommand::New => self.request(Intent::New),
+                RibbonCommand::Open => self.open_requested = true,
+                RibbonCommand::OpenRecent(path) => self.request(Intent::Open(Some(path))),
+                RibbonCommand::Save => {
                     self.save();
                 }
-                let save_as = egui::Button::new("Сохранить как…")
-                    .shortcut_text(ctx.format_shortcut(&SAVE_AS));
-                if ui.add_enabled(has_document, save_as).clicked() {
+                RibbonCommand::SaveAs => {
                     self.save_as();
                 }
-                ui.separator();
-                if ui.button("Выход").clicked() {
-                    ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+                RibbonCommand::Exit => ctx.send_viewport_cmd(ViewportCommand::Close),
+                RibbonCommand::Undo => actions.push(Action::Undo),
+                RibbonCommand::Redo => actions.push(Action::Redo),
+                RibbonCommand::Cut => actions.push(Action::Cut),
+                RibbonCommand::Copy => actions.push(Action::Copy),
+                RibbonCommand::Paste => {
+                    if let Some(text) = self.clipboard.text() {
+                        actions.push(Action::Paste(text));
+                    }
                 }
-            });
-            ui.menu_button("Вид", |ui| {
-                let ctx = ui.ctx().clone();
-                let zoom_in =
-                    egui::Button::new("Увеличить").shortcut_text(ctx.format_shortcut(&ZOOM_IN));
-                if ui.add(zoom_in).clicked() {
-                    self.zoom_step(true);
+                RibbonCommand::Format(format) => {
+                    actions.push(Action::Edit(Command::Format(format)));
                 }
-                let zoom_out =
-                    egui::Button::new("Уменьшить").shortcut_text(ctx.format_shortcut(&ZOOM_OUT));
-                if ui.add(zoom_out).clicked() {
-                    self.zoom_step(false);
+                RibbonCommand::Align(alignment) => {
+                    actions.push(Action::Edit(Command::Align(alignment)));
                 }
-                ui.separator();
-                let actual =
-                    egui::Button::new("100 %").shortcut_text(ctx.format_shortcut(&ZOOM_RESET));
-                if ui.add(actual).clicked() {
-                    self.set_zoom(Zoom::Fixed(1.0), None);
-                }
-                if ui
-                    .add(egui::Button::selectable(
-                        self.zoom == Zoom::PageWidth,
-                        "По ширине страницы",
-                    ))
-                    .clicked()
-                {
-                    self.set_zoom(Zoom::PageWidth, None);
-                }
-            });
-        });
+                RibbonCommand::ZoomIn => self.zoom_step(true),
+                RibbonCommand::ZoomOut => self.zoom_step(false),
+                RibbonCommand::ZoomReset => self.set_zoom(Zoom::Fixed(1.0), None),
+                RibbonCommand::PageWidth => self.set_zoom(Zoom::PageWidth, None),
+                RibbonCommand::ToggleRuler => self.show_ruler = !self.show_ruler,
+            }
+        }
+        self.apply_actions(ctx, actions);
+    }
+
+    /// Область документа: линейки сверху и слева, листы.
+    fn document_area(&mut self, ui: &mut egui::Ui) {
+        let full = ui.available_rect_before_wrap();
+        if !self.show_ruler || self.document.is_none() {
+            self.pages(ui);
+            return;
+        }
+        let pages_rect = Rect::from_min_max(full.min + Vec2::splat(RULER_SIZE), full.max);
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pages_rect));
+        self.pages(&mut child);
+
+        let painter = ui.painter_at(full);
+        let top = Rect::from_min_max(
+            pos2(pages_rect.left(), full.top()),
+            pos2(full.right(), pages_rect.top()),
+        );
+        let left = Rect::from_min_max(
+            pos2(full.left(), pages_rect.top()),
+            pos2(pages_rect.left(), full.bottom()),
+        );
+        painter.rect_filled(
+            Rect::from_min_max(full.min, pages_rect.min),
+            0.0,
+            Color32::from_gray(232),
+        );
+        // Точек экрана egui на пункт документа (как у листов).
+        let scale = self.zoom() * SCREEN_PIXELS_PER_POINT;
+        if let (Some((index, rect)), Some(document)) = (self.ruler_page, &self.document)
+            && let Some(page) = document.layout.pages.get(index)
+        {
+            ruler::paint_horizontal(
+                &ui.painter_at(top),
+                top,
+                rect.left(),
+                page.width,
+                page.margins,
+                scale,
+            );
+            ruler::paint_vertical(
+                &ui.painter_at(left),
+                left,
+                rect.top(),
+                page.height,
+                page.margins,
+                scale,
+            );
+        }
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -930,6 +985,7 @@ impl Viewer {
         if let Some(offset) = self.pending_offset.take() {
             area = area.scroll_offset(offset);
         }
+        let mut ruler_page = None;
         let output = area.show_viewport(ui, |ui, viewport| {
             let origin = ui.max_rect().min;
             let response = ui
@@ -1015,6 +1071,16 @@ impl Viewer {
                 }
             }
 
+            // Линейки показывают лист с курсором, а если его не видно — тот,
+            // что посередине окна.
+            let caret_page = caret(&document.layout, document.cursor)
+                .map(|c| c.page)
+                .filter(|&p| p < placement.rects.len() && placement.rects[p].intersects(viewport))
+                .unwrap_or_else(|| current_page(&placement, viewport.top(), viewport.height()));
+            if caret_page < placement.rects.len() {
+                ruler_page = Some((caret_page, screen_rect(caret_page)));
+            }
+
             if let Some(c) = caret(&document.layout, document.cursor) {
                 let (blink, next) = caret_phase(now - document.cursor_since);
                 // При выделении курсор не рисуется, как в Word.
@@ -1047,6 +1113,7 @@ impl Viewer {
                     .request_repaint_after(Duration::from_secs_f64(next.max(0.01)));
             }
         });
+        self.ruler_page = ruler_page;
         self.offset = output.state.clamped_offset();
         self.view_size = output.inner_rect.size();
         self.current_page = current_page(&placement, self.offset.y, self.view_size.y);
@@ -1447,11 +1514,12 @@ mod tests {
         assert_eq!(viewer.cursor(), None);
         viewer.open(&fixture("plain-text.docx")).unwrap();
         assert_eq!(viewer.cursor(), Some(Position::default()));
-        let before = frame(&ctx, &mut viewer, screen());
+        frame(&ctx, &mut viewer, screen());
 
         // Щелчок далеко внизу первого листа — конец последнего абзаца.
         let point = Pos2::new(500.0, 700.0);
         let mut input = screen();
+        input.time = Some(0.0);
         input.events = vec![
             Event::PointerMoved(point),
             Event::PointerButton {
@@ -1468,10 +1536,13 @@ mod tests {
         assert_eq!(cursor.paragraph, last.paragraph);
         assert_eq!(cursor.offset, last.line.range.end);
         // Курсор мигает: через полпериода его нет — на одну фигуру меньше.
+        let mut now = screen();
+        now.time = Some(0.05);
+        let shown = frame(&ctx, &mut viewer, now);
         let mut later = screen();
         later.time = Some(CARET_BLINK + 0.1);
         let hidden = frame(&ctx, &mut viewer, later);
-        assert_eq!(hidden + 1, before, "{before} → {hidden}");
+        assert_eq!(hidden + 1, shown, "{shown} → {hidden}");
     }
 
     fn key(key: Key, modifiers: Modifiers) -> RawInput {
@@ -2092,5 +2163,50 @@ mod tests {
         drop(viewer);
         assert_eq!(std::fs::read_dir(&autosave).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ribbon_commands_reach_the_document() {
+        use crate::clipboard::tests::FakeBuffer;
+
+        let fake = FakeBuffer::default();
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.clipboard = Clipboard::new(Box::new(fake.clone()));
+        viewer.new_document();
+        frame(&ctx, &mut viewer, screen());
+        // Линейки видны и показывают первый лист.
+        assert!(viewer.show_ruler);
+        assert_eq!(viewer.ruler_page.map(|(page, _)| page), Some(0));
+
+        *fake.content.borrow_mut() = ("слово".into(), None);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Paste]);
+        assert_eq!(first_text(&mut viewer), "слово");
+        let info = viewer.ribbon_info();
+        assert!(info.can_undo && !info.bold && !info.has_selection);
+
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(Key::A, Modifiers::COMMAND)]),
+        );
+        viewer.run_ribbon(
+            &ctx,
+            vec![
+                RibbonCommand::Format(RunFormat::Bold),
+                RibbonCommand::Align(Alignment::Center),
+            ],
+        );
+        let info = viewer.ribbon_info();
+        assert!(info.bold && info.has_selection);
+        assert_eq!(info.alignment, Some(Alignment::Center));
+
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo, RibbonCommand::Undo]);
+        assert!(!viewer.ribbon_info().bold);
+
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ToggleRuler]);
+        assert!(!viewer.show_ruler);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::PageWidth]);
+        assert_eq!(viewer.zoom, Zoom::PageWidth);
     }
 }

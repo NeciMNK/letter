@@ -8,6 +8,9 @@
 
 mod clipboard;
 mod files;
+mod icons;
+mod ribbon;
+mod ruler;
 mod view;
 mod viewer;
 

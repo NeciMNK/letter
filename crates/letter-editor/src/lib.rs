@@ -25,7 +25,7 @@ pub use edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, paragraph_mut,
     split_paragraph,
 };
-pub use format::{RunFormat, align_paragraphs, format_runs};
+pub use format::{RunFormat, align_paragraphs, format_runs, formatting_at};
 pub use history::{Command, History};
 pub use navigation::{Motion, Moved, move_cursor};
 pub use position::{Affinity, Position};
