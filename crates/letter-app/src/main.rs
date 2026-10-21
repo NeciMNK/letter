@@ -1,33 +1,54 @@
-//! Приложение `letter`: открывает главное окно редактора.
+//! Приложение `letter`: главное окно редактора. Пока это просмотрщик:
+//! открывает .docx и показывает страницы.
+//!
+//! Запуск: `letter [файл.docx]`.
 
 // В релизной сборке под Windows не показываем окно консоли рядом с программой.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use eframe::egui;
+mod view;
+mod viewer;
 
-/// Заголовок главного окна.
-const WINDOW_TITLE: &str = "letter";
+use std::path::PathBuf;
+
+use eframe::egui;
+use letter_layout::FontLibrary;
+use viewer::{APP_NAME, Viewer};
 
 fn main() -> eframe::Result {
+    let file = std::env::args_os().nth(1).map(PathBuf::from);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title(WINDOW_TITLE)
+            .with_title(APP_NAME)
             .with_inner_size([1024.0, 768.0])
-            .with_min_inner_size([400.0, 300.0]),
+            .with_min_inner_size([400.0, 300.0])
+            .with_drag_and_drop(true),
         ..Default::default()
     };
     eframe::run_native(
-        WINDOW_TITLE,
+        APP_NAME,
         options,
-        Box::new(|_cc| Ok(Box::new(LetterApp))),
+        Box::new(move |cc| {
+            // Ctrl+плюс/минус меняют масштаб документа, а не интерфейса.
+            cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+            // Светлое оформление, как у Word по умолчанию.
+            cc.egui_ctx.set_theme(egui::Theme::Light);
+            let mut viewer = Viewer::new(FontLibrary::new());
+            if let Some(file) = file {
+                viewer.open_or_report(&file);
+            }
+            Ok(Box::new(LetterApp { viewer }))
+        }),
     )
 }
 
-/// Состояние приложения. Пока пустое: окно без содержимого.
-struct LetterApp;
+/// Состояние приложения.
+struct LetterApp {
+    viewer: Viewer,
+}
 
 impl eframe::App for LetterApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ui, |_ui| {});
+        self.viewer.ui(ui);
     }
 }
