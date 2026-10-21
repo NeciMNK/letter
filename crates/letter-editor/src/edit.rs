@@ -274,6 +274,22 @@ pub(crate) fn blocks_mut<'a>(doc: &'a mut Document, path: &Path) -> Option<&'a m
     Some(blocks)
 }
 
+/// Абзац номер `index` для чтения.
+pub(crate) fn paragraph_ref(doc: &Document, index: usize) -> Option<&Paragraph> {
+    let path = find(doc, index)?;
+    let mut blocks = &doc.sections.get(path.section)?.blocks;
+    for &(b, r, c) in &path.cells {
+        let Some(Block::Table(table)) = blocks.get(b) else {
+            return None;
+        };
+        blocks = &table.rows.get(r)?.cells.get(c)?.blocks;
+    }
+    match blocks.get(path.block)? {
+        Block::Paragraph(p) => Some(p),
+        _ => None,
+    }
+}
+
 /// Абзац номер `index` (по порядку во всём документе).
 pub fn paragraph_mut(doc: &mut Document, index: usize) -> Option<&mut Paragraph> {
     let path = find(doc, index)?;
