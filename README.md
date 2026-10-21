@@ -29,7 +29,8 @@ Microsoft Word (2024 и более ранних версий).
   ```
   Для Ubuntu/Debian также нужны пакеты:
   ```sh
-  sudo apt install build-essential libxkbcommon-x11-0
+  sudo apt install build-essential pkg-config libxkbcommon-x11-0 \
+    libxkbcommon-dev libwayland-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
   ```
 
 После установки закройте терминал и откройте его заново.
