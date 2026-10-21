@@ -20,7 +20,7 @@ pub mod pages;
 pub mod shaping;
 pub mod spacing;
 
-pub use fonts::{FontId, FontLibrary, FontMatch, microsoft_line_metrics};
+pub use fonts::{FontId, FontLibrary, FontMatch};
 pub use lines::{
     Align, Line, LineEnd, LineItem, ParagraphFormat, ParagraphLines, TabItem, TabKind, TabLeader,
     TabStop, TextItem, TextSpan, break_lines,

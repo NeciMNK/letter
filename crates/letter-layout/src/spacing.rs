@@ -5,8 +5,10 @@
 //!   ([`Line::natural_height`]).
 //! - «Множитель» (1; 1,15; 1,5; 2 …) умножает эту высоту, «точно»
 //!   задаёт высоту, «минимум» не даёт строке стать ниже заданного.
-//! - Лишнее место (или нехватка места) приходится на верх строки:
-//!   нижний край букв всегда остаётся у нижнего края строки.
+//! - При «множителе» лишнее место (или нехватка места) приходится на
+//!   низ строки: буквы стоят там же, где при одинарном интервале. Так
+//!   делает Word (проверено сверкой с PDF из Word 2024). При «точно» и
+//!   «минимум» — на верх строки: низ букв у низа строки.
 //! - Между абзацами Word по умолчанию берёт больший из интервалов
 //!   «после» предыдущего и «перед» следующим (как в HTML). Складывает
 //!   их, только если в документе включена настройка совместимости
@@ -48,6 +50,15 @@ impl LineRule {
             LineRule::Exact(_) => natural,
             LineRule::AtLeast(h) if h.is_finite() => natural.max(h),
             LineRule::AtLeast(_) => natural,
+        }
+    }
+
+    /// Расстояние от верха строки высотой `height` (из [`Self::height`])
+    /// до базовой линии, пт.
+    pub fn baseline_offset(self, line: &Line, height: f32) -> f32 {
+        match self {
+            LineRule::Multiple(_) => line.natural_height() - line.descent,
+            LineRule::Exact(_) | LineRule::AtLeast(_) => height - line.descent,
         }
     }
 }
@@ -113,7 +124,7 @@ pub fn place_lines(lines: &[Line], rule: LineRule, top: f32) -> Vec<LineBox> {
             let placed = LineBox {
                 top: y,
                 height,
-                baseline: y + height - line.descent,
+                baseline: y + rule.baseline_offset(line, height),
             };
             y += height;
             placed
@@ -226,9 +237,8 @@ mod tests {
         // 13,43 пт (через совместимые по размерам Liberation и Carlito).
         assert!((height("Times New Roman", 12.0) - 13.799).abs() < 1e-3);
         assert!((height("Calibri", 11.0) - 13.428).abs() < 1e-3);
-        // Caladea выше Cambria, поэтому берётся высота самой Cambria.
-        assert!((height("Cambria", 11.0) - 12.896).abs() < 1e-3);
-        assert!(height("Caladea", 11.0) > 14.0);
+        // Cambria 11 пт — 12,89 пт (через Caladea с теми же размерами).
+        assert!((height("Cambria", 11.0) - 12.892).abs() < 1e-3);
     }
 
     #[test]
@@ -246,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn extra_space_goes_above_the_text() {
+    fn multiple_puts_extra_space_below_the_text() {
         let lines = [line(10.0, 3.0, 1.0), line(10.0, 3.0, 1.0)];
         let boxes = place_lines(&lines, LineRule::Multiple(2.0), 100.0);
         assert_eq!(
@@ -255,15 +265,18 @@ mod tests {
                 LineBox {
                     top: 100.0,
                     height: 28.0,
-                    baseline: 125.0
+                    baseline: 111.0
                 },
                 LineBox {
                     top: 128.0,
                     height: 28.0,
-                    baseline: 153.0
+                    baseline: 139.0
                 },
             ]
         );
+        // При «минимум» лишнее место над текстом.
+        let boxes = place_lines(&lines[..1], LineRule::AtLeast(20.0), 0.0);
+        assert!(close(boxes[0].baseline, 17.0));
         // Точная высота меньше шрифта: обрезается верх, низ на месте.
         let boxes = place_lines(&lines[..1], LineRule::Exact(8.0), 0.0);
         assert!(close(boxes[0].baseline, 5.0));

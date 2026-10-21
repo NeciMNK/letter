@@ -22,7 +22,7 @@ use std::ops::Range;
 use unicode_bidi::{BidiInfo, Level};
 use unicode_linebreak::{BreakOpportunity, linebreaks};
 
-use crate::fonts::{FontLibrary, FontMatch, microsoft_line_metrics};
+use crate::fonts::{FontLibrary, FontMatch};
 use crate::shaping::{ShapedRun, Shaper, TextStyle};
 
 /// Допуск при сравнении ширин, пт: строка «влезает», если вылезает
@@ -415,8 +415,6 @@ struct Builder<'a> {
     breaks: Vec<bool>,
     /// Заданные позиции табуляции по возрастанию, без черт.
     stops: Vec<TabStop>,
-    /// Шрифт, заданный в каждом куске (до замены).
-    families: Vec<String>,
 }
 
 impl<'a> Builder<'a> {
@@ -449,7 +447,6 @@ impl<'a> Builder<'a> {
             clusters: Vec::new(),
             breaks,
             stops,
-            families: spans.iter().map(|s| s.style.family.clone()).collect(),
         };
         builder.shape(spans);
         builder
@@ -835,21 +832,14 @@ impl<'a> Builder<'a> {
     }
 
     /// Высота строки по шрифтам её букв (по размерам Windows, как в Word).
-    /// Если вместо шрифта Microsoft взята замена другой высоты, берётся
-    /// высота настоящего шрифта.
     fn line_height(&mut self, clusters: Range<usize>, mark_style: &TextStyle) -> (f32, f32, f32) {
-        let mut fonts: Vec<(&FontMatch, &str, f32)> = Vec::new();
+        let mut fonts: Vec<(&FontMatch, f32)> = Vec::new();
         for cluster in &self.clusters[clusters] {
             if let Kind::Text { run, .. } = cluster.kind
                 && let Some(r) = self.runs.get(run)
+                && !fonts.iter().any(|(f, s)| f.id == r.font.id && *s == r.size)
             {
-                let family = self.families.get(cluster.span).map_or("", String::as_str);
-                if !fonts
-                    .iter()
-                    .any(|(f, n, s)| f.id == r.font.id && *n == family && *s == r.size)
-                {
-                    fonts.push((&r.font, family, r.size));
-                }
+                fonts.push((&r.font, r.size));
             }
         }
         let mark = self
@@ -858,14 +848,11 @@ impl<'a> Builder<'a> {
         if fonts.is_empty()
             && let Some(m) = &mark
         {
-            fonts.push((m, &mark_style.family, mark_style.size));
+            fonts.push((m, mark_style.size));
         }
         let mut sizes = Vec::new();
-        for (font, family, size) in fonts {
-            let real = font.family.eq_ignore_ascii_case(family);
-            if !real && let Some([a, d, l]) = microsoft_line_metrics(family) {
-                sizes.push((a * size, d * size, l * size));
-            } else if let Some(m) = self.shaper.metrics(self.library, font.id) {
+        for (font, size) in fonts {
+            if let Some(m) = self.shaper.metrics(self.library, font.id) {
                 sizes.push((
                     m.win_ascent * size,
                     m.win_descent * size,
