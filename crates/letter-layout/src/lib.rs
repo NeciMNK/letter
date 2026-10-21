@@ -8,11 +8,14 @@
 //!   кернинг, письмо справа налево, подбор шрифта для отдельных букв);
 //! - [`lines`] — разбиение абзаца на строки: перенос по словам,
 //!   выравнивание, отступы, табуляции, порядок показа текста справа
-//!   налево.
+//!   налево;
+//! - [`spacing`] — межстрочный и межабзацный интервалы: строки и абзацы
+//!   по вертикали.
 
 pub mod fonts;
 pub mod lines;
 pub mod shaping;
+pub mod spacing;
 
 pub use fonts::{FontId, FontLibrary, FontMatch};
 pub use lines::{
@@ -20,3 +23,7 @@ pub use lines::{
     TabStop, TextItem, TextSpan, break_lines,
 };
 pub use shaping::{FontMetrics, ShapedGlyph, ShapedRun, Shaper, TextStyle};
+pub use spacing::{
+    LineBox, LineRule, ParagraphBlock, ParagraphSpacing, PlacedParagraph, place_lines,
+    stack_paragraphs,
+};
