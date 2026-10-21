@@ -7,6 +7,7 @@
 //! строку, Backspace и Delete стирают, Tab вставляет табуляцию.
 //! Выделение — Shift с клавишами перемещения, мышью (протянуть,
 //! Shift+щелчок, двойной щелчок — слово, тройной — абзац) и Ctrl+A.
+//! Ctrl+Z отменяет правку, Ctrl+Y (и Ctrl+Shift+Z) повторяет.
 
 use std::path::{Path, PathBuf};
 
@@ -17,9 +18,8 @@ use eframe::egui::{
     Pos2, Rect, Sense, Vec2, ViewportCommand, emath::GuiRounding,
 };
 use letter_editor::{
-    Motion, Position, Selection, caret, delete_backward, delete_forward, delete_range, hit_test,
-    insert_line_break, insert_text, move_cursor, paragraph_at, select_all, selection_rects,
-    split_paragraph, word_at,
+    Command, History, Motion, Position, Selection, caret, hit_test, move_cursor, paragraph_at,
+    select_all, selection_rects, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, Shaper, layout_document};
 use letter_model::Document;
@@ -64,6 +64,8 @@ struct OpenDocument {
     path: PathBuf,
     /// Сам документ; правки меняют его, а потом он верстается заново.
     doc: Document,
+    /// Отмена и повтор правок.
+    history: History,
     /// Свёрстанные страницы.
     layout: DocumentLayout,
     /// Где стоит курсор.
@@ -84,6 +86,13 @@ impl OpenDocument {
         Selection::new(self.anchor, self.cursor)
     }
 
+    /// Ставит выделение (и курсор на его конец, где `focus`).
+    fn set_selection(&mut self, selection: Selection) {
+        self.anchor = selection.anchor;
+        self.cursor = selection.focus;
+        self.goal_x = None;
+    }
+
     /// Верстает документ заново после правки.
     fn relayout(&mut self, shaper: &mut Shaper, library: &FontLibrary) {
         self.layout = layout_document(&self.doc, shaper, library);
@@ -96,18 +105,9 @@ enum Action {
     /// Сдвинуть курсор; `true` — с Shift, выделение растёт.
     Move(Motion, bool),
     SelectAll,
-    Edit(Edit),
-}
-
-/// Правка с клавиатуры.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Edit {
-    Text(String),
-    Enter,
-    LineBreak,
-    Tab,
-    Backspace,
-    Delete,
+    Edit(Command),
+    Undo,
+    Redo,
 }
 
 /// Состояние окна просмотра.
@@ -165,6 +165,7 @@ impl Viewer {
         self.document = Some(OpenDocument {
             path: path.to_owned(),
             doc,
+            history: History::new(),
             layout,
             cursor: Position::default(),
             anchor: Position::default(),
@@ -331,7 +332,7 @@ impl Viewer {
         // движением курсора и в конце.
         let mut stale = false;
         for action in actions {
-            match action {
+            match action.clone() {
                 Action::Move(motion, extend) => {
                     if std::mem::take(&mut stale) {
                         document.relayout(&mut self.shaper, &self.library);
@@ -356,38 +357,32 @@ impl Viewer {
                     if !extend {
                         document.anchor = document.cursor;
                     }
+                    document.history.seal();
                 }
                 Action::SelectAll => {
                     if std::mem::take(&mut stale) {
                         document.relayout(&mut self.shaper, &self.library);
                     }
-                    let all = select_all(&document.layout);
-                    document.anchor = all.anchor;
-                    document.cursor = all.focus;
-                    document.goal_x = None;
+                    document.set_selection(select_all(&document.layout));
+                    document.history.seal();
                 }
-                Action::Edit(edit) => {
+                Action::Edit(command) => {
                     let selection = document.selection();
-                    let doc = &mut document.doc;
-                    // Выделенное заменяется набранным или просто стирается.
-                    let at = if selection.is_empty() {
-                        document.cursor
-                    } else {
-                        delete_range(doc, selection.start(), selection.end())
-                    };
-                    let erased = !selection.is_empty();
-                    document.cursor = match edit {
-                        Edit::Text(text) => insert_text(doc, at, &text),
-                        Edit::Enter => split_paragraph(doc, at),
-                        Edit::LineBreak => insert_line_break(doc, at),
-                        Edit::Tab => insert_text(doc, at, "\t"),
-                        Edit::Backspace | Edit::Delete if erased => at,
-                        Edit::Backspace => delete_backward(doc, at),
-                        Edit::Delete => delete_forward(doc, at),
-                    };
-                    document.anchor = document.cursor;
-                    document.goal_x = None;
+                    let selection = document.history.run(&mut document.doc, selection, command);
+                    document.set_selection(selection);
                     stale = true;
+                }
+                Action::Undo | Action::Redo => {
+                    let history = &mut document.history;
+                    let restored = if action == Action::Undo {
+                        history.undo(&mut document.doc)
+                    } else {
+                        history.redo(&mut document.doc)
+                    };
+                    if let Some(selection) = restored {
+                        document.set_selection(selection);
+                        stale = true;
+                    }
                 }
             }
         }
@@ -597,6 +592,7 @@ impl Viewer {
                     if !shift {
                         document.anchor = position;
                     }
+                    document.history.seal();
                     document.cursor_since = now;
                     document.goal_x = None;
                 } else if dragging && response.is_pointer_button_down_on() {
@@ -709,7 +705,7 @@ fn key_action(event: &egui::Event, screen: f32) -> Option<Action> {
         // управляющие знаки отсюда выбрасываем.
         Event::Text(text) | Event::Ime(ImeEvent::Commit(text)) => {
             let text: String = text.chars().filter(|c| !c.is_control()).collect();
-            (!text.is_empty()).then_some(Action::Edit(Edit::Text(text)))
+            (!text.is_empty()).then_some(Action::Edit(Command::Type(text)))
         }
         Event::Key {
             key,
@@ -719,15 +715,20 @@ fn key_action(event: &egui::Event, screen: f32) -> Option<Action> {
         } => {
             let plain = !modifiers.command && !modifiers.alt;
             let edit = match key {
-                Key::Enter if plain && modifiers.shift => Some(Edit::LineBreak),
-                Key::Enter if plain => Some(Edit::Enter),
-                Key::Tab if plain && !modifiers.shift => Some(Edit::Tab),
-                Key::Backspace if plain => Some(Edit::Backspace),
-                Key::Delete if plain => Some(Edit::Delete),
+                Key::Enter if plain && modifiers.shift => Some(Command::LineBreak),
+                Key::Enter if plain => Some(Command::SplitParagraph),
+                Key::Tab if plain && !modifiers.shift => Some(Command::Type("\t".into())),
+                Key::Backspace if plain => Some(Command::DeleteBackward),
+                Key::Delete if plain => Some(Command::DeleteForward),
                 _ => None,
             };
-            if *key == Key::A && modifiers.command && !modifiers.alt && !modifiers.shift {
-                return Some(Action::SelectAll);
+            let ctrl = modifiers.command && !modifiers.alt;
+            match key {
+                Key::A if ctrl && !modifiers.shift => return Some(Action::SelectAll),
+                Key::Z if ctrl && !modifiers.shift => return Some(Action::Undo),
+                Key::Y if ctrl && !modifiers.shift => return Some(Action::Redo),
+                Key::Z if ctrl => return Some(Action::Redo),
+                _ => {}
             }
             edit.map(Action::Edit).or_else(|| {
                 key_motion(*key, *modifiers, screen).map(|m| Action::Move(m, modifiers.shift))
@@ -1099,30 +1100,33 @@ mod tests {
         let action = |event: Event| key_action(&event, 0.0);
         assert_eq!(
             action(Event::Text("ы\t".into())),
-            Some(Action::Edit(Edit::Text("ы".into())))
+            Some(Action::Edit(Command::Type("ы".into())))
         );
         assert_eq!(action(Event::Text("\r".into())), None);
         assert_eq!(
             action(Event::Ime(egui::ImeEvent::Commit("漢字".into()))),
-            Some(Action::Edit(Edit::Text("漢字".into())))
+            Some(Action::Edit(Command::Type("漢字".into())))
         );
         assert_eq!(
             action(press(Key::Enter, none)),
-            Some(Action::Edit(Edit::Enter))
+            Some(Action::Edit(Command::SplitParagraph))
         );
         assert_eq!(
             action(press(Key::Enter, Modifiers::SHIFT)),
-            Some(Action::Edit(Edit::LineBreak))
+            Some(Action::Edit(Command::LineBreak))
         );
-        assert_eq!(action(press(Key::Tab, none)), Some(Action::Edit(Edit::Tab)));
+        assert_eq!(
+            action(press(Key::Tab, none)),
+            Some(Action::Edit(Command::Type("\t".into())))
+        );
         assert_eq!(action(press(Key::Tab, Modifiers::SHIFT)), None);
         assert_eq!(
             action(press(Key::Backspace, none)),
-            Some(Action::Edit(Edit::Backspace))
+            Some(Action::Edit(Command::DeleteBackward))
         );
         assert_eq!(
             action(press(Key::Delete, none)),
-            Some(Action::Edit(Edit::Delete))
+            Some(Action::Edit(Command::DeleteForward))
         );
         assert_eq!(action(press(Key::Enter, Modifiers::COMMAND)), None);
         assert_eq!(
@@ -1302,5 +1306,56 @@ mod tests {
             (word.start(), word.end())
         );
         assert!(!selection.is_empty());
+    }
+
+    #[test]
+    fn ctrl_z_undoes_and_ctrl_y_redoes() {
+        let ctrl = Modifiers::COMMAND;
+        assert_eq!(key_action(&press(Key::Z, ctrl), 0.0), Some(Action::Undo));
+        assert_eq!(key_action(&press(Key::Y, ctrl), 0.0), Some(Action::Redo));
+        assert_eq!(
+            key_action(&press(Key::Z, ctrl | Modifiers::SHIFT), 0.0),
+            Some(Action::Redo)
+        );
+
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let before = first_text(&mut viewer);
+        let lines = viewer.document.as_ref().unwrap().layout.pages[0]
+            .lines
+            .len();
+
+        let text = |t: &str| Event::Text(t.into());
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![
+                text("a"),
+                text("b"),
+                text(" "),
+                text("c"),
+                press(Key::Enter, Modifiers::NONE),
+            ]),
+        );
+        assert_eq!(first_text(&mut viewer), "ab c");
+
+        // Enter, потом слово «c», потом «ab ».
+        frame(&ctx, &mut viewer, events(vec![press(Key::Z, ctrl)]));
+        assert_eq!(first_text(&mut viewer), format!("ab c{before}"));
+        assert_eq!(viewer.cursor(), Some(Position::new(0, 4)));
+        frame(&ctx, &mut viewer, events(vec![press(Key::Z, ctrl)]));
+        assert_eq!(first_text(&mut viewer), format!("ab {before}"));
+        frame(&ctx, &mut viewer, events(vec![press(Key::Z, ctrl)]));
+        assert_eq!(first_text(&mut viewer), before);
+        assert_eq!(viewer.cursor(), Some(Position::default()));
+        // Вёрстка тоже вернулась.
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(document.layout.pages[0].lines.len(), lines);
+
+        frame(&ctx, &mut viewer, events(vec![press(Key::Y, ctrl)]));
+        assert_eq!(first_text(&mut viewer), format!("ab {before}"));
+        assert_eq!(viewer.cursor(), Some(Position::new(0, 3)));
     }
 }

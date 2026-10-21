@@ -255,6 +255,14 @@ fn find(doc: &Document, index: usize) -> Option<Path> {
         .find_map(|(s, section)| walk(&section.blocks, &mut Vec::new(), s, &mut left))
 }
 
+/// Раздел и номер блока верхнего уровня (абзаца или таблицы раздела),
+/// в котором лежит абзац `index`.
+pub(crate) fn top_level(doc: &Document, index: usize) -> Option<(usize, usize)> {
+    let path = find(doc, index)?;
+    let block = path.cells.first().map_or(path.block, |&(b, _, _)| b);
+    Some((path.section, block))
+}
+
 fn blocks_mut<'a>(doc: &'a mut Document, path: &Path) -> Option<&'a mut Vec<Block>> {
     let mut blocks = &mut doc.sections.get_mut(path.section)?.blocks;
     for &(b, r, c) in &path.cells {
