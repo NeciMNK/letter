@@ -25,7 +25,9 @@ pub use lines::{
     Align, Line, LineEnd, LineItem, ParagraphFormat, ParagraphLines, TabItem, TabKind, TabLeader,
     TabStop, TextItem, TextSpan, break_lines,
 };
-pub use pages::{DocumentLayout, Margins, Page, PageLine, layout_document};
+pub use pages::{
+    DocumentLayout, LayoutCache, Margins, Page, PageLine, layout_document, layout_document_cached,
+};
 pub use shaping::{FontMetrics, ShapedGlyph, ShapedRun, Shaper, TextStyle};
 pub use spacing::{
     LineBox, LineRule, ParagraphBlock, ParagraphSpacing, PlacedParagraph, effective_spacing,

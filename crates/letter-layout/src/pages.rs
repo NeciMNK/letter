@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use letter_model::{
     Alignment, Block, Document, FirstLineIndent, LineSpacing, PageSize, Paragraph, ResolvedFonts,
-    ResolvedRunProps, RunContent, RunProps, Section, TabStopKind, Twips,
+    ResolvedRunProps, RunContent, RunProps, Section, Settings, Styles, TabStopKind, Theme, Twips,
 };
 
 use crate::fonts::FontLibrary;
@@ -79,7 +79,7 @@ pub struct Page {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PageLine {
     /// Строка; горизонтальные координаты в ней — от левого поля.
-    pub line: Line,
+    pub line: Arc<Line>,
     /// Левое поле страницы, пт от края листа: прибавить к координатам
     /// строки.
     pub x: f32,
@@ -105,24 +105,130 @@ pub fn layout_document(
     shaper: &mut Shaper,
     library: &FontLibrary,
 ) -> DocumentLayout {
+    layout_document_cached(doc, shaper, library, &mut LayoutCache::default())
+}
+
+/// Абзацы прошлой вёрстки, разбитые на строки. Разбиение на строки
+/// (подбор шрифтов, шейпинг, переносы) — самая дорогая часть вёрстки,
+/// а при правке меняется обычно один абзац: остальные берутся отсюда.
+#[derive(Default)]
+pub struct LayoutCache {
+    /// Стили, настройки и тема, с которыми свёрстаны абзацы: если они
+    /// изменились, всё верстается заново.
+    context: Option<(Styles, Settings, Theme)>,
+    /// Абзацы по порядку в документе.
+    entries: Vec<Entry>,
+    /// Сколько абзацев разбито на строки заново в последний раз.
+    rebuilt: usize,
+}
+
+impl LayoutCache {
+    /// Сколько абзацев последняя вёрстка разбила на строки заново
+    /// (остальные взяты из запомненных).
+    pub fn rebuilt(&self) -> usize {
+        self.rebuilt
+    }
+}
+
+/// Запомненный абзац.
+struct Entry {
+    paragraph: Paragraph,
+    /// Ширина текста, пт (`f32::to_bits`, чтобы сравнивать точно).
+    width: u32,
+    prepared: Arc<Prepared>,
+}
+
+/// Раскладывает документ по страницам, беря из `cache` абзацы, которые
+/// не изменились с прошлого раза (с начала и с конца документа), и
+/// запоминая в нём новые. Результат такой же, как у [`layout_document`].
+pub fn layout_document_cached(
+    doc: &Document,
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+    cache: &mut LayoutCache,
+) -> DocumentLayout {
+    let context_same = cache
+        .context
+        .as_ref()
+        .is_some_and(|(styles, settings, theme)| {
+            *styles == doc.styles && *settings == doc.settings && *theme == doc.theme
+        });
+    if !context_same {
+        cache.entries.clear();
+        cache.context = Some((doc.styles.clone(), doc.settings.clone(), doc.theme.clone()));
+    }
+
+    // Все абзацы документа с шириной текста своего раздела.
+    let mut all: Vec<(&Paragraph, f32)> = Vec::new();
+    let mut section_sizes = Vec::new();
+    for section in &doc.sections {
+        let width = Geometry::of(section).text_width();
+        let mut paragraphs = Vec::new();
+        collect_paragraphs(&section.blocks, &mut paragraphs);
+        section_sizes.push(paragraphs.len());
+        all.extend(paragraphs.into_iter().map(|p| (p, width)));
+    }
+
+    // Совпадающие начало и конец со старой вёрсткой.
+    let old = std::mem::take(&mut cache.entries);
+    let same = |entry: &Entry, (paragraph, width): (&Paragraph, f32)| {
+        entry.width == width.to_bits() && entry.paragraph == *paragraph
+    };
+    let prefix = old
+        .iter()
+        .zip(&all)
+        .take_while(|(entry, new)| same(entry, **new))
+        .count();
+    let limit = old.len().min(all.len()) - prefix;
+    let suffix = old
+        .iter()
+        .rev()
+        .zip(all.iter().rev())
+        .take(limit)
+        .take_while(|(entry, new)| same(entry, **new))
+        .count();
+    let mut old: Vec<Option<Entry>> = old.into_iter().map(Some).collect();
+    let old_len = old.len();
+    let mut rebuilt = 0;
+    let mut entries = Vec::with_capacity(all.len());
+    for (k, &(paragraph, width)) in all.iter().enumerate() {
+        let reused = if k < prefix {
+            old[k].take()
+        } else if k >= all.len() - suffix {
+            old[old_len - (all.len() - k)].take()
+        } else {
+            None
+        };
+        let entry = reused.unwrap_or_else(|| {
+            rebuilt += 1;
+            Entry {
+                paragraph: paragraph.clone(),
+                width: width.to_bits(),
+                prepared: Arc::new(prepare(doc, paragraph, width, shaper, library)),
+            }
+        });
+        entries.push(entry);
+    }
+
     let mut pager = Pager {
         add_spacing: doc.settings.add_paragraph_spacing,
         ..Pager::default()
     };
     let mut paragraph_index = 0;
-    for section in &doc.sections {
-        let geometry = Geometry::of(section);
-        pager.start_section(geometry);
-        let mut paragraphs = Vec::new();
-        collect_paragraphs(&section.blocks, &mut paragraphs);
-        let prepared: Vec<Prepared> = paragraphs
+    let mut start = 0;
+    for (section, &count) in doc.sections.iter().zip(&section_sizes) {
+        pager.start_section(Geometry::of(section));
+        let prepared: Vec<Arc<Prepared>> = entries[start..start + count]
             .iter()
-            .map(|p| prepare(doc, p, geometry.text_width(), shaper, library))
+            .map(|e| Arc::clone(&e.prepared))
             .collect();
+        start += count;
         let blocks: Vec<ParagraphBlock<'_>> = prepared
             .iter()
             .map(|p| ParagraphBlock {
-                lines: &p.lines,
+                // Раскладке по страницам нужны только интервалы и стиль
+                // (`effective_spacing`), строки она берёт из `Prepared`.
+                lines: &[],
                 spacing: p.spacing,
                 style: p.style.as_deref(),
             })
@@ -135,6 +241,8 @@ pub fn layout_document(
     if pager.pages.is_empty() {
         pager.start_section(Geometry::of(&Section::default()));
     }
+    cache.entries = entries;
+    cache.rebuilt = rebuilt;
     DocumentLayout { pages: pager.pages }
 }
 
@@ -207,7 +315,10 @@ fn points(t: Twips) -> f32 {
 /// Абзац, готовый к раскладке.
 struct Prepared {
     text: Arc<str>,
-    lines: Vec<Line>,
+    /// Строки общие с [`PageLine::line`]: страницы не копируют глифы.
+    lines: Vec<Arc<Line>>,
+    /// Высота каждой строки с учётом межстрочного интервала, пт.
+    heights: Vec<f32>,
     spans: Arc<[ResolvedRunProps]>,
     spacing: ParagraphSpacing,
     style: Option<String>,
@@ -215,15 +326,6 @@ struct Prepared {
     keep_lines: bool,
     page_break_before: bool,
     widow_control: bool,
-}
-
-impl Prepared {
-    fn heights(&self) -> Vec<f32> {
-        self.lines
-            .iter()
-            .map(|l| self.spacing.line.height(l))
-            .collect()
-    }
 }
 
 /// Переводит абзац модели в типы вёрстки и разбивает на строки.
@@ -315,7 +417,12 @@ fn prepare(
     let broken = break_lines(shaper, library, &spans, &mark_style, &format);
     Prepared {
         text: broken.text.into(),
-        lines: broken.lines,
+        heights: broken
+            .lines
+            .iter()
+            .map(|l| spacing.line.height(l))
+            .collect(),
+        lines: broken.lines.into_iter().map(Arc::new).collect(),
         spans: span_props.into(),
         spacing,
         style: props.style,
@@ -442,7 +549,7 @@ impl Pager {
     /// сами абзацы и первые строки следующего за цепочкой.
     fn keep_chain_height(
         &self,
-        prepared: &[Prepared],
+        prepared: &[Arc<Prepared>],
         blocks: &[ParagraphBlock<'_>],
         i: usize,
     ) -> f32 {
@@ -456,7 +563,7 @@ impl Pager {
                 let (_, previous_after) = effective_spacing(blocks, j - 1);
                 gap_between(previous_after, before, self.add_spacing) - previous_after
             };
-            let heights = p.heights();
+            let heights = &p.heights;
             if !p.keep_next {
                 let first = if p.widow_control && heights.len() > 1 {
                     2
@@ -474,7 +581,7 @@ impl Pager {
 
     fn place(
         &mut self,
-        prepared: &[Prepared],
+        prepared: &[Arc<Prepared>],
         blocks: &[ParagraphBlock<'_>],
         i: usize,
         paragraph_index: usize,
@@ -498,7 +605,7 @@ impl Pager {
             }
         }
 
-        let heights = p.heights();
+        let heights = &p.heights;
         // Куски абзаца между разрывами страницы.
         let mut segments = Vec::new();
         let mut start = 0;
@@ -579,7 +686,7 @@ impl Pager {
                 }
                 self.y += before_now;
                 for k in next..next + fit {
-                    self.push_line(p, &heights, k, paragraph_index);
+                    self.push_line(p, k, paragraph_index);
                 }
                 next += fit;
                 if next < segment.end {
@@ -594,14 +701,15 @@ impl Pager {
         self.break_pending = ends_with_break;
     }
 
-    fn push_line(&mut self, p: &Prepared, heights: &[f32], k: usize, paragraph: usize) {
-        let (Some(line), Some(&height), Some(g)) = (p.lines.get(k), heights.get(k), self.geometry)
+    fn push_line(&mut self, p: &Prepared, k: usize, paragraph: usize) {
+        let (Some(line), Some(&height), Some(g)) =
+            (p.lines.get(k), p.heights.get(k), self.geometry)
         else {
             return;
         };
         let top = self.y;
         let placed = PageLine {
-            line: line.clone(),
+            line: Arc::clone(line),
             x: g.margins.left,
             top,
             height,
@@ -847,6 +955,51 @@ mod tests {
         let mut empty = Document::new();
         empty.sections.clear();
         assert_eq!(lay(&empty).pages.len(), 1);
+    }
+
+    #[test]
+    fn cached_layout_matches_a_fresh_one() {
+        let library = FontLibrary::embedded_only();
+        let mut shaper = Shaper::new();
+        let mut cache = LayoutCache::default();
+        let words = "word ".repeat(30);
+        let mut d = doc((0..12).map(|i| para(&format!("{i} {words}"))).collect());
+        let mut check = |d: &Document, rebuilt: Option<usize>| {
+            let cached = layout_document_cached(d, &mut shaper, &library, &mut cache);
+            assert_eq!(cached, lay(d));
+            if let Some(n) = rebuilt {
+                assert_eq!(cache.rebuilt(), n);
+            }
+        };
+        check(&d, Some(12));
+        // Ничего не менялось — ничего не верстается заново.
+        check(&d, Some(0));
+        // Правка в середине: заново только этот абзац.
+        d.sections[0].blocks[5] = para("short").into();
+        check(&d, Some(1));
+        // Вставка и удаление абзацев.
+        d.sections[0].blocks.insert(3, para("new|line").into());
+        check(&d, Some(1));
+        d.sections[0].blocks.remove(0);
+        check(&d, Some(0));
+        d.sections[0].blocks.truncate(2);
+        check(&d, Some(0));
+        // Интервал «с новой страницы» у абзаца сдвигает следующие страницы.
+        if let Some(Block::Paragraph(p)) = d.sections[0].blocks.get_mut(1) {
+            p.props.page_break_before = Some(true);
+        }
+        check(&d, Some(1));
+        // Сменились стили — заново всё.
+        d.styles.defaults.run.size = Some(letter_model::HalfPoints(30));
+        check(&d, Some(2));
+        // Другая ширина листа — абзацы раздела заново.
+        if let Some(size) = &mut d.sections[0].props.page_size {
+            size.width = Twips(5000);
+        }
+        check(&d, Some(2));
+        // Пустой документ.
+        d.sections.clear();
+        check(&d, Some(0));
     }
 
     #[test]
