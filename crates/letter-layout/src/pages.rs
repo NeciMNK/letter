@@ -382,6 +382,9 @@ struct Pager {
     has_content: bool,
     /// Страница началась сама (текст не влез), а не из-за разрыва.
     soft_top: bool,
+    /// Предыдущий абзац кончился разрывом страницы: следующий начнёт
+    /// новую страницу.
+    break_pending: bool,
     /// Интервал после последнего абзаца на странице.
     previous_after: f32,
     /// Складывать интервалы между абзацами (иначе — больший из двух).
@@ -407,6 +410,7 @@ impl Pager {
         self.y = g.margins.top;
         self.has_content = false;
         self.soft_top = soft;
+        self.break_pending = false;
         self.previous_after = 0.0;
     }
 
@@ -479,6 +483,11 @@ impl Pager {
             return;
         };
         let (before, after) = effective_spacing(blocks, i);
+        // Как в Word: страница после разрыва в конце абзаца начинается
+        // без интервала перед абзацем, как будто текст просто не влез.
+        if self.break_pending && self.has_content {
+            self.new_page(true);
+        }
         if p.page_break_before && self.has_content {
             self.new_page(false);
         }
@@ -501,6 +510,18 @@ impl Pager {
         }
         if start < p.lines.len() || segments.is_empty() {
             segments.push(start..p.lines.len());
+        }
+        // Разрыв страницы в самом конце абзаца: знак абзаца остаётся на
+        // странице с разрывом (Word не переносит пустую строку на новую
+        // страницу), новую страницу начнёт следующий абзац.
+        let mut ends_with_break = false;
+        if segments.len() > 1
+            && segments.last().is_some_and(|last| {
+                last.len() == 1 && p.lines.get(last.start).is_some_and(|l| l.range.is_empty())
+            })
+        {
+            segments.pop();
+            ends_with_break = true;
         }
 
         let mut first_segment = true;
@@ -570,6 +591,7 @@ impl Pager {
         self.y += after;
         self.previous_after = after;
         self.has_content = true;
+        self.break_pending = ends_with_break;
     }
 
     fn push_line(&mut self, p: &Prepared, heights: &[f32], k: usize, paragraph: usize) {
@@ -583,7 +605,7 @@ impl Pager {
             x: g.margins.left,
             top,
             height,
-            baseline: top + height - line.descent,
+            baseline: top + p.spacing.line.baseline_offset(line, height),
             paragraph,
             text: p.text.clone(),
             spans: p.spans.clone(),
@@ -690,6 +712,25 @@ mod tests {
         let mut first = para("x");
         first.props.page_break_before = Some(true);
         assert_eq!(pages(&lay(&doc(vec![first]))), [vec![0]]);
+    }
+
+    #[test]
+    fn break_at_paragraph_end_starts_next_page_without_space_before() {
+        let mut only_break = para("a");
+        only_break.content.push(letter_model::Inline::Run(Run {
+            props: RunProps::default(),
+            content: vec![RunContent::Break(BreakKind::Page)],
+        }));
+        let mut next = para("b");
+        next.props.spacing = letter_model::Spacing {
+            before: Some(Twips(240)),
+            ..Default::default()
+        };
+        let layout = lay(&doc(vec![only_break, next, para("c")]));
+        // Пустая строка после разрыва не переносится на новую страницу.
+        assert_eq!(pages(&layout), [vec![0], vec![1, 2]]);
+        // И интервал перед абзацем вверху новой страницы не добавляется.
+        assert!(layout.pages[1].lines[0].top.abs() < 1e-3);
     }
 
     #[test]

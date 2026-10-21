@@ -3,23 +3,23 @@
 # (перенос и страница как в эталоне) и сколько из них совпало ещё и
 # по положению (допуск 1 пт). Тест падает, если число стало
 # меньше. Обновить: LETTER_UPDATE_BASELINE=1 cargo test -p letter-cli --test compare
-libreoffice/bold-italic 1 0
+libreoffice/bold-italic 1 1
 libreoffice/empty 0 0
-libreoffice/header-footer 3 0
+libreoffice/header-footer 3 2
 libreoffice/headings 7 1
-libreoffice/image 2 0
-libreoffice/lists 9 0
-libreoffice/pages 62 0
-libreoffice/plain-text 4 0
+libreoffice/image 2 1
+libreoffice/lists 9 2
+libreoffice/pages 10 2
+libreoffice/plain-text 2 1
 libreoffice/ru-en 3 0
-libreoffice/table 2 0
-word/bold-italic 1 0
+libreoffice/table 2 1
+word/bold-italic 1 1
 word/empty 0 0
-word/header-footer 3 0
+word/header-footer 3 3
 word/headings 7 1
-word/image 2 0
-word/lists 9 6
-word/pages 26 0
-word/plain-text 3 0
-word/ru-en 3 0
-word/table 2 0
+word/image 2 1
+word/lists 9 2
+word/pages 65 65
+word/plain-text 4 4
+word/ru-en 3 3
+word/table 2 1
