@@ -16,7 +16,7 @@
 
 use crate::i18n::{tr, tr_args};
 use crate::shortcuts::{self, Shortcut};
-use crate::story::{StoryEdit, edit_layout};
+use crate::story::StoryEdit;
 use std::path::{Path, PathBuf};
 
 use std::sync::Arc;
@@ -35,7 +35,7 @@ use letter_editor::{
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
 use letter_model::{
-    Alignment, BreakKind, Document, FieldChar, FieldCharKind, Paragraph, Run, RunContent,
+    Alignment, BreakKind, Document, FieldChar, FieldCharKind, NoteKind, Paragraph, Run, RunContent,
     Statistics,
 };
 use letter_render::{MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, formatting_marks};
@@ -280,7 +280,7 @@ impl OpenDocument {
                 story.write_back(&self.doc);
                 story.display =
                     layout_document_cached(&story.body, shaper, library, &mut self.cache);
-                self.layout = edit_layout(&story.display, story.page, story.header);
+                self.layout = story.edit_layout();
             }
             None => {
                 self.layout = layout_document_cached(&self.doc, shaper, library, &mut self.cache);
@@ -331,6 +331,47 @@ impl OpenDocument {
         self.relayout(shaper, library);
     }
 
+    /// Открывает для правки текст сноски `id` вида `kind` (на той
+    /// странице, где он виден).
+    fn begin_note(
+        &mut self,
+        kind: NoteKind,
+        id: String,
+        shaper: &mut Shaper,
+        library: &FontLibrary,
+    ) {
+        if self.story.is_some() {
+            self.end_story(shaper, library);
+        }
+        let Some(page) = self
+            .layout
+            .pages
+            .iter()
+            .position(|p| p.notes.iter().any(|n| n.kind == kind && n.id == id))
+        else {
+            return;
+        };
+        let display = self.layout.clone();
+        let body = std::mem::take(&mut self.doc);
+        let history = std::mem::take(&mut self.history);
+        let (edit, story) = StoryEdit::begin_note(
+            body,
+            history,
+            self.cursor,
+            self.anchor,
+            display,
+            page,
+            kind,
+            id,
+        );
+        self.doc = story;
+        self.story = Some(Box::new(edit));
+        self.cursor = Position::default();
+        self.anchor = Position::default();
+        self.goal_x = None;
+        self.relayout(shaper, library);
+    }
+
     /// «Особый колонтитул для первой страницы» у раздела страницы `page`:
     /// открытый колонтитул закрывается, флаг меняется (шаг отмены),
     /// и колонтитул той же страницы открывается снова.
@@ -341,7 +382,7 @@ impl OpenDocument {
         shaper: &mut Shaper,
         library: &FontLibrary,
     ) {
-        let header = self.story.as_ref().map(|s| s.header);
+        let header = self.story.as_ref().and_then(|s| s.header());
         self.end_story(shaper, library);
         let Some(section) = self.layout.pages.get(page).map(|p| p.section) else {
             return;
@@ -444,27 +485,30 @@ impl OpenDocument {
         let Some(edit) = self.story.take() else {
             return;
         };
-        let (section, header, kind) = (edit.section, edit.header, edit.kind);
         let (cursor, anchor) = (edit.cursor, edit.anchor);
-        let (body, history, edited) = edit.finish(&self.doc);
+        let (body, history, command) = edit.finish(&self.doc);
         self.doc = body;
         self.history = history;
         self.cursor = cursor;
         self.anchor = anchor;
         self.goal_x = None;
-        if let Some(story) = edited {
-            let command = Command::HeaderFooter {
-                section,
-                header,
-                kind,
-                story: story.map(Box::new),
-            };
+        if let Some(command) = command {
             let selection = self.selection();
             let selection = self.history.run(&mut self.doc, selection, command);
             self.set_selection(selection);
         }
         self.relayout(shaper, library);
     }
+}
+
+/// Что открыть или закрыть двойным щелчком.
+enum StoryRequest {
+    /// Колонтитул страницы: верхний (`true`) или нижний; место щелчка.
+    HeaderFooter(usize, bool, Vec2),
+    /// Текст сноски: вид и номер; место щелчка.
+    Note((NoteKind, String), Vec2),
+    /// Закончить правку.
+    End,
 }
 
 /// Что сделать по событию клавиатуры.
@@ -1673,8 +1717,10 @@ impl Viewer {
                 .map(PictureWrap::of);
             info.section =
                 letter_editor::section_props(&document.doc, document.cursor.paragraph).cloned();
-            if let Some(story) = &document.story {
-                info.story = Some(story.header);
+            if let Some(story) = &document.story
+                && let Some(header) = story.header()
+            {
+                info.story = Some(header);
                 let section = story.display.pages.get(story.page).map(|p| p.section);
                 info.title_page = section
                     .and_then(|s| story.body.sections.get(s))
@@ -1755,6 +1801,31 @@ impl Viewer {
                 // В колонтитул сноску не вставить.
                 RibbonCommand::Edit(Command::InsertNote(_))
                     if self.document.as_ref().is_some_and(|d| d.story.is_some()) => {}
+                // Новая сноска сразу открывается для правки, курсор — после
+                // её номера, как в Word.
+                RibbonCommand::Edit(Command::InsertNote(kind)) => {
+                    actions.push(Action::Edit(Command::InsertNote(kind)));
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &mut self.document
+                        && let Some(id) = letter_editor::notes(&document.doc, kind)
+                            .iter()
+                            .rev()
+                            .find(|n| n.is_regular())
+                            .map(|n| n.id.clone())
+                    {
+                        document.begin_note(kind, id, &mut self.shaper, &self.library);
+                        let end = move_cursor(
+                            &document.layout,
+                            Position::default(),
+                            Motion::DocumentEnd,
+                            None,
+                        );
+                        document.cursor = end.position;
+                        document.anchor = end.position;
+                        document.cursor_since = ctx.input(|i| i.time);
+                        self.reveal_cursor = true;
+                    }
+                }
                 RibbonCommand::Edit(command) => actions.push(Action::Edit(command)),
                 RibbonCommand::InsertPicture => self.picture_requested = true,
                 RibbonCommand::EditHeaderFooter { header } => {
@@ -2159,7 +2230,7 @@ impl Viewer {
         let mut menu = Vec::new();
         // Двойной щелчок по колонтитулу открывает его для правки
         // (страница, верхний ли, место щелчка), по тексту — закрывает.
-        let mut story_request: Option<Option<(usize, bool, Vec2)>> = None;
+        let mut story_request: Option<StoryRequest> = None;
         // Ctrl+щелчок по ссылке на закладку: показать курсор на ней.
         let mut reveal = false;
         let output = area.show_viewport(ui, |ui, viewport| {
@@ -2403,12 +2474,18 @@ impl Viewer {
                 && let Some(shown) = pages.get(page)
             {
                 let zone = crate::story::zone(shown, local.y);
-                let editing = document.story.as_ref().map(|s| (s.page, s.header));
-                match (zone, editing) {
-                    (Some(header), Some(open)) if open == (page, header) => {}
-                    (Some(header), _) => story_request = Some(Some((page, header, local))),
-                    (None, Some(_)) => story_request = Some(None),
-                    (None, None) => {}
+                let note = crate::story::note_at(shown, local.y);
+                let editing = document.story.as_ref().map(|s| (s.page, s.header()));
+                let editing_note = document.story.as_ref().and_then(|s| s.note.clone());
+                match (note, zone, editing) {
+                    (Some(note), _, _) if editing_note.as_ref() == Some(&note) => {}
+                    (Some(note), _, _) => story_request = Some(StoryRequest::Note(note, local)),
+                    (None, Some(header), Some(open)) if open == (page, Some(header)) => {}
+                    (None, Some(header), _) => {
+                        story_request = Some(StoryRequest::HeaderFooter(page, header, local));
+                    }
+                    (None, None, Some(_)) => story_request = Some(StoryRequest::End),
+                    (None, None, None) => {}
                 }
             }
             let has_selection = document.anchor != document.cursor;
@@ -2428,8 +2505,8 @@ impl Viewer {
                     if *show_marks {
                         paint_marks(ui.painter(), page, screen_rect(i).min, 1.0 / points);
                     }
-                    if let Some(story) = &document.story {
-                        paint_story_frame(ui, page, screen_rect(i), 1.0 / points, story.header);
+                    if let Some(header) = document.story.as_ref().and_then(|s| s.header()) {
+                        paint_story_frame(ui, page, screen_rect(i), 1.0 / points, header);
                     }
                 }
             }
@@ -2513,15 +2590,25 @@ impl Viewer {
             self.reveal_cursor = true;
         }
         if let (Some(request), Some(document)) = (story_request, &mut self.document) {
-            match request {
-                Some((page, header, local)) => {
+            let open = match request {
+                StoryRequest::HeaderFooter(page, header, local) => {
                     document.begin_story(page, header, &mut self.shaper, &self.library);
-                    if let Some(position) = hit_test(&document.layout, page, local.x, local.y) {
-                        document.cursor = position;
-                        document.anchor = position;
-                    }
+                    Some((page, local))
                 }
-                None => document.end_story(&mut self.shaper, &self.library),
+                StoryRequest::Note((kind, id), local) => {
+                    document.begin_note(kind, id, &mut self.shaper, &self.library);
+                    document.story.as_ref().map(|s| (s.page, local))
+                }
+                StoryRequest::End => {
+                    document.end_story(&mut self.shaper, &self.library);
+                    None
+                }
+            };
+            if let Some((page, local)) = open
+                && let Some(position) = hit_test(&document.layout, page, local.x, local.y)
+            {
+                document.cursor = position;
+                document.anchor = position;
             }
             document.cursor_since = ui.input(|i| i.time);
         }
@@ -3595,24 +3682,35 @@ mod tests {
         let mut viewer = Viewer::new(FontLibrary::embedded_only());
         viewer.open(&fixture("pages.docx")).unwrap();
         frame(&ctx, &mut viewer, screen());
-        frame(
-            &ctx,
-            &mut viewer,
-            key(Key::F, Modifiers::COMMAND | Modifiers::ALT),
-        );
+        let shortcut = key(Key::F, Modifiers::COMMAND | Modifiers::ALT);
+        frame(&ctx, &mut viewer, shortcut);
+        // Сноска открыта для правки: набранное идёт в её текст.
+        assert!(viewer.document.as_ref().unwrap().story.is_some());
+        let mut input = screen();
+        input.events = vec![Event::Text("note".into())];
+        frame(&ctx, &mut viewer, input);
+        frame(&ctx, &mut viewer, key(Key::Escape, Modifiers::NONE));
         let document = viewer.document.as_ref().unwrap();
-        assert_eq!(
-            document
-                .doc
-                .footnotes
+        assert!(document.story.is_none());
+        let regular = |doc: &Document| {
+            doc.footnotes
                 .iter()
                 .filter(|n| n.is_regular())
-                .count(),
-            1
-        );
-        let page = &document.layout.pages[0];
-        assert_eq!(page.notes.len(), 1);
+                .map(|n| n.blocks[0].plain_text())
+                .collect::<Vec<_>>()
+        };
+        let texts = regular(&document.doc);
+        assert_eq!(texts.len(), 1);
+        assert!(texts[0].ends_with(" note"), "{texts:?}");
+        assert_eq!(document.layout.pages[0].notes.len(), 1);
         assert!(document.modified());
+        // Отмена убирает текст сноски, потом — саму ссылку.
+        frame(&ctx, &mut viewer, key(Key::Z, Modifiers::COMMAND));
+        let document = viewer.document.as_ref().unwrap();
+        assert!(!regular(&document.doc)[0].contains("note"));
+        frame(&ctx, &mut viewer, key(Key::Z, Modifiers::COMMAND));
+        let document = viewer.document.as_ref().unwrap();
+        assert!(document.layout.pages[0].notes.is_empty());
     }
 
     #[test]

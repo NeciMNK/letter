@@ -9,7 +9,7 @@
 
 use letter_model::{
     Alignment, Anchor, Block, BreakKind, Color, Document, HeaderFooter, HeaderFooterKind,
-    Hyperlink, NoteKind, Picture, Section, SectionStart,
+    Hyperlink, Note, NoteKind, Picture, Section, SectionStart,
 };
 
 use crate::clipboard::{insert_fragment, insert_plain_text};
@@ -27,7 +27,7 @@ use crate::lists::{
     ListKind, change_list_level, continue_numbering, multilevel_list, restart_numbering,
     tab_changes_level, toggle_list,
 };
-use crate::notes::insert_note;
+use crate::notes::{insert_note, notes_mut};
 use crate::picture::{insert_picture, resize_picture, set_picture_anchor};
 use crate::search::{SearchOptions, clamp, replace_all};
 use crate::section::{
@@ -165,6 +165,15 @@ pub enum Command {
     DeleteBookmark(String),
     /// Вставить у курсора ссылку на новую сноску (выделенное заменяется).
     InsertNote(NoteKind),
+    /// Заменить текст сноски `id` вида `kind` (после её правки).
+    SetNote {
+        /// Обычная или концевая.
+        kind: NoteKind,
+        /// Номер сноски.
+        id: String,
+        /// Новый текст.
+        blocks: Vec<Block>,
+    },
     /// Обновить поля в абзацах выделенного (F9).
     UpdateFields(Box<FieldContext>),
     /// «Заменить все»: найденное `query` заменить на `replacement` во
@@ -198,6 +207,12 @@ enum Patch {
         start: usize,
         before: Vec<Section>,
         after: Vec<Section>,
+    },
+    /// Все сноски одного вида.
+    Notes {
+        kind: NoteKind,
+        before: Vec<Note>,
+        after: Vec<Note>,
     },
 }
 
@@ -235,6 +250,13 @@ impl Patch {
                 let end = (start + remove.len()).min(doc.sections.len());
                 let start = (*start).min(end);
                 doc.sections.splice(start..end, insert.iter().cloned());
+            }
+            Patch::Notes {
+                kind,
+                before,
+                after,
+            } => {
+                *notes_mut(doc, *kind) = if undo { before } else { after }.clone();
             }
         }
     }
@@ -289,6 +311,24 @@ impl History {
             }
             Command::Tab { shift: true } => return selection,
             Command::Tab { shift: false } => Command::Type("\t".into()),
+            Command::SetNote { kind, id, blocks } => {
+                let before = notes_mut(doc, kind).clone();
+                if let Some(note) = notes_mut(doc, kind).iter_mut().find(|n| n.id == id) {
+                    note.blocks = blocks;
+                }
+                let after = notes_mut(doc, kind).clone();
+                if before != after {
+                    self.push(
+                        Patch::Notes {
+                            kind,
+                            before,
+                            after,
+                        },
+                        selection,
+                    );
+                }
+                return selection;
+            }
             command => command,
         };
         // Какие абзацы правка может задеть: Backspace и Delete на краю
@@ -553,7 +593,8 @@ impl History {
             | Command::UpdateFields(_)
             | Command::Link { text: None, .. }
             | Command::AddBookmark(_)
-            | Command::DeleteBookmark(_) => at,
+            | Command::DeleteBookmark(_)
+            | Command::SetNote { .. } => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
 
@@ -584,6 +625,7 @@ impl History {
         let unchanged = match &patch {
             Patch::Blocks { before, after, .. } => before == after,
             Patch::Sections { before, after, .. } => before == after,
+            Patch::Notes { before, after, .. } => before == after,
         };
         if unchanged {
             return after;
@@ -626,6 +668,23 @@ impl History {
             self.undo.remove(0);
         }
         after
+    }
+
+    /// Запоминает шаг, после которого выделение не изменилось.
+    fn push(&mut self, patch: Patch, selection: Selection) {
+        self.redo.clear();
+        self.last_id += 1;
+        self.undo.push(Step {
+            id: self.last_id,
+            patch,
+            before: selection,
+            after: selection,
+            typed: None,
+        });
+        self.sealed = true;
+        if self.undo.len() > LIMIT {
+            self.undo.remove(0);
+        }
     }
 
     /// Следующий набор текста начнёт новый шаг отмены. Вызывать, когда
