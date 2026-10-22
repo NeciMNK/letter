@@ -215,8 +215,8 @@ impl Builder {
                 blocks.push(Paragraph::default().into());
             }
             table.row.get_or_insert_with(Vec::new).push(TableCell {
-                raw_props: Vec::new(),
                 blocks,
+                ..TableCell::default()
             });
         }
     }
@@ -232,8 +232,8 @@ impl Builder {
             && !cells.is_empty()
         {
             table.table.rows.push(TableRow {
-                raw_props: Vec::new(),
                 cells,
+                ..TableRow::default()
             });
         }
     }

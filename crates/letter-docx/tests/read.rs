@@ -112,14 +112,19 @@ fn table() {
     assert_eq!(table.rows.len(), 3);
     assert_eq!(table.rows[0].cells.len(), 3);
     assert_eq!(table.rows[0].cells[1].plain_text(), "R1C2");
-    // Объединённая ячейка: в строке две ячейки, у первой gridSpan в свойствах.
+    // Объединённая ячейка: в строке две ячейки, первая на два столбца.
     assert_eq!(table.rows[2].cells.len(), 2);
+    assert_eq!(table.rows[2].cells[0].span(), 2);
+    assert_eq!(table.grid.len(), 3);
+    assert!(table.raw_props.is_empty());
+    assert_eq!(table.props.style.as_deref(), Some("TableGrid"));
+    assert_eq!(table.props.width, Some(letter_model::TableWidth::Auto));
     assert!(
-        table.rows[2].cells[0].raw_props[0]
-            .as_str()
-            .contains("gridSpan")
+        table
+            .rows
+            .iter()
+            .all(|r| r.cells.iter().all(|c| c.raw_props.is_empty()))
     );
-    assert!(table.raw_props.iter().any(|r| r.local_name() == "tblGrid"));
 }
 
 #[test]

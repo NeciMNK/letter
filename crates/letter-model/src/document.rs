@@ -114,9 +114,12 @@ mod tests {
             Paragraph::from_runs([Run::text("Hello, "), Run::text("world").with_props(italic)])
                 .into(),
             Table {
+                grid: Vec::new(),
                 raw_props: Vec::new(),
+                props: Default::default(),
                 rows: vec![TableRow {
                     raw_props: Vec::new(),
+                    props: Default::default(),
                     cells: vec![TableCell::text("1"), TableCell::text("2")],
                 }],
             }

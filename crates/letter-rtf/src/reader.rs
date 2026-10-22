@@ -932,6 +932,7 @@ impl Reader {
         let blocks = std::mem::take(&mut self.cell);
         self.row.push(TableCell {
             raw_props: Vec::new(),
+            props: Default::default(),
             blocks,
         });
     }
@@ -945,6 +946,7 @@ impl Reader {
             let blocks = std::mem::take(&mut self.cell);
             self.row.push(TableCell {
                 raw_props: Vec::new(),
+                props: Default::default(),
                 blocks,
             });
         }
@@ -954,6 +956,7 @@ impl Reader {
             .rows
             .push(TableRow {
                 raw_props: Vec::new(),
+                props: Default::default(),
                 cells,
             });
     }

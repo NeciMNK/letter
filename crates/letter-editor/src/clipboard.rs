@@ -270,9 +270,12 @@ mod tests {
     #[test]
     fn tables_are_copied_whole_or_by_cells() {
         let table = Table {
+            grid: Vec::new(),
             raw_props: Vec::new(),
+            props: Default::default(),
             rows: vec![TableRow {
                 raw_props: Vec::new(),
+                props: Default::default(),
                 cells: vec![TableCell::text("A"), TableCell::text("B")],
             }],
         };
@@ -335,9 +338,12 @@ mod tests {
     #[test]
     fn pasting_a_table() {
         let table = Table {
+            grid: Vec::new(),
             raw_props: Vec::new(),
+            props: Default::default(),
             rows: vec![TableRow {
                 raw_props: Vec::new(),
+                props: Default::default(),
                 cells: vec![TableCell::text("A"), TableCell::text("B")],
             }],
         };

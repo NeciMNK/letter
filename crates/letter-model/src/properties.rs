@@ -155,9 +155,12 @@ mod tests {
             Paragraph::from_runs([with_tab]).into(),
             Paragraph::default().into(),
             Table {
+                grid: Vec::new(),
                 raw_props: Vec::new(),
+                props: Default::default(),
                 rows: vec![TableRow {
                     raw_props: Vec::new(),
+                    props: Default::default(),
                     cells: vec![TableCell::text("a b"), TableCell::text("")],
                 }],
             }

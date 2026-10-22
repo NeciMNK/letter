@@ -617,9 +617,12 @@ mod tests {
     #[test]
     fn tables_and_sections() {
         let table = Table {
+            grid: Vec::new(),
             raw_props: Vec::new(),
+            props: Default::default(),
             rows: vec![TableRow {
                 raw_props: Vec::new(),
+                props: Default::default(),
                 cells: vec![TableCell::text("A"), TableCell::text("B")],
             }],
         };

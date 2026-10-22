@@ -1,9 +1,11 @@
 //! Блоки раздела: абзацы и таблицы.
 //!
-//! Таблица пока хранит только структуру (строки и ячейки). Ширины, границы,
-//! объединение ячеек и прочее добавит задача F5.2.
+//! Таблица устроена как в Word: сетка столбцов ([`Table::grid`]), строки,
+//! в строках ячейки. Ячейка может занимать несколько столбцов сетки
+//! (`grid_span`) и продолжать ячейку сверху (`v_merge`) — так получаются
+//! объединённые ячейки.
 
-use crate::{Paragraph, RawXml};
+use crate::{Alignment, Borders, Paragraph, RawXml, Shading, Twips};
 
 /// Элемент раздела или ячейки таблицы.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,8 +46,13 @@ impl From<Table> for Block {
 /// Таблица.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Table {
-    /// Свойства таблицы и сетка столбцов (`w:tblPr`, `w:tblGrid`) как есть.
-    /// Разбирать их начнёт задача F5.2.
+    /// Свойства таблицы (`w:tblPr`). В коробке, чтобы [`Block`] оставался
+    /// небольшим.
+    pub props: Box<TableProps>,
+    /// Ширины столбцов сетки (`w:tblGrid`).
+    pub grid: Vec<Twips>,
+    /// Непонятые части таблицы перед строками (например, `w:tblGrid`
+    /// с правками), как есть.
     pub raw_props: Vec<RawXml>,
     /// Строки сверху вниз.
     pub rows: Vec<TableRow>,
@@ -71,7 +78,9 @@ impl Table {
 /// Строка таблицы.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TableRow {
-    /// Свойства строки (`w:trPr`, `w:tblPrEx`) как есть.
+    /// Свойства строки (`w:trPr`).
+    pub props: RowProps,
+    /// Непонятые свойства строки (`w:tblPrEx`) как есть.
     pub raw_props: Vec<RawXml>,
     /// Ячейки слева направо.
     pub cells: Vec<TableCell>,
@@ -81,7 +90,9 @@ pub struct TableRow {
 /// таблицы могут быть вложенными.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TableCell {
-    /// Свойства ячейки (`w:tcPr`) как есть.
+    /// Свойства ячейки (`w:tcPr`).
+    pub props: CellProps,
+    /// Непонятые части ячейки перед содержимым, как есть.
     pub raw_props: Vec<RawXml>,
     /// Содержимое ячейки. Word всегда записывает хотя бы один абзац, но
     /// в битом файле список может быть пустым: вёрстка обязана это выдерживать.
@@ -92,8 +103,8 @@ impl TableCell {
     /// Ячейка с одним абзацем текста.
     pub fn text(text: impl Into<String>) -> TableCell {
         TableCell {
-            raw_props: Vec::new(),
             blocks: vec![Paragraph::text(text).into()],
+            ..TableCell::default()
         }
     }
 
@@ -107,6 +118,145 @@ impl TableCell {
     }
 }
 
+/// Ширина или отступ в таблице (`w:tblW`, `w:tcW`, `w:tblInd`…).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableWidth {
+    /// Подбирается по содержимому (`auto`).
+    Auto,
+    /// Не задана (`nil`).
+    Nil,
+    /// В твипах (`dxa`).
+    Twips(Twips),
+    /// В пятидесятых долях процента (`pct`): 5000 — 100 %.
+    Percent(i32),
+}
+
+/// Как подбираются ширины столбцов.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableLayout {
+    /// По содержимому (автоподбор, `autofit`).
+    Auto,
+    /// Фиксированные (`fixed`).
+    Fixed,
+}
+
+/// Поля ячеек: расстояние от границ до текста.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CellMargins {
+    /// Сверху.
+    pub top: Option<TableWidth>,
+    /// Слева.
+    pub left: Option<TableWidth>,
+    /// Снизу.
+    pub bottom: Option<TableWidth>,
+    /// Справа.
+    pub right: Option<TableWidth>,
+}
+
+/// Свойства таблицы (`w:tblPr`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TableProps {
+    /// Стиль таблицы (`w:tblStyle`).
+    pub style: Option<String>,
+    /// Ширина таблицы.
+    pub width: Option<TableWidth>,
+    /// Выравнивание таблицы на странице (`w:jc`).
+    pub alignment: Option<Alignment>,
+    /// Отступ слева (`w:tblInd`).
+    pub indent: Option<TableWidth>,
+    /// Границы.
+    pub borders: Option<Borders>,
+    /// Заливка.
+    pub shading: Option<Shading>,
+    /// Подбор ширин столбцов.
+    pub layout: Option<TableLayout>,
+    /// Поля ячеек по умолчанию.
+    pub cell_margins: Option<CellMargins>,
+    /// Непонятые свойства как есть.
+    pub unknown: Vec<RawXml>,
+}
+
+/// Правило высоты строки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeightRule {
+    /// По содержимому (значение не используется).
+    Auto,
+    /// Не меньше значения.
+    AtLeast,
+    /// Ровно значение.
+    Exact,
+}
+
+/// Высота строки (`w:trHeight`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowHeight {
+    /// Высота.
+    pub value: Twips,
+    /// Правило.
+    pub rule: HeightRule,
+}
+
+/// Свойства строки (`w:trPr`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RowProps {
+    /// Высота строки.
+    pub height: Option<RowHeight>,
+    /// Повторять как заголовок на каждой странице (`w:tblHeader`).
+    pub header: Option<bool>,
+    /// Не разрывать строку между страницами (`w:cantSplit`).
+    pub cant_split: Option<bool>,
+    /// Непонятые свойства как есть.
+    pub unknown: Vec<RawXml>,
+}
+
+/// Объединение ячеек по вертикали (`w:vMerge`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerticalMerge {
+    /// Первая ячейка объединения.
+    Restart,
+    /// Продолжение ячейки сверху.
+    Continue,
+}
+
+/// Выравнивание текста в ячейке по вертикали (`w:vAlign`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellVerticalAlign {
+    /// По верху.
+    Top,
+    /// По центру.
+    Center,
+    /// По низу.
+    Bottom,
+}
+
+/// Свойства ячейки (`w:tcPr`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CellProps {
+    /// Ширина ячейки (`w:tcW`).
+    pub width: Option<TableWidth>,
+    /// Сколько столбцов сетки занимает (`w:gridSpan`).
+    pub grid_span: Option<u32>,
+    /// Объединение с ячейками сверху и снизу.
+    pub v_merge: Option<VerticalMerge>,
+    /// Границы ячейки.
+    pub borders: Option<Borders>,
+    /// Заливка.
+    pub shading: Option<Shading>,
+    /// Поля ячейки (`w:tcMar`).
+    pub margins: Option<CellMargins>,
+    /// Выравнивание по вертикали.
+    pub v_align: Option<CellVerticalAlign>,
+    /// Непонятые свойства как есть.
+    pub unknown: Vec<RawXml>,
+}
+
+impl TableCell {
+    /// Сколько столбцов сетки занимает ячейка (не меньше 1).
+    pub fn span(&self) -> usize {
+        self.props.grid_span.unwrap_or(1).max(1) as usize
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,17 +264,17 @@ mod tests {
     #[test]
     fn table_plain_text() {
         let table = Table {
-            raw_props: Vec::new(),
             rows: vec![
                 TableRow {
-                    raw_props: Vec::new(),
                     cells: vec![TableCell::text("A1"), TableCell::text("B1")],
+                    ..TableRow::default()
                 },
                 TableRow {
-                    raw_props: Vec::new(),
                     cells: vec![TableCell::text("A2"), TableCell::text("B2")],
+                    ..TableRow::default()
                 },
             ],
+            ..Table::default()
         };
         assert_eq!(Block::from(table).plain_text(), "A1\tB1\nA2\tB2");
     }
@@ -132,16 +282,17 @@ mod tests {
     #[test]
     fn nested_table() {
         let inner = Table {
-            raw_props: Vec::new(),
             rows: vec![TableRow {
-                raw_props: Vec::new(),
                 cells: vec![TableCell::text("in")],
+                ..TableRow::default()
             }],
+            ..Table::default()
         };
         let cell = TableCell {
-            raw_props: Vec::new(),
             blocks: vec![Paragraph::text("out").into(), inner.into()],
+            ..TableCell::default()
         };
+        assert_eq!(cell.span(), 1);
         assert_eq!(cell.plain_text(), "out\nin");
     }
 }

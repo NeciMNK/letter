@@ -317,8 +317,8 @@ fn libreoffice_formatting_is_read() {
     assert_eq!(t.rows.len(), 3);
     // Объединённая ячейка — одна, как в .docx, и занимает два столбца.
     assert_eq!(t.rows[2].cells.len(), 2);
-    let span = |t: &letter_model::Table| t.rows[2].cells[0].raw_props[0].as_str().to_string();
-    assert!(span(t).contains(r#"<w:gridSpan w:val="2"/>"#));
+    let span = |t: &letter_model::Table| t.rows[2].cells[0].span();
+    assert_eq!(span(t), 2);
     let again = round_trip(&table);
     let Block::Table(t2) = &again.sections[0].blocks[1] else {
         panic!("нет таблицы");
@@ -578,21 +578,28 @@ fn sections_and_empty_documents() {
 #[test]
 fn nested_tables_and_unknown_content() {
     let inner = letter_model::Table {
+        grid: Vec::new(),
         raw_props: Vec::new(),
+        props: Default::default(),
         rows: vec![letter_model::TableRow {
             raw_props: Vec::new(),
+            props: Default::default(),
             cells: vec![letter_model::TableCell::text("внутри")],
         }],
     };
     let mut doc = Document::new();
     doc.sections[0].blocks = vec![
         letter_model::Table {
+            grid: Vec::new(),
             raw_props: Vec::new(),
+            props: Default::default(),
             rows: vec![letter_model::TableRow {
                 raw_props: Vec::new(),
+                props: Default::default(),
                 cells: vec![
                     letter_model::TableCell {
                         raw_props: Vec::new(),
+                        props: Default::default(),
                         blocks: vec![inner.into()],
                     },
                     letter_model::TableCell::default(),

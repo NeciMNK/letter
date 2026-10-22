@@ -7,8 +7,8 @@
 use letter_model::{
     Block, BreakKind, Color, Document, FirstLineIndent, HalfPoints, Indentation, Inline,
     LineSpacing, NumberingRef, Orientation, PageMargins, PageSize, Paragraph, ParagraphProps,
-    RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps, Spacing, TabStop, Table,
-    TableCell, TableRow, ThemeColor, Twips, Underline, VerticalAlign,
+    RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps, Spacing, TabStop,
+    ThemeColor, Twips, Underline, VerticalAlign,
 };
 
 use crate::ReadError;
@@ -104,11 +104,11 @@ fn read_body(body: &Element) -> Vec<Section> {
 }
 
 /// Блок внутри ячейки таблицы или любой блок, кроме абзаца, в теле.
-fn read_block(element: &Element) -> Block {
+pub(crate) fn read_block(element: &Element) -> Block {
     if element.is_w("p") {
         read_paragraph(element, false).0.into()
     } else if element.is_w("tbl") {
-        read_table(element)
+        crate::table::read_table(element)
     } else {
         Block::Unknown(element.raw())
     }
@@ -408,51 +408,6 @@ fn read_fonts(fonts: &Element) -> Option<RunFonts> {
     })
 }
 
-fn read_table(tbl: &Element) -> Block {
-    let mut table = Table::default();
-    for child in tbl.elements() {
-        if child.is_w("tblPr") || child.is_w("tblGrid") {
-            table.raw_props.push(child.raw());
-        } else if child.is_w("tr") {
-            match read_row(child) {
-                Some(row) => table.rows.push(row),
-                None => return Block::Unknown(tbl.raw()),
-            }
-        } else {
-            // Закладки, элементы управления и прочее между строками —
-            // пока сохраняем таблицу целиком (таблицы — задача F5.2).
-            return Block::Unknown(tbl.raw());
-        }
-    }
-    Block::Table(table)
-}
-
-fn read_row(tr: &Element) -> Option<TableRow> {
-    let mut row = TableRow::default();
-    for child in tr.elements() {
-        if child.is_w("trPr") || child.is_w("tblPrEx") {
-            row.raw_props.push(child.raw());
-        } else if child.is_w("tc") {
-            row.cells.push(read_cell(child));
-        } else {
-            return None;
-        }
-    }
-    Some(row)
-}
-
-fn read_cell(tc: &Element) -> TableCell {
-    let mut cell = TableCell::default();
-    for child in tc.elements() {
-        if child.is_w("tcPr") {
-            cell.raw_props.push(child.raw());
-        } else {
-            cell.blocks.push(read_block(child));
-        }
-    }
-    cell
-}
-
 fn read_section_props(sect: &Element) -> SectionProps {
     let mut props = SectionProps::default();
     for child in sect.elements() {
@@ -510,7 +465,7 @@ fn read_margins(margins: &Element) -> Option<PageMargins> {
 }
 
 /// Записывает значение, если оно понято. Возвращает, понято ли.
-fn set<T>(slot: &mut Option<T>, value: Option<T>) -> bool {
+pub(crate) fn set<T>(slot: &mut Option<T>, value: Option<T>) -> bool {
     match value {
         Some(v) => {
             *slot = Some(v);
@@ -521,7 +476,7 @@ fn set<T>(slot: &mut Option<T>, value: Option<T>) -> bool {
 }
 
 /// Значение `w:val` у элемента, у которого других атрибутов нет.
-fn single_val(element: &Element) -> Option<&str> {
+pub(crate) fn single_val(element: &Element) -> Option<&str> {
     if element.only_attrs(&["val"]) {
         element.w_attr("val")
     } else {
@@ -529,11 +484,11 @@ fn single_val(element: &Element) -> Option<&str> {
     }
 }
 
-fn string_val(element: &Element) -> Option<String> {
+pub(crate) fn string_val(element: &Element) -> Option<String> {
     single_val(element).map(str::to_string)
 }
 
-fn enum_val<T: Copy>(element: &Element, table: &[(&str, T)]) -> Option<T> {
+pub(crate) fn enum_val<T: Copy>(element: &Element, table: &[(&str, T)]) -> Option<T> {
     single_val(element).and_then(|v| lookup(table, v))
 }
 
@@ -589,7 +544,7 @@ fn read_color(element: &Element) -> Option<(Color, Option<ThemeColor>)> {
     Some((color, theme))
 }
 
-fn parse_color(value: &str) -> Option<Color> {
+pub(crate) fn parse_color(value: &str) -> Option<Color> {
     match value {
         "auto" => Some(Color::Auto),
         hex if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => {
@@ -898,9 +853,9 @@ mod tests {
         let Block::Table(table) = blocks[0] else {
             panic!("expected table");
         };
-        assert_eq!(table.raw_props.len(), 2);
-        assert_eq!(table.rows[0].raw_props.len(), 1);
-        assert_eq!(table.rows[0].cells[0].raw_props.len(), 1);
+        assert!(table.raw_props.is_empty() && table.grid.is_empty());
+        assert!(table.rows[0].raw_props.is_empty());
+        assert!(table.rows[0].cells[0].raw_props.is_empty());
         assert_eq!(blocks[0].plain_text(), "a\tb");
         assert!(matches!(blocks[1], Block::Unknown(_)));
     }

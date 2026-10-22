@@ -8,7 +8,7 @@
 use letter_model::{
     Block, BreakKind, Color, Document, FirstLineIndent, Inline, LineSpacing, Orientation,
     Paragraph, ParagraphProps, RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps,
-    Style, StyleKind, Styles, Table, VerticalAlign,
+    Style, StyleKind, Styles, VerticalAlign,
 };
 
 use crate::document::{W_NS, is_w_ns};
@@ -227,10 +227,10 @@ fn body(sections: &[Section]) -> String {
     element("w:body", &out)
 }
 
-fn block_xml(block: &Block) -> String {
+pub(crate) fn block_xml(block: &Block) -> String {
     match block {
         Block::Paragraph(p) => paragraph(p, None),
-        Block::Table(t) => table(t),
+        Block::Table(t) => crate::table::table_xml(t),
         Block::Unknown(raw) => raw.as_str().to_string(),
     }
 }
@@ -244,22 +244,6 @@ fn paragraph(p: &Paragraph, section: Option<&SectionProps>) -> String {
         }
     }
     element("w:p", &out)
-}
-
-fn table(table: &Table) -> String {
-    let mut out = raws(&table.raw_props);
-    for row in &table.rows {
-        let mut row_xml = raws(&row.raw_props);
-        for cell in &row.cells {
-            let mut cell_xml = raws(&cell.raw_props);
-            for block in &cell.blocks {
-                cell_xml.push_str(&block_xml(block));
-            }
-            row_xml.push_str(&element("w:tc", &cell_xml));
-        }
-        out.push_str(&element("w:tr", &row_xml));
-    }
-    element("w:tbl", &out)
 }
 
 /// `w:pPr`; пустая строка, если записывать нечего.
@@ -461,7 +445,7 @@ pub(crate) fn run_props(props: &RunProps) -> String {
 }
 
 /// Цвет как в атрибутах Word: `auto` или `RRGGBB`.
-fn hex_color(color: Color) -> String {
+pub(crate) fn hex_color(color: Color) -> String {
     match color {
         Color::Auto => "auto".to_string(),
         Color::Rgb(r, g, b) => format!("{r:02X}{g:02X}{b:02X}"),
@@ -638,7 +622,7 @@ impl Children {
     }
 }
 
-fn raws(raws: &[RawXml]) -> String {
+pub(crate) fn raws(raws: &[RawXml]) -> String {
     raws.iter().map(RawXml::as_str).collect()
 }
 
