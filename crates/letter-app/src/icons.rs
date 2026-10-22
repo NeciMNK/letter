@@ -65,6 +65,12 @@ pub enum Icon {
     SelectAll,
     /// Назад: стрелка влево.
     Back,
+    /// Режим чтения: открытая книга.
+    ReadMode,
+    /// Разметка страницы: лист с текстом.
+    PrintLayout,
+    /// Веб-документ: глобус.
+    WebLayout,
 }
 
 /// Шрифт со значками.
@@ -113,6 +119,9 @@ impl Icon {
             Icon::Replace => ("replace", '\u{E3DB}'),
             Icon::SelectAll => ("text-select", '\u{E6EA}'),
             Icon::Back => ("arrow-left", '\u{E048}'),
+            Icon::ReadMode => ("book-open", '\u{E05F}'),
+            Icon::PrintLayout => ("file-text", '\u{E0CC}'),
+            Icon::WebLayout => ("globe", '\u{E0E8}'),
         }
     }
 }
@@ -282,7 +291,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 30] = [
+    const ALL: [Icon; 33] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -313,6 +322,9 @@ mod tests {
         Icon::Replace,
         Icon::SelectAll,
         Icon::Back,
+        Icon::ReadMode,
+        Icon::PrintLayout,
+        Icon::WebLayout,
     ];
 
     #[test]

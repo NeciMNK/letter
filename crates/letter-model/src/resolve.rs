@@ -228,6 +228,35 @@ impl Document {
     }
 }
 
+impl Document {
+    /// Язык текста фрагмента `run` в абзаце с оформлением `paragraph`
+    /// (`w:lang w:val`, например `"ru-RU"`): из самого фрагмента, его
+    /// стиля, стиля абзаца или оформления по умолчанию. `None`, если язык
+    /// нигде не указан.
+    pub fn run_language(&self, paragraph: &ParagraphProps, run: &RunProps) -> Option<String> {
+        let language = |props: &RunProps| {
+            props
+                .unknown
+                .iter()
+                .filter(|raw| raw.local_name() == "lang")
+                .find_map(|raw| raw.attribute("val"))
+                .filter(|val| !val.is_empty())
+                .map(str::to_owned)
+        };
+        let para_chain = self
+            .styles
+            .chain(paragraph.style.as_deref(), StyleKind::Paragraph);
+        let char_chain = self
+            .styles
+            .chain(run.style.as_deref(), StyleKind::Character);
+        // Цепочки идут от родителей к стилю: ближний слой — последний.
+        language(run)
+            .or_else(|| char_chain.iter().rev().find_map(|s| language(&s.run)))
+            .or_else(|| para_chain.iter().rev().find_map(|s| language(&s.run)))
+            .or_else(|| language(&self.styles.defaults.run))
+    }
+}
+
 fn overlay<T: Clone>(acc: &mut Option<T>, layer: &Option<T>) {
     if layer.is_some() {
         acc.clone_from(layer);
@@ -523,5 +552,36 @@ mod tests {
         let p = doc.resolve_paragraph(&ParagraphProps::default());
         assert_eq!(p.line_spacing, LineSpacing::SINGLE);
         assert_eq!(p.style, None);
+    }
+
+    #[test]
+    fn language_from_the_nearest_layer() {
+        let lang = |code: &str| vec![crate::RawXml::new(format!(r#"<w:lang w:val="{code}"/>"#))];
+        let mut doc = sample();
+        let paragraph = ParagraphProps {
+            style: Some("Title".into()),
+            ..ParagraphProps::default()
+        };
+        let plain = RunProps::default();
+        assert_eq!(doc.run_language(&paragraph, &plain), None);
+        doc.styles.defaults.run.unknown = lang("ru-RU");
+        assert_eq!(
+            doc.run_language(&paragraph, &plain).as_deref(),
+            Some("ru-RU")
+        );
+        doc.styles.styles[0].run.unknown = lang("de-DE");
+        doc.styles.styles[1].run.unknown = lang("fr-FR");
+        assert_eq!(
+            doc.run_language(&paragraph, &plain).as_deref(),
+            Some("fr-FR")
+        );
+        let english = RunProps {
+            unknown: lang("en-US"),
+            ..RunProps::default()
+        };
+        assert_eq!(
+            doc.run_language(&paragraph, &english).as_deref(),
+            Some("en-US")
+        );
     }
 }

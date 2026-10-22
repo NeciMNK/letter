@@ -26,11 +26,11 @@ use eframe::egui::{
 };
 use letter_editor::{
     Command, History, Motion, Position, RunFormat, Selection, caret, copy_range, find_all,
-    find_next, formatting_at, hit_test, move_cursor, paragraph_at, select_all, selection_rects,
-    word_at,
+    find_next, formatting_at, hit_test, language_at, move_cursor, paragraph_at, select_all,
+    selection_rects, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
-use letter_model::{Alignment, Document};
+use letter_model::{Alignment, Document, Statistics};
 use letter_render::{DESK_COLOR, MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, formatting_marks};
 
 use crate::backstage::{Backstage, BackstageInfo, DocumentInfo, Page};
@@ -110,6 +110,22 @@ struct OpenDocument {
     cursor_since: f64,
     /// Колонка для ↑ и ↓ (см. [`letter_editor::Moved::goal_x`]).
     goal_x: Option<f32>,
+    /// Статистика для строки состояния, посчитанная для одного состояния
+    /// документа и выделения: каждый кадр не пересчитывается.
+    counts: Option<Counts>,
+}
+
+/// Статистика документа и выделения для строки состояния.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Counts {
+    /// [`History::state`], для которого посчитано.
+    state: u64,
+    /// Выделение, для которого посчитано.
+    selection: Selection,
+    /// Весь документ.
+    total: Statistics,
+    /// Выделенный текст; `None`, если ничего не выделено.
+    selected: Option<Statistics>,
 }
 
 impl OpenDocument {
@@ -132,6 +148,30 @@ impl OpenDocument {
             anchor: Position::default(),
             cursor_since: 0.0,
             goal_x: None,
+            counts: None,
+        }
+    }
+
+    /// Статистика документа и выделения (пересчитывается после правки
+    /// или нового выделения).
+    fn counts(&mut self) -> Counts {
+        let state = self.history.state();
+        let selection = self.selection();
+        match self.counts {
+            Some(counts) if counts.state == state && counts.selection == selection => counts,
+            _ => {
+                let selected = (!selection.is_empty()).then(|| {
+                    copy_range(&self.doc, selection.start(), selection.end()).statistics()
+                });
+                let counts = Counts {
+                    state,
+                    selection,
+                    total: self.doc.statistics(),
+                    selected,
+                };
+                self.counts = Some(counts);
+                counts
+            }
         }
     }
 
@@ -263,6 +303,8 @@ pub struct Viewer {
     show_ruler: bool,
     /// Показывать знаки форматирования (¶).
     show_marks: bool,
+    /// Открыто окно «Статистика» (щелчок по числу слов).
+    statistics_open: bool,
     /// Лист для линеек (с курсором) и где он на экране в прошлом кадре.
     ruler_page: Option<(usize, Rect)>,
     /// Шрифты для списка на ленте.
@@ -391,6 +433,7 @@ impl Viewer {
             clipboard: Clipboard::new(Box::new(SystemBuffer::default())),
             ribbon: Ribbon::default(),
             show_marks: false,
+            statistics_open: false,
             ruler_page: None,
         }
     }
@@ -681,6 +724,7 @@ impl Viewer {
                 .frame(egui::Frame::new().fill(DESK_COLOR))
                 .show(ui, |ui| self.document_area(ui));
         }
+        self.statistics_window(&ctx);
         self.error_window(&ctx);
         self.save_changes_window(&ctx);
         self.recovery_window(&ctx);
@@ -1170,14 +1214,32 @@ impl Viewer {
         }
     }
 
+    /// Строка состояния: страница, число слов, язык; справа режимы
+    /// просмотра и масштаб.
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if self.document.is_some() {
-                ui.label(format!(
-                    "Страница {} из {}",
-                    self.current_page + 1,
-                    self.page_count()
-                ));
+            let current_page = self.current_page;
+            let pages = self.page_count();
+            if let Some(document) = &mut self.document {
+                ui.label(format!("Страница {} из {}", current_page + 1, pages));
+                let counts = document.counts();
+                let words = match counts.selected {
+                    Some(selected) => {
+                        format!("Число слов: {} из {}", selected.words, counts.total.words)
+                    }
+                    None => format!("Число слов: {}", counts.total.words),
+                };
+                if ui
+                    .add(egui::Button::new(words).frame(false))
+                    .on_hover_text("Статистика")
+                    .clicked()
+                {
+                    self.statistics_open = true;
+                }
+                if let Some(code) = language_at(&document.doc, document.cursor) {
+                    ui.label(crate::language::display_name(&code))
+                        .on_hover_text(format!("Язык текста: {code}"));
+                }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let zoom = self.zoom();
@@ -1195,7 +1257,10 @@ impl Viewer {
                 let slider = egui::Slider::new(&mut percent, MIN_ZOOM * 100.0..=MAX_ZOOM * 100.0)
                     .logarithmic(true)
                     .show_value(false);
-                if ui.add(slider).changed() {
+                let slider = ui.add(slider).on_hover_text("Масштаб");
+                slider
+                    .widget_info(|| egui::WidgetInfo::slider(true, f64::from(percent), "Масштаб"));
+                if slider.changed() {
                     self.set_zoom(Zoom::Fixed(percent / 100.0), None);
                 }
                 if ui.small_button("−").on_hover_text("Уменьшить").clicked() {
@@ -1208,8 +1273,83 @@ impl Viewer {
                 {
                     self.set_zoom(Zoom::PageWidth, None);
                 }
+                ui.separator();
+                // Режимы просмотра справа налево; пока есть только
+                // разметка страницы, остальные появятся в фазе 6.
+                let size = egui::vec2(22.0, 18.0);
+                icons::icon_button(
+                    ui,
+                    Icon::WebLayout,
+                    "Веб-документ (скоро)",
+                    size,
+                    false,
+                    false,
+                );
+                icons::icon_button(ui, Icon::PrintLayout, "Разметка страницы", size, true, true);
+                icons::icon_button(
+                    ui,
+                    Icon::ReadMode,
+                    "Режим чтения (скоро)",
+                    size,
+                    false,
+                    false,
+                );
             });
         });
+    }
+
+    /// Окно «Статистика»: страницы, слова, знаки, абзацы — документа
+    /// или выделения.
+    fn statistics_window(&mut self, ctx: &Context) {
+        if !self.statistics_open {
+            return;
+        }
+        let pages = self.page_count();
+        let Some(document) = &mut self.document else {
+            self.statistics_open = false;
+            return;
+        };
+        let counts = document.counts();
+        let stats = counts.selected.unwrap_or(counts.total);
+        let mut open = true;
+        let mut close = false;
+        egui::Window::new("Статистика")
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                if counts.selected.is_some() {
+                    ui.label("Выделенный фрагмент");
+                }
+                egui::Grid::new("statistics")
+                    .num_columns(2)
+                    .spacing(egui::vec2(24.0, 4.0))
+                    .show(ui, |ui| {
+                        let mut row = |name: &str, value: String| {
+                            ui.label(name);
+                            ui.label(value);
+                            ui.end_row();
+                        };
+                        if counts.selected.is_none() {
+                            row("Страниц", pages.to_string());
+                        }
+                        row("Слов", stats.words.to_string());
+                        row("Знаков (без пробелов)", stats.characters.to_string());
+                        row(
+                            "Знаков (с пробелами)",
+                            stats.characters_with_spaces.to_string(),
+                        );
+                        row("Абзацев", stats.paragraphs.to_string());
+                    });
+                ui.separator();
+                if ui.button("Закрыть").clicked() {
+                    close = true;
+                }
+            });
+        if !open || close || ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.statistics_open = false;
+        }
     }
 
     /// Листы документа в прокручиваемой области.
@@ -2632,5 +2772,39 @@ mod tests {
         assert!(!viewer.show_ruler);
         viewer.run_ribbon(&ctx, vec![RibbonCommand::PageWidth]);
         assert_eq!(viewer.zoom, Zoom::PageWidth);
+    }
+
+    #[test]
+    fn status_bar_counts_words_and_shows_the_language() {
+        use egui_kittest::kittest::Queryable;
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.new_document();
+        {
+            let document = viewer.document.as_mut().unwrap();
+            document.doc.styles.defaults.run.unknown =
+                vec![letter_model::RawXml::new(r#"<w:lang w:val="ru-RU"/>"#)];
+            letter_editor::insert_text(&mut document.doc, Position::default(), "раз два три");
+        }
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(vec2(1200.0, 800.0))
+            .build_ui_state(|ui, viewer: &mut Viewer| viewer.ui(ui), viewer);
+        h.run();
+        h.get_by_label("Страница 1 из 1");
+        h.get_by_label("русский");
+        h.get_by_label("Число слов: 3").click();
+        h.run();
+        assert!(h.state().statistics_open);
+        h.get_by_label("Знаков (с пробелами)");
+        h.key_press(Key::Escape);
+        h.run();
+        assert!(!h.state().statistics_open);
+        // Выделено одно слово.
+        let document = h.state_mut().document.as_mut().unwrap();
+        document.anchor = Position::new(0, 0);
+        document.cursor = Position::new(0, "раз".len());
+        h.run();
+        h.get_by_label("Число слов: 1 из 3");
+        h.get_by_label("Разметка страницы");
+        h.get_by_label("Режим чтения (скоро)");
     }
 }
