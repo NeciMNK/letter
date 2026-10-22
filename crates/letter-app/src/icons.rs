@@ -63,6 +63,8 @@ pub enum Icon {
     Replace,
     /// Выделить все.
     SelectAll,
+    /// Назад: стрелка влево.
+    Back,
 }
 
 /// Шрифт со значками.
@@ -110,6 +112,7 @@ impl Icon {
             Icon::Search => ("search", '\u{E151}'),
             Icon::Replace => ("replace", '\u{E3DB}'),
             Icon::SelectAll => ("text-select", '\u{E6EA}'),
+            Icon::Back => ("arrow-left", '\u{E048}'),
         }
     }
 }
@@ -279,7 +282,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 29] = [
+    const ALL: [Icon; 30] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -309,6 +312,7 @@ mod tests {
         Icon::Search,
         Icon::Replace,
         Icon::SelectAll,
+        Icon::Back,
     ];
 
     #[test]

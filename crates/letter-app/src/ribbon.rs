@@ -20,7 +20,7 @@ const BODY_HEIGHT: f32 = 78.0;
 
 /// Фон ленты и выделенной вкладки.
 const RIBBON_FILL: Color32 = Color32::from_gray(247);
-const ACCENT: Color32 = Color32::from_rgb(43, 87, 154);
+pub(crate) const ACCENT: Color32 = Color32::from_rgb(43, 87, 154);
 
 /// Вкладка ленты.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -79,6 +79,15 @@ pub enum RibbonCommand {
     SaveAs,
     /// «Выход».
     Exit,
+    /// Открыть представление «Файл».
+    Backstage,
+    /// «Файл → Закрыть»: закрыть документ, программа остаётся.
+    CloseDocument,
+    /// «Экспорт → Изменить тип файла»: сохранить как файл с этим
+    /// расширением.
+    SaveAsFormat(&'static str),
+    /// «Параметры» изменены.
+    ChangeSettings(crate::settings::Settings),
     /// Отменить.
     Undo,
     /// Повторить.
@@ -160,8 +169,6 @@ pub struct RibbonInfo {
     pub styles: Vec<crate::styles::GalleryStyle>,
     /// Стиль абзаца с курсором.
     pub style: Option<String>,
-    /// Недавние файлы.
-    pub recent: Vec<PathBuf>,
     /// Масштаб «по ширине страницы» включён.
     pub page_width: bool,
     /// Линейка показана.
@@ -185,7 +192,7 @@ impl Ribbon {
         let mut out = Vec::new();
         ui.spacing_mut().item_spacing.x = 2.0;
         quick_access(ui, info, &mut out);
-        self.tabs(ui, info, &mut out);
+        self.tabs(ui, &mut out);
         if !self.collapsed {
             egui::Frame::new()
                 .fill(RIBBON_FILL)
@@ -211,15 +218,19 @@ impl Ribbon {
     }
 
     /// Меню «Файл» и вкладки.
-    fn tabs(&mut self, ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+    fn tabs(&mut self, ui: &mut Ui, out: &mut Vec<RibbonCommand>) {
         ui.horizontal(|ui| {
             let file = egui::Button::new(RichText::new("Файл").color(Color32::WHITE))
                 .fill(ACCENT)
                 .corner_radius(CornerRadius::same(2))
                 .min_size(vec2(52.0, 0.0));
-            let (response, _) = egui::containers::menu::MenuButton::from_button(file)
-                .ui(ui, |ui| file_menu(ui, info, out));
-            response.on_hover_text("Создать, открыть, сохранить документ");
+            if ui
+                .add(file)
+                .on_hover_text("Создать, открыть, сохранить, параметры")
+                .clicked()
+            {
+                out.push(RibbonCommand::Backstage);
+            }
             for tab in Tab::ALL {
                 let selected = self.tab == tab && !self.collapsed;
                 let text = if selected {
@@ -277,48 +288,6 @@ fn quick_access(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
             }
         }
     });
-}
-
-/// Меню «Файл». Полноценное представление Backstage — задача F4.4.
-fn file_menu(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
-    let item = |ui: &mut Ui, enabled: bool, text: &str, shortcut: &str| {
-        ui.add_enabled(enabled, egui::Button::new(text).shortcut_text(shortcut))
-            .clicked()
-    };
-    if item(ui, true, "Создать", "Ctrl+N") {
-        out.push(RibbonCommand::New);
-    }
-    if item(ui, true, "Открыть…", "Ctrl+O") {
-        out.push(RibbonCommand::Open);
-    }
-    ui.add_enabled_ui(!info.recent.is_empty(), |ui| {
-        ui.menu_button("Последние", |ui| {
-            for path in &info.recent {
-                let name = path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |n| n.to_string_lossy().into_owned(),
-                );
-                if ui
-                    .button(name)
-                    .on_hover_text(path.display().to_string())
-                    .clicked()
-                {
-                    out.push(RibbonCommand::OpenRecent(path.clone()));
-                }
-            }
-        });
-    });
-    ui.separator();
-    if item(ui, info.has_document, "Сохранить", "Ctrl+S") {
-        out.push(RibbonCommand::Save);
-    }
-    if item(ui, info.has_document, "Сохранить как…", "F12") {
-        out.push(RibbonCommand::SaveAs);
-    }
-    ui.separator();
-    if item(ui, true, "Выход", "") {
-        out.push(RibbonCommand::Exit);
-    }
 }
 
 /// Группа команд: содержимое и подпись снизу по центру, справа —
@@ -559,14 +528,10 @@ mod tests {
     }
 
     #[test]
-    fn file_menu() {
-        let mut info = document();
-        info.recent = vec![PathBuf::from("/docs/отчёт.docx")];
-        let mut h = harness(info);
-        h.get_by_label_contains("Файл").click();
+    fn file_button_opens_backstage() {
+        let mut h = harness(document());
+        h.get_by_label("Файл").click();
         h.run();
-        h.get_by_label_contains("Сохранить как").click();
-        h.run();
-        assert_eq!(h.state().out, vec![RibbonCommand::SaveAs]);
+        assert_eq!(h.state().out, vec![RibbonCommand::Backstage]);
     }
 }

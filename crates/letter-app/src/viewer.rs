@@ -33,12 +33,14 @@ use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_doc
 use letter_model::{Alignment, Document};
 use letter_render::{DESK_COLOR, MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, formatting_marks};
 
+use crate::backstage::{Backstage, BackstageInfo, DocumentInfo, Page};
 use crate::clipboard::{Clipboard, SystemBuffer};
 use crate::files::{self, Autosave, OPEN_FILTERS, Recent, Recovered, SAVE_FILTERS};
 use crate::find::{FindAction, FindDialog};
 use crate::icons::{self, Icon};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
 use crate::ruler::{self, RULER_SIZE};
+use crate::settings::Settings;
 use crate::view::{
     MAX_ZOOM, MIN_ZOOM, PAGE_GAP, Zoom, anchored_offset, clamp_zoom, current_page, page_width_zoom,
     place_pages, step_zoom,
@@ -53,9 +55,6 @@ const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S)
 const SAVE_AS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F12);
 const SAVE_AS_CTRL: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
-
-/// Как часто автосохранять изменённый документ.
-const AUTOSAVE_EVERY: Duration = Duration::from_secs(120);
 
 /// Имя ещё не сохранённого документа.
 const UNTITLED: &str = "Новый документ";
@@ -189,6 +188,8 @@ enum Intent {
     New,
     /// Открыть файл; `None` — сначала выбрать его.
     Open(Option<PathBuf>),
+    /// Закрыть документ, оставив программу открытой.
+    CloseDocument,
     /// Открыть документ, оставшийся после сбоя (номер в списке).
     Recover(usize),
     /// Закрыть программу.
@@ -268,6 +269,12 @@ pub struct Viewer {
     font_names: Arc<[String]>,
     /// Окно «Найти и заменить».
     find: FindDialog,
+    /// Представление «Файл».
+    backstage: Backstage,
+    /// Параметры программы.
+    settings: Settings,
+    /// Папка программы (параметры, недавние файлы, автосохранения).
+    dir: Option<PathBuf>,
 }
 
 /// Шрифты Word, которые заменяются похожими (см. `FontLibrary::find`):
@@ -349,6 +356,7 @@ impl Viewer {
     /// в папке программы `dir` (см. [`files::app_dir`]).
     pub fn with_storage(library: FontLibrary, dir: Option<PathBuf>) -> Viewer {
         let autosave_dir = dir.as_ref().map(|d| d.join("autosave"));
+        let settings = Settings::load(dir.as_deref());
         Viewer {
             error_title: "",
             ask: None,
@@ -362,6 +370,10 @@ impl Viewer {
             last_autosave: Instant::now(),
             font_names: font_names(&library),
             find: FindDialog::default(),
+            backstage: Backstage::default(),
+            show_ruler: settings.show_ruler,
+            settings,
+            dir: dir.clone(),
             library,
             shaper: Shaper::new(),
             painter: PagePainter::new(),
@@ -378,7 +390,6 @@ impl Viewer {
             reveal_cursor: false,
             clipboard: Clipboard::new(Box::new(SystemBuffer::default())),
             ribbon: Ribbon::default(),
-            show_ruler: true,
             show_marks: false,
             ruler_page: None,
         }
@@ -421,6 +432,55 @@ impl Viewer {
         self.title_changed = true;
     }
 
+    /// Закрывает документ («Файл → Закрыть»); программа остаётся.
+    fn close_document(&mut self) {
+        self.document = None;
+        if let Some(autosave) = &self.autosave {
+            autosave.clear();
+        }
+        self.title_changed = true;
+    }
+
+    /// Применяет и сохраняет новые параметры программы.
+    fn change_settings(&mut self, settings: Settings) {
+        if settings.show_ruler != self.settings.show_ruler {
+            self.show_ruler = settings.show_ruler;
+        }
+        self.settings = settings;
+        if let Some(dir) = &self.dir
+            && let Err(e) = settings.save(dir)
+        {
+            self.report("Не удалось сохранить параметры", e);
+        }
+    }
+
+    /// Что показать в представлении «Файл».
+    fn backstage_info(&self) -> BackstageInfo {
+        BackstageInfo {
+            document: self.document.as_ref().map(|document| {
+                let stats = document.doc.statistics();
+                let core = &document.doc.properties.core;
+                DocumentInfo {
+                    name: document.name(),
+                    path: document.path.clone(),
+                    modified: document.modified(),
+                    pages: document.layout.pages.len(),
+                    words: stats.words,
+                    characters: stats.characters,
+                    characters_with_spaces: stats.characters_with_spaces,
+                    paragraphs: stats.paragraphs,
+                    title: core.title.clone(),
+                    author: core.creator.clone(),
+                    last_modified_by: core.last_modified_by.clone(),
+                    created: core.created.clone(),
+                    changed: core.modified.clone(),
+                }
+            }),
+            recent: self.recent.items().to_vec(),
+            settings: self.settings,
+        }
+    }
+
     fn report(&mut self, title: &'static str, message: String) {
         self.error_title = title;
         self.error = Some(message);
@@ -448,6 +508,7 @@ impl Viewer {
             Intent::Open(None) => self.pick_file(),
             Intent::Recover(index) => self.recover(index),
             Intent::Close => self.close_confirmed = true,
+            Intent::CloseDocument => self.close_document(),
         }
     }
 
@@ -468,6 +529,11 @@ impl Viewer {
 
     /// «Сохранить как» (F12): окно выбора места и формата.
     pub fn save_as(&mut self) -> bool {
+        self.save_as_format("docx")
+    }
+
+    /// «Сохранить как» с форматом `extension` по умолчанию («Экспорт»).
+    pub fn save_as_format(&mut self, extension: &str) -> bool {
         let Some(document) = &self.document else {
             return false;
         };
@@ -478,9 +544,13 @@ impl Viewer {
             .map_or_else(|| UNTITLED.to_owned(), |s| s.to_string_lossy().into_owned());
         let mut dialog = rfd::FileDialog::new()
             .set_title("Сохранить как")
-            .set_file_name(format!("{stem}.docx"));
-        for (name, extensions) in SAVE_FILTERS {
-            dialog = dialog.add_filter(*name, extensions);
+            .set_file_name(format!("{stem}.{extension}"));
+        // Выбранный формат — первым в списке.
+        let (chosen, others): (Vec<_>, Vec<_>) = SAVE_FILTERS
+            .iter()
+            .partition(|(_, extensions)| extensions.contains(&extension));
+        for &(name, extensions) in chosen.into_iter().chain(others) {
+            dialog = dialog.add_filter(name, extensions);
         }
         if let Some(dir) = self.dialog_dir() {
             dialog = dialog.set_directory(dir);
@@ -489,7 +559,7 @@ impl Viewer {
             return false;
         };
         if files::FileFormat::from_path(&path).is_none() {
-            path.set_extension("docx");
+            path.set_extension(extension);
         }
         self.save_to(&path)
     }
@@ -545,7 +615,8 @@ impl Viewer {
         if !document.modified() || document.autosaved == document.history.state() {
             return;
         }
-        let wait = AUTOSAVE_EVERY.saturating_sub(self.last_autosave.elapsed());
+        let every = Duration::from_secs(u64::from(self.settings.autosave_minutes) * 60);
+        let wait = every.saturating_sub(self.last_autosave.elapsed());
         if wait.is_zero() {
             self.autosave_now();
         } else {
@@ -589,18 +660,27 @@ impl Viewer {
         }
         self.handle_input(&ctx);
 
-        let info = self.ribbon_info();
-        let commands = egui::Panel::top("ribbon")
-            .show(ui, |ui| self.ribbon.ui(ui, &info))
-            .inner;
-        self.run_ribbon(&ctx, commands);
-        if let Some(action) = self.find.ui(&ctx) {
-            self.find_action(&ctx, action);
+        if self.backstage.open {
+            // «Файл» занимает всё окно вместо ленты и документа.
+            let info = self.backstage_info();
+            let commands = egui::CentralPanel::no_frame()
+                .show(ui, |ui| self.backstage.ui(ui, &info))
+                .inner;
+            self.run_ribbon(&ctx, commands);
+        } else {
+            let info = self.ribbon_info();
+            let commands = egui::Panel::top("ribbon")
+                .show(ui, |ui| self.ribbon.ui(ui, &info))
+                .inner;
+            self.run_ribbon(&ctx, commands);
+            if let Some(action) = self.find.ui(&ctx) {
+                self.find_action(&ctx, action);
+            }
+            egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+            egui::CentralPanel::no_frame()
+                .frame(egui::Frame::new().fill(DESK_COLOR))
+                .show(ui, |ui| self.document_area(ui));
         }
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        egui::CentralPanel::no_frame()
-            .frame(egui::Frame::new().fill(DESK_COLOR))
-            .show(ui, |ui| self.document_area(ui));
         self.error_window(&ctx);
         self.save_changes_window(&ctx);
         self.recovery_window(&ctx);
@@ -727,7 +807,7 @@ impl Viewer {
         if let Some(path) = dropped {
             self.request(Intent::Open(Some(path)));
         }
-        if self.error.is_none() && self.ask.is_none() {
+        if self.error.is_none() && self.ask.is_none() && !self.backstage.open {
             self.keyboard(ctx);
         }
     }
@@ -949,7 +1029,6 @@ impl Viewer {
 
     fn ribbon_info(&self) -> RibbonInfo {
         let mut info = RibbonInfo {
-            recent: self.recent.items().to_vec(),
             page_width: self.zoom == Zoom::PageWidth,
             ruler: self.show_ruler,
             marks: self.show_marks,
@@ -996,6 +1075,19 @@ impl Viewer {
                     self.save_as();
                 }
                 RibbonCommand::Exit => ctx.send_viewport_cmd(ViewportCommand::Close),
+                RibbonCommand::Backstage => {
+                    let page = if self.document.is_some() {
+                        Page::Info
+                    } else {
+                        Page::Open
+                    };
+                    self.backstage.show(page);
+                }
+                RibbonCommand::CloseDocument => self.request(Intent::CloseDocument),
+                RibbonCommand::SaveAsFormat(extension) => {
+                    self.save_as_format(extension);
+                }
+                RibbonCommand::ChangeSettings(settings) => self.change_settings(settings),
                 RibbonCommand::Undo => actions.push(Action::Undo),
                 RibbonCommand::Redo => actions.push(Action::Redo),
                 RibbonCommand::Cut => actions.push(Action::Cut),
@@ -2410,6 +2502,33 @@ mod tests {
         drop(viewer);
         assert_eq!(std::fs::read_dir(&autosave).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn backstage_commands() {
+        let dir = crate::files::tests::temp_dir("backstage");
+        let ctx = Context::default();
+        let mut viewer = Viewer::with_storage(FontLibrary::embedded_only(), Some(dir.clone()));
+        viewer.new_document();
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Backstage]);
+        assert!(viewer.backstage.open);
+        // Пока открыт «Файл», клавиши не идут в документ.
+        frame(&ctx, &mut viewer, events(vec![Event::Text("x".into())]));
+        assert_eq!(first_text(&mut viewer), "");
+        let info = viewer.backstage_info();
+        assert_eq!(info.document.map(|d| d.pages), Some(1));
+        let settings = Settings {
+            autosave_minutes: 7,
+            show_ruler: false,
+        };
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ChangeSettings(settings)]);
+        assert!(!viewer.show_ruler);
+        assert_eq!(Settings::load(Some(&dir)), settings);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::CloseDocument]);
+        assert!(viewer.document.is_none());
+        // Новый запуск помнит параметры.
+        let again = Viewer::with_storage(FontLibrary::embedded_only(), Some(dir));
+        assert!(!again.show_ruler);
     }
 
     #[test]
