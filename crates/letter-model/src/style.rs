@@ -101,13 +101,7 @@ impl Style {
         self.unknown
             .iter()
             .find(|raw| raw.local_name() == "uiPriority")
-            .and_then(|raw| {
-                let xml = raw.as_str();
-                let start = xml.find("val=")? + 4;
-                let quote = xml[start..].chars().next()?;
-                let value = &xml[start + 1..];
-                value[..value.find(quote)?].parse().ok()
-            })
+            .and_then(|raw| raw.attribute("val")?.parse().ok())
             .unwrap_or(99)
     }
 
@@ -115,8 +109,7 @@ impl Style {
         self.unknown.iter().any(|raw| {
             raw.local_name() == element
                 // `<w:semiHidden w:val="0"/>` выключает признак.
-                && !raw.as_str().contains("val=\"0\"")
-                && !raw.as_str().contains("val=\"false\"")
+                && !matches!(raw.attribute("val"), Some("0" | "false" | "off"))
         })
     }
 }

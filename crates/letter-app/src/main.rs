@@ -12,6 +12,7 @@ mod files;
 mod find;
 mod home;
 mod icons;
+mod language;
 mod ribbon;
 mod ruler;
 mod settings;

@@ -266,6 +266,27 @@ pub fn formatting_at(
     doc: &Document,
     at: Position,
 ) -> Option<(ResolvedParagraphProps, ResolvedRunProps)> {
+    let (paragraph, run) = run_at(doc, at)?;
+    let default = RunProps::default();
+    let run = run.unwrap_or(&default);
+    Some((
+        doc.resolve_paragraph(&paragraph.props),
+        doc.resolve_run(&paragraph.props, run),
+    ))
+}
+
+/// Язык текста в позиции `at` (`"ru-RU"`), как его показывает строка
+/// состояния Word: буквы перед курсором (в начале абзаца — первой).
+/// `None`, если язык нигде не указан или абзаца нет.
+pub fn language_at(doc: &Document, at: Position) -> Option<String> {
+    let (paragraph, run) = run_at(doc, at)?;
+    let default = RunProps::default();
+    doc.run_language(&paragraph.props, run.unwrap_or(&default))
+}
+
+/// Абзац в позиции `at` и оформление буквы перед ней (в начале абзаца —
+/// первой буквы; `None`, если в абзаце нет фрагментов).
+fn run_at(doc: &Document, at: Position) -> Option<(&letter_model::Paragraph, Option<&RunProps>)> {
     let paragraph = paragraph_ref(doc, at.paragraph)?;
     let mut pos = 0;
     let mut chosen: Option<&RunProps> = None;
@@ -288,12 +309,7 @@ pub fn formatting_at(
             break;
         }
     }
-    let default = RunProps::default();
-    let run = chosen.unwrap_or(&default);
-    Some((
-        doc.resolve_paragraph(&paragraph.props),
-        doc.resolve_run(&paragraph.props, run),
-    ))
+    Some((paragraph, chosen))
 }
 
 fn ordered(a: Position, b: Position) -> (Position, Position) {
@@ -606,6 +622,25 @@ mod tests {
         )])]);
         let (_, run) = formatting_at(&d, Position::new(0, 0)).unwrap();
         assert!(run.italic);
+    }
+
+    #[test]
+    fn language_is_read_before_the_cursor() {
+        let english = RunProps {
+            unknown: vec![letter_model::RawXml::new(r#"<w:lang w:val="en-US"/>"#)],
+            ..RunProps::default()
+        };
+        let mut d = doc(vec![Paragraph::from_runs([
+            Run::text("да"),
+            Run::text("yes").with_props(english),
+        ])]);
+        d.styles.defaults.run.unknown =
+            vec![letter_model::RawXml::new(r#"<w:lang w:val="ru-RU"/>"#)];
+        let at = |o| language_at(&d, Position::new(0, o));
+        assert_eq!(at(0).as_deref(), Some("ru-RU"));
+        assert_eq!(at(4).as_deref(), Some("ru-RU"));
+        assert_eq!(at(5).as_deref(), Some("en-US"));
+        assert_eq!(language_at(&d, Position::new(3, 0)), None);
     }
 
     #[test]
