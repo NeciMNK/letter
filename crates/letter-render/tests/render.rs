@@ -157,3 +157,41 @@ fn formatting_marks_follow_the_text() {
     let margin = layout.pages[0].margins.left;
     assert!((marks[4].x - margin).abs() < 0.5, "{:?}", marks[4]);
 }
+
+#[test]
+fn hidden_wide_and_colored_underline() {
+    use letter_model::{Block, Color, Document, Paragraph, Run, RunProps, Underline};
+    let library = FontLibrary::embedded_only();
+    let mut cache = GlyphCache::new();
+    let mut doc = Document::new();
+    doc.sections[0].blocks = vec![Block::from(Paragraph::from_runs([
+        Run::text("a").with_props(RunProps {
+            hidden: Some(true),
+            ..RunProps::default()
+        }),
+        Run::text("b").with_props(RunProps {
+            scale: Some(150),
+            underline: Some(Underline::Single),
+            underline_color: Some(Color::Rgb(255, 0, 0)),
+            ..RunProps::default()
+        }),
+    ]))];
+    let layout = layout_document(&doc, &mut Shaper::new(), &library);
+    let items = page_scene(&layout.pages[0], 1.0, &library, &mut cache);
+    let glyphs: Vec<u16> = items
+        .iter()
+        .filter_map(|i| match i {
+            DrawItem::Glyph { key, .. } => Some(key.width_percent),
+            DrawItem::Rect { .. } => None,
+        })
+        .collect();
+    // Скрытая «a» не рисуется, «b» растянута.
+    assert_eq!(glyphs, [150]);
+    assert!(items.iter().any(|i| matches!(
+        i,
+        DrawItem::Rect {
+            color: [255, 0, 0, 255],
+            ..
+        }
+    )));
+}

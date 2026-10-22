@@ -99,6 +99,29 @@ pub struct ResolvedRunProps {
     pub highlight: Highlight,
     /// Над/подстрочный знак.
     pub vertical_align: VerticalAlign,
+    /// Все прописные.
+    pub caps: bool,
+    /// Малые прописные.
+    pub small_caps: bool,
+    /// Скрытый текст.
+    pub hidden: bool,
+    /// Цвет подчёркивания; `None` — цвет текста.
+    pub underline_color: Option<Color>,
+    /// Интервал между буквами (может быть меньше нуля).
+    pub spacing: Twips,
+    /// Масштаб по ширине, проценты.
+    pub scale: u16,
+    /// Смещение вверх (вниз — меньше нуля), полупункты.
+    pub position: i32,
+    /// Кернинг от этого размера; ноль — выключен.
+    pub kerning: HalfPoints,
+}
+
+impl ResolvedRunProps {
+    /// Включён ли кернинг для этого размера шрифта.
+    pub fn kerned(&self) -> bool {
+        self.kerning.0 > 0 && self.size >= self.kerning
+    }
 }
 
 impl Styles {
@@ -208,6 +231,11 @@ impl Document {
             overlay(&mut acc.color, &layer.color);
             overlay(&mut acc.highlight, &layer.highlight);
             overlay(&mut acc.vertical_align, &layer.vertical_align);
+            overlay(&mut acc.underline_color, &layer.underline_color);
+            overlay(&mut acc.spacing, &layer.spacing);
+            overlay(&mut acc.scale, &layer.scale);
+            overlay(&mut acc.position, &layer.position);
+            overlay(&mut acc.kerning, &layer.kerning);
         }
 
         let toggle = |get: fn(&RunProps) -> Option<bool>| {
@@ -224,6 +252,14 @@ impl Document {
             color: acc.color.unwrap_or(Color::Auto),
             highlight: acc.highlight.unwrap_or(Highlight::None),
             vertical_align: acc.vertical_align.unwrap_or(VerticalAlign::Baseline),
+            caps: toggle(|p| p.caps),
+            small_caps: toggle(|p| p.small_caps),
+            hidden: toggle(|p| p.hidden),
+            underline_color: acc.underline_color,
+            spacing: acc.spacing.unwrap_or_default(),
+            scale: acc.scale.unwrap_or(100),
+            position: acc.position.unwrap_or(0),
+            kerning: acc.kerning.unwrap_or_default(),
         }
     }
 }

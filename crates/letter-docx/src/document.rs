@@ -8,7 +8,7 @@ use letter_model::{
     Block, BreakKind, Color, Document, FirstLineIndent, HalfPoints, Indentation, Inline,
     LineSpacing, Orientation, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run,
     RunContent, RunFonts, RunProps, Section, SectionProps, Spacing, TabStop, Table, TableCell,
-    TableRow, ThemeColor, Twips, VerticalAlign,
+    TableRow, ThemeColor, Twips, Underline, VerticalAlign,
 };
 
 use crate::ReadError;
@@ -286,7 +286,35 @@ pub(crate) fn read_run_props(rpr: &Element) -> RunProps {
                 "i" => set(&mut props.italic, toggle(child)),
                 "strike" => set(&mut props.strike, toggle(child)),
                 "dstrike" => set(&mut props.double_strike, toggle(child)),
-                "u" => set(&mut props.underline, enum_val(child, UNDERLINES)),
+                "caps" => set(&mut props.caps, toggle(child)),
+                "smallCaps" => set(&mut props.small_caps, toggle(child)),
+                "vanish" => set(&mut props.hidden, toggle(child)),
+                "u" => read_underline(child)
+                    .map(|(underline, color)| {
+                        props.underline = Some(underline);
+                        props.underline_color = color;
+                    })
+                    .is_some(),
+                "spacing" => set(
+                    &mut props.spacing,
+                    single_val(child)
+                        .and_then(|v| v.parse::<i32>().ok())
+                        .map(Twips),
+                ),
+                "w" => set(
+                    &mut props.scale,
+                    single_val(child)
+                        .and_then(|v| v.trim_end_matches('%').parse::<u16>().ok())
+                        .filter(|w| (1..=600).contains(w)),
+                ),
+                "position" => set(
+                    &mut props.position,
+                    single_val(child).and_then(|v| v.parse::<i32>().ok()),
+                ),
+                "kern" => set(
+                    &mut props.kerning,
+                    single_val(child).and_then(parse_half_points),
+                ),
                 "color" => read_color(child)
                     .map(|(color, theme)| {
                         props.color = Some(color);
@@ -492,6 +520,20 @@ pub(crate) fn toggle(element: &Element) -> Option<bool> {
         Some("false" | "0" | "off") => Some(false),
         Some(_) => None,
     }
+}
+
+/// Подчёркивание `w:u`: вид и цвет (`w:color`, без ссылок на тему —
+/// с ними элемент сохраняется как есть).
+fn read_underline(element: &Element) -> Option<(Underline, Option<Color>)> {
+    if !element.only_attrs(&["val", "color"]) {
+        return None;
+    }
+    let underline = lookup(UNDERLINES, element.w_attr("val")?)?;
+    let color = match element.w_attr("color") {
+        None => None,
+        Some(value) => Some(parse_color(value)?),
+    };
+    Some((underline, color))
 }
 
 /// Цвет `w:color`: значение и, возможно, ссылка на цвет темы.

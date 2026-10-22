@@ -389,8 +389,11 @@ fn run_props(props: &RunProps) -> String {
     let toggles = [
         ("b", props.bold),
         ("i", props.italic),
+        ("caps", props.caps),
+        ("smallCaps", props.small_caps),
         ("strike", props.strike),
         ("dstrike", props.double_strike),
+        ("vanish", props.hidden),
     ];
     for (name, value) in toggles {
         if let Some(on) = value {
@@ -398,13 +401,7 @@ fn run_props(props: &RunProps) -> String {
         }
     }
     if let Some(color) = props.color {
-        let mut attrs = vec![(
-            "w:val",
-            match color {
-                Color::Auto => "auto".to_string(),
-                Color::Rgb(r, g, b) => format!("{r:02X}{g:02X}{b:02X}"),
-            },
-        )];
+        let mut attrs = vec![("w:val", hex_color(color))];
         if let Some(theme) = &props.theme_color {
             attrs.push(("w:themeColor", theme.name.clone()));
             if let Some(shade) = theme.shade {
@@ -416,6 +413,18 @@ fn run_props(props: &RunProps) -> String {
         }
         children.push("color", empty("w:color", &attrs));
     }
+    if let Some(spacing) = props.spacing {
+        children.push("spacing", val("w:spacing", &spacing.0.to_string()));
+    }
+    if let Some(scale) = props.scale {
+        children.push("w", val("w:w", &scale.to_string()));
+    }
+    if let Some(kerning) = props.kerning {
+        children.push("kern", val("w:kern", &kerning.0.to_string()));
+    }
+    if let Some(position) = props.position {
+        children.push("position", val("w:position", &position.to_string()));
+    }
     if let Some(size) = props.size {
         children.push("sz", val("w:sz", &size.0.to_string()));
     }
@@ -423,7 +432,11 @@ fn run_props(props: &RunProps) -> String {
         children.push("highlight", val("w:highlight", name));
     }
     if let Some(name) = props.underline.and_then(|u| name_of(UNDERLINES, u)) {
-        children.push("u", val("w:u", name));
+        let mut attrs = vec![("w:val", name.to_string())];
+        if let Some(color) = props.underline_color {
+            attrs.push(("w:color", hex_color(color)));
+        }
+        children.push("u", empty("w:u", &attrs));
     }
     if let Some(align) = props.vertical_align {
         let name = match align {
@@ -435,6 +448,14 @@ fn run_props(props: &RunProps) -> String {
     }
     children.raw(&props.unknown);
     optional_element("w:rPr", &children.finish())
+}
+
+/// Цвет как в атрибутах Word: `auto` или `RRGGBB`.
+fn hex_color(color: Color) -> String {
+    match color {
+        Color::Auto => "auto".to_string(),
+        Color::Rgb(r, g, b) => format!("{r:02X}{g:02X}{b:02X}"),
+    }
 }
 
 fn fonts(fonts: &RunFonts) -> String {

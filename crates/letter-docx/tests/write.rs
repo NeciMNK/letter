@@ -177,10 +177,18 @@ fn everything() -> Document {
         }),
         highlight: Some(Highlight::DarkYellow),
         vertical_align: Some(VerticalAlign::Superscript),
+        caps: Some(true),
+        small_caps: Some(false),
+        hidden: Some(true),
+        underline_color: Some(Color::Rgb(0xFF, 0, 0)),
+        spacing: Some(Twips(-15)),
+        scale: Some(150),
+        position: Some(-6),
+        kerning: Some(HalfPoints(24)),
         // Порядок как в схеме: при записи элементы всё равно встанут так.
         unknown: vec![
             RawXml::new(
-                r#"<w:caps xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>"#,
+                r#"<w:emboss xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>"#,
             ),
             RawXml::new(
                 r#"<w:lang xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:val="ru-RU"/>"#,

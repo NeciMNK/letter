@@ -36,6 +36,8 @@ pub struct GlyphKey {
     pub bold: bool,
     /// Искусственный курсив.
     pub italic: bool,
+    /// Масштаб по ширине, проценты (`100` — как есть).
+    pub width_percent: u16,
 }
 
 impl GlyphKey {
@@ -154,12 +156,16 @@ impl GlyphCache {
         if key.bold {
             render.embolden(size / 32.0);
         }
-        if key.italic {
-            render.transform(Some(Transform::skew(
-                Angle::from_degrees(SYNTHETIC_ITALIC_DEGREES),
-                Angle::ZERO,
-            )));
-        }
+        let skew = key
+            .italic
+            .then(|| Transform::skew(Angle::from_degrees(SYNTHETIC_ITALIC_DEGREES), Angle::ZERO));
+        let stretch = (key.width_percent != 100 && key.width_percent > 0)
+            .then(|| Transform::scale(f32::from(key.width_percent) / 100.0, 1.0));
+        match (skew, stretch) {
+            (Some(skew), Some(stretch)) => render.transform(Some(stretch.then(&skew))),
+            (Some(one), None) | (None, Some(one)) => render.transform(Some(one)),
+            (None, None) => &mut render,
+        };
         let image = render.render(&mut scaler, key.glyph_id)?;
         let placement = image.placement;
         if placement.width == 0 || placement.height == 0 {
@@ -205,6 +211,7 @@ mod tests {
             subpixel: 0,
             bold: false,
             italic: false,
+            width_percent: 100,
         }
     }
 
@@ -247,9 +254,22 @@ mod tests {
             subpixel: 2,
             ..plain
         };
+        let wide = GlyphKey {
+            width_percent: 200,
+            ..plain
+        };
+        let wide_italic = GlyphKey {
+            italic: true,
+            ..wide
+        };
         let plain_width = cache_width(&mut cache, &library, plain);
         assert!(cache_width(&mut cache, &library, bold) > plain_width);
         assert!(cache_width(&mut cache, &library, italic) > plain_width);
+        assert!(cache_width(&mut cache, &library, wide) > plain_width);
+        assert!(
+            cache_width(&mut cache, &library, wide_italic)
+                > cache_width(&mut cache, &library, wide)
+        );
         assert_ne!(cache.glyph(&library, shifted), cache.glyph(&library, plain));
         assert!(cache.metrics(&library, plain.font).is_some());
     }

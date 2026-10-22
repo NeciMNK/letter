@@ -353,9 +353,15 @@ fn prepare(
                 RunContent::Unknown(_) => {}
             }
         }
-        for (piece, family) in split_by_font_slot(&text, &resolved.fonts) {
-            spans.push(TextSpan::new(piece, text_style(&resolved, family)));
-            span_props.push(resolved.clone());
+        for (shown, small) in letter_case(&text, &resolved) {
+            for (piece, family) in split_by_font_slot(&shown, &resolved.fonts) {
+                let mut style = text_style(&resolved, family);
+                if small {
+                    style.size *= SMALL_CAPS_SCALE;
+                }
+                spans.push(TextSpan::new(piece, style));
+                span_props.push(resolved.clone());
+            }
         }
     }
     let mark = doc.resolve_run(&paragraph.props, &RunProps::default());
@@ -434,6 +440,35 @@ fn prepare(
     }
 }
 
+/// Во сколько раз уменьшаются строчные буквы, показанные малыми
+/// прописными.
+const SMALL_CAPS_SCALE: f32 = 0.8;
+
+/// Текст для показа с «Все прописные» и «Малые прописные»: куски
+/// и признак «уменьшенные прописные». Буква меняется, только если
+/// прописная занимает столько же байтов, — чтобы позиции курсора
+/// в тексте не сдвинулись.
+fn letter_case(text: &str, props: &ResolvedRunProps) -> Vec<(String, bool)> {
+    if !props.caps && !props.small_caps {
+        return vec![(text.to_string(), false)];
+    }
+    let mut pieces: Vec<(String, bool)> = Vec::new();
+    for c in text.chars() {
+        let mut upper = c.to_uppercase();
+        let (shown, changed) = match (upper.next(), upper.next()) {
+            (Some(u), None) if u != c && u.len_utf8() == c.len_utf8() => (u, true),
+            _ => (c, false),
+        };
+        // «Все прописные» сильнее «Малых прописных», как в Word.
+        let small = changed && !props.caps;
+        match pieces.last_mut() {
+            Some((piece, s)) if *s == small => piece.push(shown),
+            _ => pieces.push((shown.to_string(), small)),
+        }
+    }
+    pieces
+}
+
 /// Во сколько раз уменьшается надстрочный и подстрочный знак.
 const SCRIPT_SCALE: f32 = 2.0 / 3.0;
 
@@ -442,11 +477,13 @@ const SCRIPT_SCALE: f32 = 2.0 / 3.0;
 /// подстрочный опущен на 0,14 кегля. Кегль — до уменьшения.
 pub fn baseline_rise(props: &ResolvedRunProps) -> f32 {
     let size = props.size.0 as f32 / 2.0;
-    match props.vertical_align {
+    let script = match props.vertical_align {
         VerticalAlign::Baseline => 0.0,
         VerticalAlign::Superscript => size / 3.0,
         VerticalAlign::Subscript => -size * 0.14,
-    }
+    };
+    // «Смещение» из окна «Шрифт» — в полупунктах.
+    script + props.position as f32 / 2.0
 }
 
 fn text_style(props: &ResolvedRunProps, family: &str) -> TextStyle {
@@ -459,8 +496,11 @@ fn text_style(props: &ResolvedRunProps, family: &str) -> TextStyle {
         size: props.size.0 as f32 / 2.0 * scale,
         bold: props.bold,
         italic: props.italic,
-        kerning: false,
+        kerning: props.kerned(),
         ligatures: false,
+        letter_spacing: props.spacing.0 as f32 / 20.0,
+        width_scale: f32::from(props.scale.clamp(1, 600)) / 100.0,
+        hidden: props.hidden,
     }
 }
 
@@ -1042,5 +1082,74 @@ mod tests {
                 ("中文", "E")
             ]
         );
+    }
+
+    #[test]
+    fn font_effects_change_the_text() {
+        let with = |props: RunProps| {
+            let mut p = para("Абв abc");
+            if let Some(letter_model::Inline::Run(run)) = p.content.first_mut() {
+                run.props = props;
+            }
+            let layout = lay(&doc(vec![p]));
+            let line = layout.pages[0].lines[0].clone();
+            let width: f32 = line.line.items.iter().map(|i| i.width()).sum();
+            let sizes: Vec<f32> = line
+                .line
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    crate::LineItem::Text(t) => Some(t.run.size),
+                    _ => None,
+                })
+                .collect();
+            (layout, width, sizes)
+        };
+        let (plain, plain_width, _) = with(RunProps::default());
+        // Все прописные: показан прописными, байты на тех же местах.
+        let (caps, caps_width, _) = with(RunProps {
+            caps: Some(true),
+            ..RunProps::default()
+        });
+        assert_eq!(&*caps.pages[0].lines[0].text, "АБВ ABC");
+        assert_eq!(
+            caps.pages[0].lines[0].text.len(),
+            plain.pages[0].lines[0].text.len()
+        );
+        assert!(caps_width > plain_width);
+        // Малые прописные: строчные — меньшим кеглем.
+        let (_, small_width, sizes) = with(RunProps {
+            small_caps: Some(true),
+            ..RunProps::default()
+        });
+        assert!(sizes.contains(&8.0) && sizes.contains(&10.0), "{sizes:?}");
+        assert!(small_width > plain_width && small_width < caps_width);
+        // Разреженный на 1 пт: на 7 знаков шире на 7 пт.
+        let (_, spaced, _) = with(RunProps {
+            spacing: Some(Twips(20)),
+            ..RunProps::default()
+        });
+        assert!(
+            (spaced - plain_width - 7.0).abs() < 0.01,
+            "{spaced} {plain_width}"
+        );
+        let (_, wide, _) = with(RunProps {
+            scale: Some(200),
+            ..RunProps::default()
+        });
+        assert!((wide - 2.0 * plain_width).abs() < 0.01);
+        let (_, hidden, _) = with(RunProps {
+            hidden: Some(true),
+            ..RunProps::default()
+        });
+        assert_eq!(hidden, 0.0);
+        let raised = doc(vec![]).resolve_run(
+            &letter_model::ParagraphProps::default(),
+            &RunProps {
+                position: Some(6),
+                ..RunProps::default()
+            },
+        );
+        assert_eq!(baseline_rise(&raised), 3.0);
     }
 }
