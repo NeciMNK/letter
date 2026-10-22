@@ -3,6 +3,7 @@
 //! - [`glyphs`] — растровые изображения букв (`swash`) с кешем;
 //! - [`scene`] — что нарисовать на странице: глифы, подчёркивания,
 //!   выделение маркером, заполнители табуляции;
+//! - [`marks`] — знаки форматирования (¶, пробелы, табуляции);
 //! - [`image`] — отрисовка страницы в картинку в памяти (тесты, сверка);
 //! - [`screen`] — отрисовка на экране через egui: серый фон, белые листы
 //!   с тенью, текст.
@@ -12,11 +13,13 @@
 
 pub mod glyphs;
 pub mod image;
+pub mod marks;
 pub mod scene;
 pub mod screen;
 
 pub use glyphs::{GlyphCache, GlyphImage, GlyphKey, GlyphPixels};
 pub use image::{RgbaImage, render_page};
+pub use marks::{Mark, MarkKind, formatting_marks};
 pub use scene::{DrawItem, Rgba, page_scene};
 pub use screen::{DESK_COLOR, PagePainter};
 

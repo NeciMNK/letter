@@ -1,8 +1,10 @@
 //! Вкладка «Главная» ленты: буфер обмена, шрифт, абзац.
+//! Списки (F5.1), заливка и границы (F5.11) добавятся вместе с этими
+//! возможностями документа.
 
 use eframe::egui::{self, Color32, Key, RichText, TextEdit, Ui, vec2};
-use letter_editor::RunFormat;
-use letter_model::{Alignment, Color, HalfPoints, Highlight};
+use letter_editor::{ParagraphFormat, RunFormat};
+use letter_model::{Alignment, Color, HalfPoints, Highlight, LineSpacing, Twips};
 
 use crate::icons::{self, Icon, color_button, icon_button, icon_text_button};
 use crate::ribbon::{RibbonCommand, RibbonInfo, group};
@@ -147,25 +149,118 @@ pub fn home(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Vec
         });
     });
     group(ui, "Шрифт", |ui| font_group(ui, state, info, out));
-    group(ui, "Абзац", |ui| {
-        ui.horizontal(|ui| {
-            for (alignment, tip) in [
-                (Alignment::Left, "Выровнять по левому краю (Ctrl+L)"),
-                (Alignment::Center, "По центру (Ctrl+E)"),
-                (Alignment::Right, "Выровнять по правому краю (Ctrl+R)"),
-                (Alignment::Justify, "По ширине (Ctrl+J)"),
-            ] {
-                let on = info.alignment == Some(alignment);
-                let name = tip.split(" (").next().unwrap_or(tip);
-                if icon_button(ui, Icon::Align(alignment), name, vec2(26.0, 24.0), doc, on)
-                    .on_hover_text(tip)
-                    .clicked()
-                {
-                    out.push(RibbonCommand::Align(alignment));
-                }
+    group(ui, "Абзац", |ui| paragraph_group(ui, info, out));
+}
+
+/// Межстрочные интервалы в меню, как в Word.
+pub const LINE_SPACINGS: [(&str, u32); 6] = [
+    ("1,0", 240),
+    ("1,15", 276),
+    ("1,5", 360),
+    ("2,0", 480),
+    ("2,5", 600),
+    ("3,0", 720),
+];
+
+/// Сколько добавляет «Добавить интервал перед/после абзаца»: 12 пт.
+const ADDED_SPACE: Twips = Twips(240);
+
+/// Группа «Абзац»: сверху отступы и знаки форматирования, снизу
+/// выравнивание и интервалы.
+fn paragraph_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+    let doc = info.has_document;
+    let button = vec2(26.0, 24.0);
+    ui.horizontal(|ui| {
+        for (icon, name, format) in [
+            (
+                Icon::IndentLess,
+                "Уменьшить отступ",
+                ParagraphFormat::IndentLess,
+            ),
+            (
+                Icon::IndentMore,
+                "Увеличить отступ",
+                ParagraphFormat::IndentMore,
+            ),
+        ] {
+            if icon_button(ui, icon, name, button, doc, false)
+                .on_hover_text(name)
+                .clicked()
+            {
+                out.push(RibbonCommand::Paragraph(format));
             }
+        }
+        ui.separator();
+        let name = "Отобразить все знаки";
+        if icon_button(ui, Icon::Pilcrow, name, button, doc, info.marks)
+            .on_hover_text("Отобразить все знаки (Ctrl+Shift+8)")
+            .clicked()
+        {
+            out.push(RibbonCommand::ToggleMarks);
+        }
+    });
+    ui.horizontal(|ui| {
+        for (alignment, tip) in [
+            (Alignment::Left, "Выровнять по левому краю (Ctrl+L)"),
+            (Alignment::Center, "По центру (Ctrl+E)"),
+            (Alignment::Right, "Выровнять по правому краю (Ctrl+R)"),
+            (Alignment::Justify, "По ширине (Ctrl+J)"),
+        ] {
+            let on = info.alignment == Some(alignment);
+            let name = tip.split(" (").next().unwrap_or(tip);
+            if icon_button(ui, Icon::Align(alignment), name, button, doc, on)
+                .on_hover_text(tip)
+                .clicked()
+            {
+                out.push(RibbonCommand::Align(alignment));
+            }
+        }
+        ui.separator();
+        let spacing = egui::Button::new(icons::text(ui, Icon::LineSpacing, 16.0))
+            .frame(false)
+            .min_size(button);
+        ui.add_enabled_ui(doc, |ui| {
+            let (response, _) = egui::containers::menu::MenuButton::from_button(spacing)
+                .ui(ui, |ui| spacing_menu(ui, info, out));
+            response.on_hover_text("Интервал между строками и абзацами");
         });
     });
+}
+
+/// Меню «Интервал»: множители и интервалы перед и после абзаца.
+fn spacing_menu(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+    for (label, value) in LINE_SPACINGS {
+        let on = info.line_spacing == Some(LineSpacing::Multiple(value));
+        if ui.selectable_label(on, label).clicked() {
+            out.push(RibbonCommand::Paragraph(ParagraphFormat::LineSpacing(
+                LineSpacing::Multiple(value),
+            )));
+            ui.close();
+        }
+    }
+    ui.separator();
+    let (before, format) = if info.space_before > 0 {
+        ("Удалить интервал перед абзацем", Twips(0))
+    } else {
+        ("Добавить интервал перед абзацем", ADDED_SPACE)
+    };
+    if ui.button(before).clicked() {
+        out.push(RibbonCommand::Paragraph(ParagraphFormat::SpaceBefore(
+            format,
+        )));
+        ui.close();
+    }
+    let (after, format) = if info.space_after > 0 {
+        ("Удалить интервал после абзаца", Twips(0))
+    } else {
+        ("Добавить интервал после абзаца", ADDED_SPACE)
+    };
+    if ui.button(after).clicked() {
+        out.push(RibbonCommand::Paragraph(ParagraphFormat::SpaceAfter(
+            format,
+        )));
+        ui.close();
+    }
 }
 
 /// Группа «Шрифт»: сверху имя, размер, больше/меньше, очистка; снизу

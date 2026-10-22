@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use eframe::egui::{self, Align, Color32, CornerRadius, Layout, RichText, Stroke, Ui, vec2};
-use letter_editor::RunFormat;
+use letter_editor::{ParagraphFormat, RunFormat};
 
 use crate::home::{HomeState, home};
 use crate::icons::{Icon, icon_button};
@@ -93,6 +93,10 @@ pub enum RibbonCommand {
     Format(RunFormat),
     /// Выравнивание абзаца.
     Align(Alignment),
+    /// Отступы и интервалы абзаца.
+    Paragraph(ParagraphFormat),
+    /// Показать или скрыть знаки форматирования.
+    ToggleMarks,
     /// Масштаб крупнее.
     ZoomIn,
     /// Масштаб мельче.
@@ -136,6 +140,14 @@ pub struct RibbonInfo {
     pub fonts: Arc<[String]>,
     /// Выравнивание абзаца с курсором.
     pub alignment: Option<Alignment>,
+    /// Межстрочный интервал абзаца с курсором.
+    pub line_spacing: Option<letter_model::LineSpacing>,
+    /// Интервалы перед и после абзаца с курсором, твипы.
+    pub space_before: i32,
+    /// Интервал после абзаца.
+    pub space_after: i32,
+    /// Знаки форматирования показаны.
+    pub marks: bool,
     /// Недавние файлы.
     pub recent: Vec<PathBuf>,
     /// Масштаб «по ширине страницы» включён.

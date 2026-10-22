@@ -5,8 +5,8 @@
 //! Ctrl+R, Ctrl+J).
 
 use letter_model::{
-    Alignment, Color, Document, HalfPoints, Highlight, Inline, Paragraph, ResolvedParagraphProps,
-    ResolvedRunProps, Run, RunProps, Underline, VerticalAlign,
+    Alignment, Color, Document, HalfPoints, Highlight, Inline, LineSpacing, Paragraph,
+    ResolvedParagraphProps, ResolvedRunProps, Run, RunProps, Twips, Underline, VerticalAlign,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -183,6 +183,58 @@ pub fn align_paragraphs(doc: &mut Document, start: Position, end: Position, alig
     }
 }
 
+/// Что поменять в оформлении абзацев (группа «Абзац» на ленте).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParagraphFormat {
+    /// «Увеличить отступ»: отступ слева до следующей позиции табуляции
+    /// по умолчанию.
+    IndentMore,
+    /// «Уменьшить отступ»: до предыдущей позиции, не меньше нуля.
+    IndentLess,
+    /// Межстрочный интервал.
+    LineSpacing(LineSpacing),
+    /// Интервал перед абзацем.
+    SpaceBefore(Twips),
+    /// Интервал после абзаца.
+    SpaceAfter(Twips),
+}
+
+/// Меняет оформление абзацев от `start` до `end`.
+pub fn format_paragraphs(
+    doc: &mut Document,
+    start: Position,
+    end: Position,
+    format: ParagraphFormat,
+) {
+    let (first, last) = ordered(start, end);
+    // Шаг отступа — табуляция по умолчанию (в русском Word 1,25 см).
+    let step = doc.settings.default_tab_stop.0.max(1);
+    for index in first.paragraph..=last.paragraph {
+        let Some(left) =
+            paragraph_ref(doc, index).map(|p| doc.resolve_paragraph(&p.props).indent_left.0)
+        else {
+            continue;
+        };
+        let Some(paragraph) = paragraph_mut(doc, index) else {
+            continue;
+        };
+        let props = &mut paragraph.props;
+        match format {
+            ParagraphFormat::IndentMore => {
+                let next = (left.div_euclid(step) + 1) * step;
+                props.indentation.left = Some(Twips(next));
+            }
+            ParagraphFormat::IndentLess => {
+                let previous = (left + step - 1).div_euclid(step) - 1;
+                props.indentation.left = Some(Twips((previous * step).max(0)));
+            }
+            ParagraphFormat::LineSpacing(line) => props.spacing.line = Some(line),
+            ParagraphFormat::SpaceBefore(before) => props.spacing.before = Some(before),
+            ParagraphFormat::SpaceAfter(after) => props.spacing.after = Some(after),
+        }
+    }
+}
+
 /// Оформление в позиции `at`, как его показывает лента Word: абзаца
 /// и буквы перед курсором (в начале абзаца — первой буквы). `None`,
 /// если такого абзаца нет.
@@ -344,6 +396,10 @@ mod tests {
 
     fn para(doc: &Document, i: usize) -> &Paragraph {
         paragraph_ref(doc, i).unwrap()
+    }
+
+    fn para_mut(doc: &mut Document, i: usize) -> &mut Paragraph {
+        paragraph_mut(doc, i).unwrap()
     }
 
     fn runs(doc: &Document, i: usize) -> Vec<(String, Option<bool>)> {
@@ -562,6 +618,45 @@ mod tests {
         all(&mut d, RunFormat::Bold);
         all(&mut d, RunFormat::Clear);
         assert_eq!(props(&d), RunProps::default());
+    }
+
+    #[test]
+    fn indents_step_by_the_default_tab() {
+        let mut d = doc(vec![Paragraph::text("a"), Paragraph::text("b")]);
+        d.settings.default_tab_stop = Twips(709);
+        let left = |d: &Document, i| para(d, i).props.indentation.left;
+        let run = |d: &mut Document, f| {
+            format_paragraphs(d, Position::new(0, 0), Position::new(1, 0), f);
+        };
+        run(&mut d, ParagraphFormat::IndentMore);
+        assert_eq!(left(&d, 0), Some(Twips(709)));
+        para_mut(&mut d, 1).props.indentation.left = Some(Twips(1000));
+        run(&mut d, ParagraphFormat::IndentMore);
+        assert_eq!(
+            (left(&d, 0), left(&d, 1)),
+            (Some(Twips(1418)), Some(Twips(1418)))
+        );
+        para_mut(&mut d, 1).props.indentation.left = Some(Twips(1000));
+        run(&mut d, ParagraphFormat::IndentLess);
+        assert_eq!(
+            (left(&d, 0), left(&d, 1)),
+            (Some(Twips(709)), Some(Twips(709)))
+        );
+        run(&mut d, ParagraphFormat::IndentLess);
+        run(&mut d, ParagraphFormat::IndentLess);
+        assert_eq!(left(&d, 0), Some(Twips(0)));
+        run(
+            &mut d,
+            ParagraphFormat::LineSpacing(LineSpacing::ONE_AND_HALF),
+        );
+        run(&mut d, ParagraphFormat::SpaceBefore(Twips(240)));
+        run(&mut d, ParagraphFormat::SpaceAfter(Twips(0)));
+        let resolved = d.resolve_paragraph(&para(&d, 1).props);
+        assert_eq!(resolved.line_spacing, LineSpacing::ONE_AND_HALF);
+        assert_eq!(
+            (resolved.space_before, resolved.space_after),
+            (Twips(240), Twips(0))
+        );
     }
 
     #[test]
