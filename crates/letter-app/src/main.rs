@@ -12,6 +12,7 @@ mod context_menu;
 mod files;
 mod find;
 mod font_dialog;
+mod headers;
 mod home;
 mod i18n;
 mod icons;

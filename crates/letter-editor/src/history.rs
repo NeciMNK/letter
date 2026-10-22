@@ -29,6 +29,7 @@ use crate::picture::{insert_picture, resize_picture, set_picture_anchor};
 use crate::search::{SearchOptions, clamp, replace_all};
 use crate::section::{
     PageSetup, insert_break, insert_section_break, set_header_footer, set_page_setup,
+    set_title_page,
 };
 use crate::selection::Selection;
 use crate::table::{
@@ -137,6 +138,13 @@ pub enum Command {
         kind: HeaderFooterKind,
         /// Колонтитул.
         story: Option<Box<HeaderFooter>>,
+    },
+    /// Особый колонтитул первой страницы у раздела.
+    TitlePage {
+        /// Номер раздела.
+        section: usize,
+        /// Включить.
+        on: bool,
     },
     /// «Заменить все»: найденное `query` заменить на `replacement` во
     /// всём документе. Курсор остаётся в том же абзаце (выделение
@@ -289,6 +297,7 @@ impl History {
                 | Command::PictureAnchor(_)
                 | Command::PageSetup(_)
                 | Command::HeaderFooter { .. }
+                | Command::TitlePage { .. }
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -311,7 +320,9 @@ impl History {
         };
         // Колонтитул меняет свой раздел, где бы ни было выделение.
         let (from, to) = match &command {
-            Command::HeaderFooter { section, .. } if *section < doc.sections.len() => {
+            Command::HeaderFooter { section, .. } | Command::TitlePage { section, .. }
+                if *section < doc.sections.len() =>
+            {
                 ((*section, 0), (*section, 0))
             }
             _ => (from, to),
@@ -321,7 +332,10 @@ impl History {
         // Разрыв раздела и параметры страницы меняют разделы целиком.
         let whole = matches!(
             command,
-            Command::SectionBreak(_) | Command::PageSetup(_) | Command::HeaderFooter { .. }
+            Command::SectionBreak(_)
+                | Command::PageSetup(_)
+                | Command::HeaderFooter { .. }
+                | Command::TitlePage { .. }
         );
         let saved = if from.0 == to.0 && !whole {
             Saved::Blocks(doc.sections[from.0].blocks[from.1..=to.1].to_vec())
@@ -433,6 +447,10 @@ impl History {
                 set_header_footer(doc, *section, *header, *kind, story);
                 Some(selection)
             }
+            Command::TitlePage { section, on } => {
+                set_title_page(doc, *section, *on);
+                Some(selection)
+            }
             _ => None,
         };
         let focus = match &command {
@@ -471,7 +489,8 @@ impl History {
             | Command::ResizePicture { .. }
             | Command::PictureAnchor(_)
             | Command::PageSetup(_)
-            | Command::HeaderFooter { .. } => at,
+            | Command::HeaderFooter { .. }
+            | Command::TitlePage { .. } => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
 

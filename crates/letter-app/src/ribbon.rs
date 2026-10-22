@@ -48,6 +48,8 @@ pub enum Tab {
     TableLayout,
     /// «Формат рисунка»: видна, только когда выделен рисунок.
     PictureFormat,
+    /// «Колонтитулы»: видна, пока колонтитул открыт для правки.
+    HeaderFooter,
 }
 
 impl Tab {
@@ -73,6 +75,7 @@ impl Tab {
             Tab::TableDesign => "keytip-tab-table-design",
             Tab::TableLayout => "keytip-tab-table-layout",
             Tab::PictureFormat => "keytip-tab-picture-format",
+            Tab::HeaderFooter => "keytip-tab-header-footer",
         }
     }
 
@@ -88,6 +91,7 @@ impl Tab {
             Tab::TableDesign => tr("tab-table-design"),
             Tab::TableLayout => tr("tab-table-layout"),
             Tab::PictureFormat => tr("tab-picture-format"),
+            Tab::HeaderFooter => tr("tab-header-footer"),
         }
     }
 }
@@ -179,6 +183,17 @@ pub enum RibbonCommand {
     InsertPicture,
     /// «Обтекание текстом» выделенного рисунка.
     PictureWrap(letter_editor::PictureWrap),
+    /// Открыть для правки верхний (`header`) или нижний колонтитул.
+    EditHeaderFooter {
+        /// Верхний.
+        header: bool,
+    },
+    /// «Номер страницы».
+    PageNumber(crate::headers::PageNumberPlace),
+    /// «Особый колонтитул для первой страницы».
+    TitlePage(bool),
+    /// «Закрыть окно колонтитулов».
+    CloseHeaderFooter,
     /// Правка документа командой редактора (вставка таблицы и т. п.).
     Edit(letter_editor::Command),
     /// Открыть список или меню на ленте (подсказки клавиш).
@@ -244,6 +259,10 @@ pub struct RibbonInfo {
     pub picture_wrap: Option<letter_editor::PictureWrap>,
     /// Параметры страницы раздела с курсором.
     pub section: Option<letter_model::SectionProps>,
+    /// Открыт колонтитул: `Some(true)` — верхний, `Some(false)` — нижний.
+    pub story: Option<bool>,
+    /// У раздела открытого колонтитула особый колонтитул первой страницы.
+    pub title_page: bool,
 }
 
 /// Состояние ленты.
@@ -257,6 +276,8 @@ pub struct Ribbon {
     pub home: HomeState,
     /// Подсказки клавиш по Alt.
     pub keytips: KeyTips,
+    /// В прошлом кадре был открыт колонтитул.
+    story_open: bool,
 }
 
 impl Ribbon {
@@ -290,6 +311,14 @@ impl Ribbon {
         if self.tab == Tab::PictureFormat && info.picture_wrap.is_none() {
             self.tab = Tab::Home;
         }
+        // Вкладка колонтитулов открывается вместе с колонтитулом.
+        if info.story.is_some() && !self.story_open {
+            self.tab = Tab::HeaderFooter;
+        }
+        if info.story.is_none() && self.tab == Tab::HeaderFooter {
+            self.tab = Tab::Home;
+        }
+        self.story_open = info.story.is_some();
         self.tabs(ui, info, &mut out);
         if !self.collapsed {
             let colors = Palette::of(ui.ctx());
@@ -309,6 +338,7 @@ impl Ribbon {
                         Tab::TableDesign => crate::insert::table_design(ui, info, &mut out),
                         Tab::TableLayout => crate::insert::table_layout(ui, info, &mut out),
                         Tab::PictureFormat => crate::insert::picture_format(ui, info, &mut out),
+                        Tab::HeaderFooter => crate::headers::header_footer(ui, info, &mut out),
                         _ => {
                             ui.label(RichText::new(tr("tab-coming-soon")).color(Color32::GRAY));
                         }
@@ -345,6 +375,9 @@ impl Ribbon {
             }
             if info.picture_wrap.is_some() {
                 contextual.push(Tab::PictureFormat);
+            }
+            if info.story.is_some() {
+                contextual.push(Tab::HeaderFooter);
             }
             for tab in Tab::ALL.into_iter().chain(contextual) {
                 let selected = self.tab == tab && !self.collapsed;

@@ -101,6 +101,14 @@ pub enum Icon {
     Columns,
     /// Разрывы.
     Breaks,
+    /// Верхний колонтитул.
+    Header,
+    /// Нижний колонтитул.
+    Footer,
+    /// Номер страницы.
+    PageNumber,
+    /// Закрыть.
+    Close,
     /// Удалить строки, столбцы или таблицу.
     DeleteTable,
     /// Вставить строку сверху.
@@ -195,6 +203,10 @@ impl Icon {
             Icon::PageSize => ("scaling", '\u{E2EC}'),
             Icon::Columns => ("columns-2", '\u{E098}'),
             Icon::Breaks => ("separator-horizontal", '\u{E1C8}'),
+            Icon::Header => ("panel-top-dashed", '\u{E437}'),
+            Icon::Footer => ("panel-bottom-dashed", '\u{E42E}'),
+            Icon::PageNumber => ("hash", '\u{E0EF}'),
+            Icon::Close => ("x", '\u{E1B2}'),
             Icon::DeleteTable => ("grid-2x2-x", '\u{E5E5}'),
             Icon::InsertAbove => ("between-horizontal-start", '\u{E592}'),
             Icon::InsertBelow => ("between-horizontal-end", '\u{E591}'),
@@ -378,7 +390,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 44] = [
+    const ALL: [Icon; 48] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -423,6 +435,10 @@ mod tests {
         Icon::PageSize,
         Icon::Columns,
         Icon::Breaks,
+        Icon::Header,
+        Icon::Footer,
+        Icon::PageNumber,
+        Icon::Close,
     ];
 
     #[test]

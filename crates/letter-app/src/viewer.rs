@@ -33,7 +33,7 @@ use letter_editor::{
     picture_at_point, picture_ref, select_all, selected_picture, selection_rects, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
-use letter_model::{Alignment, BreakKind, Document, Statistics};
+use letter_model::{Alignment, BreakKind, Document, Paragraph, Statistics};
 use letter_render::{MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, formatting_marks};
 
 use crate::backstage::{Backstage, BackstageInfo, DocumentInfo, Page};
@@ -312,6 +312,31 @@ impl OpenDocument {
         self.anchor = Position::default();
         self.goal_x = None;
         self.relayout(shaper, library);
+    }
+
+    /// «Особый колонтитул для первой страницы» у раздела страницы `page`:
+    /// открытый колонтитул закрывается, флаг меняется (шаг отмены),
+    /// и колонтитул той же страницы открывается снова.
+    fn set_title_page(
+        &mut self,
+        page: usize,
+        on: bool,
+        shaper: &mut Shaper,
+        library: &FontLibrary,
+    ) {
+        let header = self.story.as_ref().map(|s| s.header);
+        self.end_story(shaper, library);
+        let Some(section) = self.layout.pages.get(page).map(|p| p.section) else {
+            return;
+        };
+        let selection = self.selection();
+        let command = Command::TitlePage { section, on };
+        let selection = self.history.run(&mut self.doc, selection, command);
+        self.set_selection(selection);
+        self.relayout(shaper, library);
+        if let Some(header) = header {
+            self.begin_story(page, header, shaper, library);
+        }
     }
 
     /// Кончает правку колонтитула: изменение — один шаг отмены.
@@ -1278,6 +1303,50 @@ impl Viewer {
         self.reveal_cursor = true;
     }
 
+    /// Страница, чьи колонтитулы открывать: где открыт колонтитул, иначе
+    /// страница с курсором.
+    fn story_page(&self) -> usize {
+        let Some(document) = &self.document else {
+            return 0;
+        };
+        match &document.story {
+            Some(story) => story.page,
+            None => caret(&document.layout, document.cursor).map_or(self.current_page, |c| c.page),
+        }
+    }
+
+    /// «Номер страницы»: вверху или внизу страницы — колонтитул
+    /// открывается и в нём остаётся один номер по центру; «текущее
+    /// положение» — номер у курсора в открытом колонтитуле.
+    fn insert_page_number(&mut self, ctx: &Context, place: crate::headers::PageNumberPlace) {
+        use crate::headers::PageNumberPlace;
+        let page = self.story_page();
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        let fragment = |paragraph: Paragraph| {
+            let mut doc = Document::new();
+            doc.sections[0].blocks = vec![paragraph.into()];
+            Box::new(doc)
+        };
+        let number = Paragraph::from_runs(letter_editor::page_number_runs());
+        let mut actions = Vec::new();
+        match place {
+            PageNumberPlace::Top | PageNumberPlace::Bottom => {
+                let header = place == PageNumberPlace::Top;
+                document.begin_story(page, header, &mut self.shaper, &self.library);
+                actions.push(Action::SelectAll);
+                actions.push(Action::Edit(Command::Paste(fragment(number))));
+                actions.push(Action::Edit(Command::Align(Alignment::Center)));
+            }
+            PageNumberPlace::Here if document.story.is_some() => {
+                actions.push(Action::Edit(Command::Paste(fragment(number))));
+            }
+            PageNumberPlace::Here => {}
+        }
+        self.apply_actions(ctx, actions);
+    }
+
     /// «Вставка → Рисунки»: окно выбора картинки, потом вставка.
     fn pick_picture(&mut self, ctx: &Context) {
         if self.document.is_none() {
@@ -1421,6 +1490,13 @@ impl Viewer {
                 .map(PictureWrap::of);
             info.section =
                 letter_editor::section_props(&document.doc, document.cursor.paragraph).cloned();
+            if let Some(story) = &document.story {
+                info.story = Some(story.header);
+                let section = story.display.pages.get(story.page).map(|p| p.section);
+                info.title_page = section
+                    .and_then(|s| story.body.sections.get(s))
+                    .is_some_and(|s| s.props.title_page);
+            }
         }
         info
     }
@@ -1495,6 +1571,33 @@ impl Viewer {
                 RibbonCommand::Style(id) => actions.push(Action::Edit(Command::Style(id))),
                 RibbonCommand::Edit(command) => actions.push(Action::Edit(command)),
                 RibbonCommand::InsertPicture => self.picture_requested = true,
+                RibbonCommand::EditHeaderFooter { header } => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    let page = self.story_page();
+                    if let Some(document) = &mut self.document {
+                        document.begin_story(page, header, &mut self.shaper, &self.library);
+                        document.cursor_since = ctx.input(|i| i.time);
+                        self.reveal_cursor = true;
+                    }
+                }
+                RibbonCommand::CloseHeaderFooter => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &mut self.document {
+                        document.end_story(&mut self.shaper, &self.library);
+                        self.reveal_cursor = true;
+                    }
+                }
+                RibbonCommand::TitlePage(on) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    let page = self.story_page();
+                    if let Some(document) = &mut self.document {
+                        document.set_title_page(page, on, &mut self.shaper, &self.library);
+                    }
+                }
+                RibbonCommand::PageNumber(place) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    self.insert_page_number(ctx, place);
+                }
                 RibbonCommand::PictureWrap(wrap) => {
                     if let Some(document) = &self.document
                         && let Some(placed) =
@@ -3124,6 +3227,54 @@ mod tests {
         frame(&ctx, &mut viewer, key(Key::Z, Modifiers::COMMAND));
         assert_eq!(header_text(&viewer), "Header text");
         assert_eq!(shown_header(&viewer), "Header text");
+    }
+
+    #[test]
+    fn page_numbers_and_first_page_from_the_ribbon() {
+        use crate::headers::PageNumberPlace;
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::PageNumber(PageNumberPlace::Bottom)],
+        );
+        assert_eq!(viewer.ribbon_info().story, Some(false));
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::CloseHeaderFooter]);
+        let document = viewer.document.as_ref().unwrap();
+        assert!(document.story.is_none());
+        // Номер — на каждой странице, по центру.
+        let footer = |i: usize| {
+            let line = &document.layout.pages[i].footer.lines[0];
+            line.text[line.line.range.clone()].to_string()
+        };
+        assert_eq!(footer(0), "1");
+        assert_eq!(footer(1), "2");
+        let line = &document.layout.pages[0].footer.lines[0];
+        assert!(line.line.x > 100.0, "{}", line.line.x);
+
+        // «Особый колонтитул для первой страницы»: на первой странице
+        // нижнего колонтитула больше нет, правка остаётся открытой.
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::EditHeaderFooter { header: false }],
+        );
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::TitlePage(true)]);
+        let info = viewer.ribbon_info();
+        assert_eq!(info.story, Some(false));
+        assert!(info.title_page);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::CloseHeaderFooter]);
+        let document = viewer.document.as_ref().unwrap();
+        assert!(document.layout.pages[0].footer.is_empty());
+        assert!(!document.layout.pages[1].footer.is_empty());
+        // Отмена — по шагам: флаг, потом номер страницы.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
+        let document = viewer.document.as_ref().unwrap();
+        assert!(!document.layout.pages[0].footer.is_empty());
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
+        let document = viewer.document.as_ref().unwrap();
+        assert!(document.layout.pages[0].footer.is_empty());
     }
 
     #[test]
