@@ -84,6 +84,41 @@ impl Style {
             unknown: Vec::new(),
         }
     }
+
+    /// Стиль показывается в галерее «Стили» на ленте (`w:qFormat`).
+    pub fn is_quick(&self) -> bool {
+        self.has("qFormat")
+    }
+
+    /// Стиль скрыт от пользователя (`w:hidden` или `w:semiHidden`).
+    pub fn is_hidden(&self) -> bool {
+        self.has("hidden") || self.has("semiHidden")
+    }
+
+    /// Порядок в списках стилей (`w:uiPriority`); меньше — раньше.
+    /// Без него Word ставит стиль в конец (99).
+    pub fn ui_priority(&self) -> u32 {
+        self.unknown
+            .iter()
+            .find(|raw| raw.local_name() == "uiPriority")
+            .and_then(|raw| {
+                let xml = raw.as_str();
+                let start = xml.find("val=")? + 4;
+                let quote = xml[start..].chars().next()?;
+                let value = &xml[start + 1..];
+                value[..value.find(quote)?].parse().ok()
+            })
+            .unwrap_or(99)
+    }
+
+    fn has(&self, element: &str) -> bool {
+        self.unknown.iter().any(|raw| {
+            raw.local_name() == element
+                // `<w:semiHidden w:val="0"/>` выключает признак.
+                && !raw.as_str().contains("val=\"0\"")
+                && !raw.as_str().contains("val=\"false\"")
+        })
+    }
 }
 
 /// Вид стиля.
@@ -102,6 +137,23 @@ pub enum StyleKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gallery_flags_come_from_raw_elements() {
+        let mut style = Style::new("Heading1", StyleKind::Paragraph);
+        assert!(!style.is_quick() && !style.is_hidden());
+        assert_eq!(style.ui_priority(), 99);
+        style.unknown = vec![
+            RawXml::new(r#"<w:uiPriority w:val="9"/>"#),
+            RawXml::new("<w:qFormat/>"),
+            RawXml::new(r#"<w:semiHidden w:val="0"/>"#),
+        ];
+        assert!(style.is_quick() && !style.is_hidden());
+        assert_eq!(style.ui_priority(), 9);
+        style.unknown.push(RawXml::new("<w:unhideWhenUsed/>"));
+        style.unknown.push(RawXml::new("<w:semiHidden/>"));
+        assert!(style.is_hidden());
+    }
 
     #[test]
     fn find_styles() {

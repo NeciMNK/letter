@@ -97,6 +97,8 @@ pub enum RibbonCommand {
     Paragraph(ParagraphFormat),
     /// Показать или скрыть знаки форматирования.
     ToggleMarks,
+    /// Применить стиль с этим идентификатором.
+    Style(String),
     /// Масштаб крупнее.
     ZoomIn,
     /// Масштаб мельче.
@@ -148,6 +150,10 @@ pub struct RibbonInfo {
     pub space_after: i32,
     /// Знаки форматирования показаны.
     pub marks: bool,
+    /// Стили для галереи.
+    pub styles: Vec<crate::styles::GalleryStyle>,
+    /// Стиль абзаца с курсором.
+    pub style: Option<String>,
     /// Недавние файлы.
     pub recent: Vec<PathBuf>,
     /// Масштаб «по ширине страницы» включён.
@@ -405,8 +411,18 @@ mod tests {
             font: "Calibri".into(),
             size: 22,
             fonts: vec!["Arial".to_string(), "Calibri".to_string()].into(),
+            styles: crate::styles::gallery(&crate::files::blank()),
+            style: Some("Normal".into()),
             ..RibbonInfo::default()
         }
+    }
+
+    #[test]
+    fn style_gallery_applies_styles() {
+        let mut h = harness(document());
+        h.get_by_label("Заголовок 1").click();
+        h.run();
+        assert_eq!(h.state().out, vec![RibbonCommand::Style("Heading1".into())]);
     }
 
     #[test]

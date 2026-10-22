@@ -12,6 +12,7 @@ mod home;
 mod icons;
 mod ribbon;
 mod ruler;
+mod styles;
 mod view;
 mod viewer;
 

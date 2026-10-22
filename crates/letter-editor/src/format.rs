@@ -6,7 +6,8 @@
 
 use letter_model::{
     Alignment, Color, Document, HalfPoints, Highlight, Inline, LineSpacing, Paragraph,
-    ResolvedParagraphProps, ResolvedRunProps, Run, RunProps, Twips, Underline, VerticalAlign,
+    ResolvedParagraphProps, ResolvedRunProps, Run, RunProps, StyleKind, Twips, Underline,
+    VerticalAlign,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -43,6 +44,8 @@ pub enum RunFormat {
     Highlight(Highlight),
     /// Ctrl+Пробел: убрать оформление символов, оставив оформление стиля.
     Clear,
+    /// Стиль символов с этим идентификатором.
+    CharStyle(String),
 }
 
 /// Самый маленький и самый большой размер шрифта Word, полупункты.
@@ -151,6 +154,7 @@ pub fn format_runs(doc: &mut Document, start: Position, end: Position, format: R
                 props.theme_color = None;
             }
             RunFormat::Highlight(highlight) => props.highlight = Some(*highlight),
+            RunFormat::CharStyle(id) => props.style = Some(id.clone()),
             // Неизвестные свойства (их нам не показать) остаются.
             RunFormat::Clear => {
                 *props = RunProps {
@@ -232,6 +236,26 @@ pub fn format_paragraphs(
             ParagraphFormat::SpaceBefore(before) => props.spacing.before = Some(before),
             ParagraphFormat::SpaceAfter(after) => props.spacing.after = Some(after),
         }
+    }
+}
+
+/// Применяет стиль `id` (галерея «Стили» на ленте): стиль абзаца —
+/// к абзацам выделенного, стиль символов — к выделенному тексту (или
+/// слову под курсором). Неизвестный стиль ничего не меняет.
+pub fn apply_style(doc: &mut Document, start: Position, end: Position, id: &str) {
+    match doc.styles.get(id).map(|s| s.kind) {
+        Some(StyleKind::Paragraph) => {
+            let (first, last) = ordered(start, end);
+            for index in first.paragraph..=last.paragraph {
+                if let Some(paragraph) = paragraph_mut(doc, index) {
+                    paragraph.props.style = Some(id.to_owned());
+                }
+            }
+        }
+        Some(StyleKind::Character) => {
+            format_runs(doc, start, end, RunFormat::CharStyle(id.to_owned()));
+        }
+        _ => {}
     }
 }
 
@@ -657,6 +681,32 @@ mod tests {
             (resolved.space_before, resolved.space_after),
             (Twips(240), Twips(0))
         );
+    }
+
+    #[test]
+    fn styles_apply_to_paragraphs_or_text() {
+        let mut d = doc(vec![Paragraph::text("one two"), Paragraph::text("b")]);
+        let mut strong = letter_model::Style::new("Strong", StyleKind::Character);
+        strong.run.bold = Some(true);
+        d.styles.styles.push(strong);
+        d.styles
+            .styles
+            .push(letter_model::Style::new("Heading1", StyleKind::Paragraph));
+        apply_style(&mut d, Position::new(0, 1), Position::new(1, 0), "Heading1");
+        assert_eq!(para(&d, 0).props.style.as_deref(), Some("Heading1"));
+        assert_eq!(para(&d, 1).props.style.as_deref(), Some("Heading1"));
+        apply_style(&mut d, Position::new(0, 5), Position::new(0, 5), "Strong");
+        let styles: Vec<_> = para(&d, 0)
+            .runs()
+            .map(|r| (r.plain_text(), r.props.style.clone()))
+            .collect();
+        assert_eq!(
+            styles,
+            vec![("one ".into(), None), ("two".into(), Some("Strong".into()))]
+        );
+        let before = d.clone();
+        apply_style(&mut d, Position::new(0, 0), Position::new(1, 0), "Missing");
+        assert_eq!(d, before);
     }
 
     #[test]
