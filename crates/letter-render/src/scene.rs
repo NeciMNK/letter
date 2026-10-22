@@ -3,7 +3,7 @@
 //! в пикселях. Список одинаков для экрана и для картинки.
 
 use letter_layout::{
-    FontLibrary, LineItem, Page, PageLine, TabItem, TabLeader, TextItem, baseline_rise,
+    FontLibrary, LineItem, Page, PageLine, ShapeKind, TabItem, TabLeader, TextItem, baseline_rise,
 };
 use letter_model::{Color, ResolvedRunProps, Underline};
 
@@ -46,8 +46,8 @@ pub enum DrawItem {
 }
 
 /// Список того, что нарисовать на странице при масштабе `scale`
-/// пикселей на пункт. Сначала идут фоны (выделение маркером), потом
-/// глифы, потом линии.
+/// пикселей на пункт. Сначала идут фоны (заливка ячеек, выделение
+/// маркером), потом глифы, потом линии (подчёркивания, границы таблиц).
 pub fn page_scene(
     page: &Page,
     scale: f32,
@@ -57,6 +57,21 @@ pub fn page_scene(
     let mut backgrounds = Vec::new();
     let mut glyphs = Vec::new();
     let mut lines = Vec::new();
+    for shape in &page.shapes {
+        let (r, g, b) = shape.color;
+        let item = rect(
+            scale,
+            shape.x,
+            shape.y,
+            shape.width,
+            shape.height,
+            [r, g, b, 255],
+        );
+        match shape.kind {
+            ShapeKind::Fill => backgrounds.push(item),
+            ShapeKind::Rule => lines.push(item),
+        }
+    }
     for line in &page.lines {
         for item in &line.line.items {
             match item {

@@ -28,6 +28,15 @@ pub(crate) fn read_settings(root: &Element) -> Settings {
                 {
                     settings.add_paragraph_spacing = toggle(flag).unwrap_or(false);
                 }
+                let mode = child
+                    .elements()
+                    .filter(|e| {
+                        e.is_w("compatSetting") && e.w_attr("name") == Some("compatibilityMode")
+                    })
+                    .find_map(|e| e.w_attr("val")?.trim().parse::<u32>().ok());
+                if let Some(mode) = mode {
+                    settings.compatibility_mode = mode;
+                }
             }
             _ => {}
         }
@@ -56,6 +65,10 @@ mod tests {
         );
         assert_eq!(s.default_tab_stop, Twips(720));
         assert!(s.add_paragraph_spacing);
+        let s = read(
+            r#"<w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat>"#,
+        );
+        assert_eq!(s.compatibility_mode, 15);
         assert_eq!(read(""), Settings::default());
         // Нулевой шаг табуляции и выключенный флаг — по умолчанию.
         let s = read(

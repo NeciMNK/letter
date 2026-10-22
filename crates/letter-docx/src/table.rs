@@ -176,7 +176,7 @@ fn read_cell(tc: &Element) -> TableCell {
     cell
 }
 
-fn read_table_props(tbl_pr: &Element) -> TableProps {
+pub(crate) fn read_table_props(tbl_pr: &Element) -> TableProps {
     let mut props = TableProps::default();
     for child in tbl_pr.elements() {
         let understood = is_w_ns(child.ns.as_deref())
@@ -436,7 +436,7 @@ pub(crate) fn table_xml(table: &Table) -> String {
     element("w:tbl", &out)
 }
 
-fn table_props(props: &TableProps) -> String {
+pub(crate) fn table_props(props: &TableProps) -> String {
     let mut children = Children::new(TBLPR_ORDER);
     if let Some(style) = &props.style {
         children.push("tblStyle", val("w:tblStyle", style));

@@ -157,11 +157,33 @@ fn run_stops(text: &str, item: &TextItem, margin: f32, out: &mut Vec<CaretStop>)
 /// Позиция под точкой (`x`, `y`, пт от левого верхнего угла листа)
 /// на странице `page`: ближайшая строка, в ней — ближайшее место курсора.
 /// `None`, если на странице нет строк.
+///
+/// В таблице сначала ищется ячейка под точкой, и строка берётся из неё;
+/// строки других ячеек той же высоты не мешают.
 pub fn hit_test(layout: &DocumentLayout, page: usize, x: f32, y: f32) -> Option<Position> {
     let lines = &layout.pages.get(page)?.lines;
-    let line = lines
+    // Самая внутренняя ячейка под точкой — самая узкая из содержащих её.
+    let cell = lines
+        .iter()
+        .filter_map(|l| l.cell)
+        .filter(|c| c.contains(x, y))
+        .min_by(|a, b| (a.right - a.left).total_cmp(&(b.right - b.left)));
+    let candidates: Vec<&PageLine> = match cell {
+        Some(cell) => lines.iter().filter(|l| l.cell == Some(cell)).collect(),
+        None => lines
+            .iter()
+            .filter(|l| {
+                // Вне ячеек — строки вне таблиц и ячейки, над которыми
+                // или под которыми точка (по горизонтали внутри).
+                l.cell.is_none_or(|c| (c.left..c.right).contains(&x))
+            })
+            .collect(),
+    };
+    let line = candidates
         .iter()
         .find(|l| y < l.top + l.height)
+        .or_else(|| candidates.last())
+        .copied()
         .or_else(|| lines.last())?;
     position_in_line(line, x)
 }
@@ -235,6 +257,34 @@ mod tests {
 
     fn offsets(stops: &[CaretStop]) -> Vec<usize> {
         stops.iter().map(|s| s.offset).collect()
+    }
+
+    #[test]
+    fn click_in_a_table_cell() {
+        use letter_model::{Table, TableCell, TableRow, Twips};
+        let mut doc = Document::new();
+        let table = Table {
+            grid: vec![Twips(2000), Twips(2000)],
+            rows: vec![TableRow {
+                cells: vec![TableCell::text("left|"), TableCell::text("right")],
+                ..TableRow::default()
+            }],
+            ..Table::default()
+        };
+        doc.sections[0].blocks = vec![table.into(), Paragraph::text("after").into()];
+        let layout = layout_document(&doc, &mut Shaper::new(), &FontLibrary::embedded_only());
+        let lines = &layout.pages[0].lines;
+        let right = &lines[1];
+        let cell = right.cell.expect("ячейка");
+        // Точка в правой ячейке — её абзац, даже на высоте левой.
+        let hit = hit_test(&layout, 0, cell.left + 2.0, right.top + 1.0).unwrap();
+        assert_eq!(hit.paragraph, 1);
+        let left = lines[0].cell.expect("ячейка");
+        let hit = hit_test(&layout, 0, left.left + 2.0, left.top + 1.0).unwrap();
+        assert_eq!(hit.paragraph, 0);
+        // Ниже таблицы — абзац после неё.
+        let hit = hit_test(&layout, 0, left.left + 2.0, left.bottom + 30.0).unwrap();
+        assert_eq!(hit.paragraph, 2);
     }
 
     #[test]

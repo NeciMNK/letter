@@ -21,11 +21,13 @@
 //!   внизу страницы, последняя — одна вверху следующей;
 //! - у пунктов списка перед первой строкой стоит номер или маркер
 //!   ([`ListMark`]), текст начинается после него — за табуляцией,
-//!   пробелом или сразу.
+//!   пробелом или сразу;
+//! - таблицы верстаются по строкам (см. [`crate::table`]): строка,
+//!   которая не влезает, переносится или делится между страницами,
+//!   строки-заголовки повторяются на каждой странице.
 //!
-//! Пока не учитываются: колонтитулы, сноски, колонки, таблицы (их
-//! абзацы идут подряд на всю ширину), рисунки, гиперссылки и другие
-//! непонятые элементы внутри абзаца, верхний/нижний индекс.
+//! Пока не учитываются: колонтитулы, сноски, колонки, рисунки,
+//! гиперссылки и другие непонятые элементы внутри абзаца.
 
 use std::sync::Arc;
 
@@ -42,6 +44,7 @@ use crate::lines::{
 };
 use crate::shaping::{Shaper, TextStyle};
 use crate::spacing::{LineRule, ParagraphBlock, ParagraphSpacing, effective_spacing, gap_between};
+use crate::table::{BoxLine, Canvas, Ctx, RowBox, TableGeometry, build_rows, draw_row, split_row};
 
 /// Строки этой высоты и меньше не считаются при переносе «висячих»
 /// строк и при проверках «влезает ли» (защита от ошибок округления).
@@ -76,8 +79,67 @@ pub struct Page {
     pub height: f32,
     /// Поля.
     pub margins: Margins,
-    /// Строки текста сверху вниз.
+    /// Строки текста сверху вниз (в таблице — по ячейкам).
     pub lines: Vec<PageLine>,
+    /// Заливка ячеек и линии границ таблиц.
+    pub shapes: Vec<Shape>,
+}
+
+/// Прямоугольник на странице: заливка или линия границы. Координаты —
+/// пт от левого верхнего угла листа.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shape {
+    /// Левый край.
+    pub x: f32,
+    /// Верхний край.
+    pub y: f32,
+    /// Ширина.
+    pub width: f32,
+    /// Высота.
+    pub height: f32,
+    /// Цвет.
+    pub color: (u8, u8, u8),
+    /// Заливка (рисуется под текстом) или линия (над ним).
+    pub kind: ShapeKind,
+}
+
+/// Вид прямоугольника.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShapeKind {
+    /// Заливка ячейки.
+    Fill,
+    /// Линия границы.
+    Rule,
+}
+
+/// Ячейка таблицы на странице, пт от левого верхнего угла листа.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellArea {
+    /// Левый край.
+    pub left: f32,
+    /// Верхний край.
+    pub top: f32,
+    /// Правый край.
+    pub right: f32,
+    /// Нижний край.
+    pub bottom: f32,
+}
+
+impl CellArea {
+    /// Ячейка, сдвинутая на `dx`, `dy`.
+    pub fn moved(self, dx: f32, dy: f32) -> CellArea {
+        CellArea {
+            left: self.left + dx,
+            top: self.top + dy,
+            right: self.right + dx,
+            bottom: self.bottom + dy,
+        }
+    }
+
+    /// Точка внутри ячейки.
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        (self.left..self.right).contains(&x) && (self.top..self.bottom).contains(&y)
+    }
 }
 
 /// Строка текста на странице.
@@ -104,6 +166,8 @@ pub struct PageLine {
     pub spans: Arc<[ResolvedRunProps]>,
     /// Номер или маркер пункта списка — только у первой строки абзаца.
     pub label: Option<Arc<ListMark>>,
+    /// Ячейка таблицы, в которой стоит строка (самая внутренняя).
+    pub cell: Option<CellArea>,
 }
 
 /// Номер или маркер пункта списка, готовый к рисованию.
@@ -156,7 +220,17 @@ struct Entry {
     width: u32,
     /// Номер пункта списка: зависит от абзацев выше.
     label: Option<ListLabel>,
+    /// Стиль таблицы, если абзац в ячейке.
+    table: Option<String>,
     prepared: Arc<Prepared>,
+}
+
+/// Абзац документа и где он стоит: ширина текста и стиль таблицы
+/// (если абзац в ячейке; `""` — стиль таблиц по умолчанию).
+struct Item<'a> {
+    paragraph: &'a Paragraph,
+    width: f32,
+    table: Option<String>,
 }
 
 /// Раскладывает документ по страницам, беря из `cache` абзацы, которые
@@ -188,23 +262,22 @@ pub fn layout_document_cached(
         ));
     }
 
-    // Все абзацы документа с шириной текста своего раздела.
-    let mut all: Vec<(&Paragraph, f32)> = Vec::new();
-    let mut section_sizes = Vec::new();
+    // Все абзацы документа с шириной текста: раздела или ячейки.
+    let mut all: Vec<Item<'_>> = Vec::new();
     for section in &doc.sections {
         let width = Geometry::of(section).text_width();
-        let mut paragraphs = Vec::new();
-        collect_paragraphs(&section.blocks, &mut paragraphs);
-        section_sizes.push(paragraphs.len());
-        all.extend(paragraphs.into_iter().map(|p| (p, width)));
+        collect_paragraphs(doc, &section.blocks, width, None, &mut all);
     }
     let labels = list_labels(doc, &all);
 
     // Совпадающие начало и конец со старой вёрсткой.
     let old = std::mem::take(&mut cache.entries);
     let same = |entry: &Entry, k: usize| {
-        let (paragraph, width) = all[k];
-        entry.width == width.to_bits() && entry.paragraph == *paragraph && entry.label == labels[k]
+        let item = &all[k];
+        entry.width == item.width.to_bits()
+            && entry.paragraph == *item.paragraph
+            && entry.label == labels[k]
+            && entry.table == item.table
     };
     let prefix = old
         .iter()
@@ -223,7 +296,7 @@ pub fn layout_document_cached(
     let old_len = old.len();
     let mut rebuilt = 0;
     let mut entries = Vec::with_capacity(all.len());
-    for (k, &(paragraph, width)) in all.iter().enumerate() {
+    for (k, item) in all.iter().enumerate() {
         let reused = if k < prefix {
             old[k].take()
         } else if k >= all.len() - suffix {
@@ -234,11 +307,21 @@ pub fn layout_document_cached(
         let entry = reused.unwrap_or_else(|| {
             rebuilt += 1;
             let label = labels[k].clone();
-            let prepared = prepare(doc, paragraph, label.as_ref(), width, shaper, library);
+            let table = item.table.as_deref();
+            let prepared = prepare(
+                doc,
+                item.paragraph,
+                label.as_ref(),
+                table,
+                item.width,
+                shaper,
+                library,
+            );
             Entry {
-                paragraph: paragraph.clone(),
-                width: width.to_bits(),
+                paragraph: item.paragraph.clone(),
+                width: item.width.to_bits(),
                 label,
+                table: item.table.clone(),
                 prepared: Arc::new(prepared),
             }
         });
@@ -249,28 +332,59 @@ pub fn layout_document_cached(
         add_spacing: doc.settings.add_paragraph_spacing,
         ..Pager::default()
     };
-    let mut paragraph_index = 0;
-    let mut start = 0;
-    for (section, &count) in doc.sections.iter().zip(&section_sizes) {
-        pager.start_section(Geometry::of(section));
-        let prepared: Vec<Arc<Prepared>> = entries[start..start + count]
-            .iter()
-            .map(|e| Arc::clone(&e.prepared))
-            .collect();
-        start += count;
-        let blocks: Vec<ParagraphBlock<'_>> = prepared
-            .iter()
-            .map(|p| ParagraphBlock {
-                // Раскладке по страницам нужны только интервалы и стиль
-                // (`effective_spacing`), строки она берёт из `Prepared`.
-                lines: &[],
-                spacing: p.spacing,
-                style: p.style.as_deref(),
-            })
-            .collect();
-        for i in 0..prepared.len() {
-            pager.place(&prepared, &blocks, i, paragraph_index);
-            paragraph_index += 1;
+    let prepared: Vec<Arc<Prepared>> = entries.iter().map(|e| Arc::clone(&e.prepared)).collect();
+    let mut ctx = Ctx {
+        doc,
+        prepared: &prepared,
+        next: 0,
+        add_spacing: doc.settings.add_paragraph_spacing,
+    };
+    for section in &doc.sections {
+        let geometry = Geometry::of(section);
+        pager.start_section(geometry);
+        let mut i = 0;
+        let blocks = &section.blocks;
+        while i < blocks.len() {
+            match &blocks[i] {
+                Block::Paragraph(_) => {
+                    // Подряд идущие абзацы раскладываются вместе: правила
+                    // «не отрывать» и «одного стиля» смотрят на соседей.
+                    let run = blocks[i..]
+                        .iter()
+                        .take_while(|b| !matches!(b, Block::Table(_)))
+                        .filter(|b| matches!(b, Block::Paragraph(_)))
+                        .count();
+                    let span = blocks[i..]
+                        .iter()
+                        .take_while(|b| !matches!(b, Block::Table(_)))
+                        .count();
+                    let first = ctx.next;
+                    let group =
+                        &prepared[first.min(prepared.len())..(first + run).min(prepared.len())];
+                    ctx.next += run;
+                    let spacing: Vec<ParagraphBlock<'_>> = group
+                        .iter()
+                        .map(|p| ParagraphBlock {
+                            // Раскладке по страницам нужны только интервалы
+                            // и стиль (`effective_spacing`), строки она
+                            // берёт из `Prepared`.
+                            lines: &[],
+                            spacing: p.spacing,
+                            style: p.style.as_deref(),
+                        })
+                        .collect();
+                    for j in 0..group.len() {
+                        pager.place(group, &spacing, j, first + j);
+                    }
+                    i += span;
+                }
+                Block::Table(table) => {
+                    let rows = build_rows(&mut ctx, table, 0.0, geometry.text_width());
+                    pager.place_table(rows);
+                    i += 1;
+                }
+                Block::Unknown(_) => i += 1,
+            }
         }
     }
     if pager.pages.is_empty() {
@@ -282,27 +396,46 @@ pub fn layout_document_cached(
 }
 
 /// Номера пунктов списков у абзацев по порядку.
-fn list_labels(doc: &Document, all: &[(&Paragraph, f32)]) -> Vec<Option<ListLabel>> {
+fn list_labels(doc: &Document, all: &[Item<'_>]) -> Vec<Option<ListLabel>> {
     if doc.numbering.is_empty() {
         return vec![None; all.len()];
     }
     let mut counters = ListCounters::default();
     all.iter()
-        .map(|(paragraph, _)| {
-            let (id, level) = doc.resolve_paragraph(&paragraph.props).numbering?;
+        .map(|item| {
+            let (id, level) = doc.resolve_paragraph(&item.paragraph.props).numbering?;
             counters.next(&doc.numbering, id, level)
         })
         .collect()
 }
 
-/// Абзацы раздела по порядку; абзацы таблиц — подряд.
-fn collect_paragraphs<'a>(blocks: &'a [Block], out: &mut Vec<&'a Paragraph>) {
+/// Абзацы по порядку с шириной текста; абзацы таблиц — по строкам
+/// и ячейкам, с шириной текста своей ячейки. `table` — стиль таблицы,
+/// в ячейке которой стоят `blocks`.
+fn collect_paragraphs<'a>(
+    doc: &Document,
+    blocks: &'a [Block],
+    width: f32,
+    table: Option<&str>,
+    out: &mut Vec<Item<'a>>,
+) {
     for block in blocks {
         match block {
-            Block::Paragraph(p) => out.push(p),
-            Block::Table(table) => {
-                for cell in table.rows.iter().flat_map(|r| &r.cells) {
-                    collect_paragraphs(&cell.blocks, out);
+            Block::Paragraph(paragraph) => out.push(Item {
+                paragraph,
+                width,
+                table: table.map(str::to_string),
+            }),
+            Block::Table(t) => {
+                let geometry = TableGeometry::of(doc, t, width);
+                let style = geometry.style();
+                for row in &t.rows {
+                    let mut start = 0;
+                    for cell in &row.cells {
+                        let (_, text_width) = geometry.text_area(start, cell);
+                        collect_paragraphs(doc, &cell.blocks, text_width, Some(&style), out);
+                        start += cell.span();
+                    }
                 }
             }
             Block::Unknown(_) => {}
@@ -362,15 +495,15 @@ fn points(t: Twips) -> f32 {
 }
 
 /// Абзац, готовый к раскладке.
-struct Prepared {
+pub(crate) struct Prepared {
     text: Arc<str>,
     /// Строки общие с [`PageLine::line`]: страницы не копируют глифы.
     lines: Vec<Arc<Line>>,
     /// Высота каждой строки с учётом межстрочного интервала, пт.
-    heights: Vec<f32>,
+    pub(crate) heights: Vec<f32>,
     spans: Arc<[ResolvedRunProps]>,
-    spacing: ParagraphSpacing,
-    style: Option<String>,
+    pub(crate) spacing: ParagraphSpacing,
+    pub(crate) style: Option<String>,
     keep_next: bool,
     keep_lines: bool,
     page_break_before: bool,
@@ -383,15 +516,16 @@ fn prepare(
     doc: &Document,
     paragraph: &Paragraph,
     label: Option<&ListLabel>,
+    table: Option<&str>,
     width: f32,
     shaper: &mut Shaper,
     library: &FontLibrary,
 ) -> Prepared {
-    let props = doc.resolve_paragraph(&paragraph.props);
+    let props = doc.resolve_paragraph_in(&paragraph.props, table);
     let mut spans = Vec::new();
     let mut span_props = Vec::new();
     for run in paragraph.runs() {
-        let resolved = doc.resolve_run(&paragraph.props, &run.props);
+        let resolved = doc.resolve_run_in(&paragraph.props, &run.props, table);
         let mut text = String::new();
         for item in &run.content {
             match item {
@@ -414,7 +548,7 @@ fn prepare(
             }
         }
     }
-    let mark = doc.resolve_run(&paragraph.props, &RunProps::default());
+    let mark = doc.resolve_run_in(&paragraph.props, &RunProps::default(), table);
     let mark_style = text_style(&mark, &mark.fonts.h_ansi);
 
     let mut format = ParagraphFormat::new(width);
@@ -471,7 +605,8 @@ fn prepare(
         },
         contextual: props.contextual_spacing,
     };
-    let label = label.map(|label| list_mark(doc, paragraph, label, &mut format, shaper, library));
+    let label =
+        label.map(|label| list_mark(doc, paragraph, label, table, &mut format, shaper, library));
     let mut broken = break_lines(shaper, library, &spans, &mark_style, &format);
     // Номер другим шрифтом может сделать первую строку выше.
     if let (Some((_, height)), Some(first)) = (&label, broken.lines.first_mut()) {
@@ -504,6 +639,7 @@ fn list_mark(
     doc: &Document,
     paragraph: &Paragraph,
     label: &ListLabel,
+    table: Option<&str>,
     format: &mut ParagraphFormat,
     shaper: &mut Shaper,
     library: &FontLibrary,
@@ -521,7 +657,7 @@ fn list_mark(
         }
         None => label.text.clone(),
     };
-    let props = doc.resolve_run(&paragraph.props, &run);
+    let props = doc.resolve_run_in(&paragraph.props, &run, table);
     let mut shown = text;
     if level.suffix == Some(LevelSuffix::Space) {
         // Неразрывный пробел: обычный «висел» бы и не считался в ширину.
@@ -784,6 +920,7 @@ impl Pager {
             height: g.height,
             margins: g.margins,
             lines: Vec::new(),
+            shapes: Vec::new(),
         });
         self.y = g.margins.top;
         self.has_content = false;
@@ -989,12 +1126,130 @@ impl Pager {
             text: p.text.clone(),
             spans: p.spans.clone(),
             label: if k == 0 { p.label.clone() } else { None },
+            cell: None,
         };
         if let Some(page) = self.pages.last_mut() {
             page.lines.push(placed);
         }
         self.y += height;
         self.has_content = true;
+    }
+
+    /// Раскладывает строки таблицы: строка, которая не влезает,
+    /// переносится на следующую страницу целиком (если запрещено её
+    /// разрывать или ни одна строка текста не влезает) или делится;
+    /// строки-заголовки повторяются наверху каждой следующей страницы.
+    fn place_table(&mut self, rows: Vec<RowBox>) {
+        if self.break_pending && self.has_content {
+            self.new_page(true);
+        }
+        let headers: Vec<RowBox> = rows.iter().take_while(|r| r.header).cloned().collect();
+        let header_height: f32 = headers.iter().map(|r| r.height).sum();
+        // Повторять заголовки, только если после них остаётся место.
+        let repeat = !headers.is_empty() && header_height < self.page_height() / 2.0;
+        // На странице только повторённые заголовки (или ничего).
+        let mut fresh = !self.has_content;
+        for (index, row) in rows.into_iter().enumerate() {
+            let mut row = row;
+            let mut continued = false;
+            loop {
+                let available = self.bottom() - self.y;
+                if row.height <= available + EPSILON {
+                    self.draw(&row, !continued, true);
+                    fresh = false;
+                    break;
+                }
+                let whole_fits = row.height <= self.page_height() - header_height;
+                if !fresh && (row.cant_split || row.header) && whole_fits {
+                    self.table_page(&headers, repeat && index >= headers.len());
+                    fresh = true;
+                    continue;
+                }
+                match split_row(&row, available) {
+                    Some((first, rest)) => {
+                        self.draw(&first, !continued, false);
+                        row = rest;
+                        continued = true;
+                        self.table_page(&headers, repeat && index >= headers.len());
+                        fresh = true;
+                    }
+                    None if !fresh => {
+                        self.table_page(&headers, repeat && index >= headers.len());
+                        fresh = true;
+                    }
+                    None => {
+                        // На пустой странице не влезает ни одна строка
+                        // текста — строка таблицы остаётся как есть.
+                        self.draw(&row, !continued, true);
+                        fresh = false;
+                        break;
+                    }
+                }
+            }
+        }
+        self.has_content = true;
+        self.previous_after = 0.0;
+        self.break_pending = false;
+    }
+
+    /// Новая страница посреди таблицы, с повторёнными заголовками.
+    fn table_page(&mut self, headers: &[RowBox], repeat: bool) {
+        self.new_page(true);
+        if repeat {
+            for header in headers {
+                self.draw(header, true, true);
+            }
+        }
+    }
+
+    /// Рисует строку таблицы с текущего места и сдвигает его вниз.
+    fn draw(&mut self, row: &RowBox, top_edge: bool, bottom_edge: bool) {
+        let Some(g) = self.geometry else {
+            return;
+        };
+        let top = self.y;
+        let mut canvas = PageCanvas {
+            page: self.pages.last_mut(),
+        };
+        draw_row(row, g.margins.left, top, top_edge, bottom_edge, &mut canvas);
+        self.y += row.height;
+        self.has_content = true;
+    }
+}
+
+/// Рисование строки таблицы прямо на страницу.
+struct PageCanvas<'a> {
+    page: Option<&'a mut Page>,
+}
+
+impl Canvas for PageCanvas<'_> {
+    fn line(&mut self, line: &BoxLine, dx: f32, dy: f32, area: CellArea) {
+        let p = &line.prepared;
+        let (Some(page), Some(l)) = (self.page.as_deref_mut(), p.lines.get(line.k)) else {
+            return;
+        };
+        let top = line.y + dy;
+        page.lines.push(PageLine {
+            line: Arc::clone(l),
+            x: line.x + dx,
+            top,
+            height: line.height,
+            baseline: top + p.spacing.line.baseline_offset(l, line.height),
+            paragraph: line.paragraph,
+            text: p.text.clone(),
+            spans: p.spans.clone(),
+            label: if line.k == 0 { p.label.clone() } else { None },
+            cell: Some(match line.cell {
+                Some(inner) => inner.moved(dx, dy),
+                None => area,
+            }),
+        });
+    }
+
+    fn shape(&mut self, shape: Shape) {
+        if let Some(page) = self.page.as_deref_mut() {
+            page.shapes.push(shape);
+        }
     }
 }
 
@@ -1272,6 +1527,184 @@ mod tests {
         // Пустой документ.
         d.sections.clear();
         check(&d, Some(0));
+    }
+
+    /// Таблица: строки по ячейкам, текст ячеек через `|`, ширина
+    /// столбцов 50 пт, сплошные границы.
+    fn table(rows: &[&[&str]]) -> letter_model::Table {
+        use letter_model::{Border, Borders, Table, TableCell, TableProps, TableRow};
+        let columns = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        Table {
+            props: Box::new(TableProps {
+                borders: Some(Borders::all(Border::single(8))),
+                ..TableProps::default()
+            }),
+            grid: vec![Twips(1000); columns],
+            raw_props: Vec::new(),
+            rows: rows
+                .iter()
+                .map(|cells| TableRow {
+                    cells: cells
+                        .iter()
+                        .map(|text| TableCell {
+                            blocks: vec![para(text).into()],
+                            ..TableCell::default()
+                        })
+                        .collect(),
+                    ..TableRow::default()
+                })
+                .collect(),
+        }
+    }
+
+    fn doc_with(blocks: Vec<Block>) -> Document {
+        let mut d = doc(Vec::new());
+        d.sections[0].blocks = blocks;
+        d
+    }
+
+    #[test]
+    fn table_cells_stand_side_by_side() {
+        let d = doc_with(vec![
+            para("before").into(),
+            table(&[&["a", "b|c"], &["d", "e"]]).into(),
+            para("after").into(),
+        ]);
+        let layout = lay(&d);
+        let lines = &layout.pages[0].lines;
+        let found: Vec<(usize, f32, f32)> =
+            lines.iter().map(|l| (l.paragraph, l.x, l.top)).collect();
+        // Текст первого столбца — на поле (Word 2010 и старше), второго —
+        // через 50 пт; строка таблицы высотой с самую высокую ячейку.
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert_eq!(found.len(), 7);
+        assert!(close(found[1].1, 0.0) && close(found[1].2, LINE));
+        assert!(close(found[2].1, 50.0) && close(found[2].2, LINE));
+        assert!(close(found[3].2, 2.0 * LINE)); // «c» — вторая строка ячейки
+        assert!(close(found[4].2, 3.0 * LINE) && found[4].0 == 3);
+        assert!(close(found[6].2, 4.0 * LINE) && found[6].0 == 5);
+        // Строки ячеек знают свою ячейку; у строки вне таблицы её нет.
+        let cell = lines[2].cell.expect("ячейка");
+        assert!(close(cell.left, 50.0 - 5.4) && close(cell.right, 100.0 - 5.4));
+        assert!(lines[0].cell.is_none());
+        // Границы: 2×2 ячейки, у каждой линия сверху и слева, у правых —
+        // справа, у нижних — снизу.
+        let rules = layout.pages[0]
+            .shapes
+            .iter()
+            .filter(|s| s.kind == ShapeKind::Rule)
+            .count();
+        assert_eq!(rules, 4 * 2 + 2 + 2);
+        // В новом режиме Word граница — на поле, текст правее.
+        let mut d = d;
+        d.settings.compatibility_mode = 15;
+        let layout = lay(&d);
+        assert!(close(layout.pages[0].lines[1].x, 5.4));
+    }
+
+    #[test]
+    fn table_rows_flow_onto_new_pages_with_headers() {
+        let mut t = table(&[&["H"], &["1|1"], &["2|2"], &["3|3"]]);
+        t.rows[0].props.header = Some(true);
+        let layout = lay(&doc_with(vec![t.clone().into()]));
+        // На странице 5 строк: заголовок и две строки таблицы, на
+        // следующей — заголовок ещё раз и последняя строка.
+        assert_eq!(pages(&layout), [vec![0, 1, 1, 2, 2], vec![0, 3, 3]]);
+        // Без заголовка длинная строка делится между страницами.
+        t.rows[0].props.header = None;
+        t.rows[3].cells[0].blocks = vec![para("a|b|c").into()];
+        let layout = lay(&doc_with(vec![t.clone().into()]));
+        assert_eq!(pages(&layout), [vec![0, 1, 1, 2, 2], vec![3, 3, 3]]);
+        let mut first = singles(3);
+        first.push(para("x|x"));
+        let mut blocks: Vec<Block> = first.into_iter().map(Block::from).collect();
+        let mut short = table(&[&["a|b|c"]]);
+        blocks.push(short.clone().into());
+        // Строку можно разорвать: часть остаётся внизу.
+        assert_eq!(
+            pages(&lay(&doc_with(blocks.clone()))),
+            [vec![0, 1, 2, 3, 3], vec![4, 4, 4]]
+        );
+        // «Не разрывать строку»: строка целиком на следующей странице.
+        short.rows[0].props.cant_split = Some(true);
+        blocks.pop();
+        blocks.pop();
+        blocks.push(para("x").into());
+        blocks.push(short.into());
+        assert_eq!(
+            pages(&lay(&doc_with(blocks))),
+            [vec![0, 1, 2, 3], vec![4, 4, 4]]
+        );
+    }
+
+    #[test]
+    fn row_height_rules_and_merged_cells() {
+        use letter_model::{HeightRule, RowHeight, VerticalMerge};
+        let mut t = table(&[&["a", "b"], &["c", "d"]]);
+        t.rows[0].props.height = Some(RowHeight {
+            value: Twips(600), // 30 пт
+            rule: HeightRule::AtLeast,
+        });
+        let layout = lay(&doc_with(vec![t.clone().into()]));
+        assert!((layout.pages[0].lines[2].top - 30.0).abs() < 1e-3);
+        // Объединённая по вертикали ячейка: её текст выше двух строк —
+        // последняя строка объединения растягивается.
+        t.rows[0].props.height = None;
+        t.rows[0].cells[0].props.v_merge = Some(VerticalMerge::Restart);
+        t.rows[0].cells[0].blocks = vec![para("1|2|3").into()];
+        t.rows[1].cells[0].props.v_merge = Some(VerticalMerge::Continue);
+        t.rows[1].cells[0].blocks = vec![Paragraph::default().into()];
+        let d = doc_with(vec![t.into(), para("after").into()]);
+        let layout = lay(&d);
+        let after = layout.pages[0]
+            .lines
+            .iter()
+            .find(|l| l.paragraph == 4)
+            .expect("абзац после таблицы");
+        assert!((after.top - 3.0 * LINE).abs() < 1e-3);
+    }
+
+    #[test]
+    fn nested_tables_and_shading() {
+        use letter_model::{Color, Shading, TableCell};
+        let inner = table(&[&["x", "y"]]);
+        let mut outer = table(&[&["outer"]]);
+        outer.grid = vec![Twips(3000)];
+        outer.rows[0].cells[0] = TableCell {
+            blocks: vec![para("outer").into(), inner.into()],
+            ..TableCell::default()
+        };
+        outer.rows[0].cells[0].props.shading = Some(Shading::fill(Color::Rgb(200, 0, 0)));
+        let layout = lay(&doc_with(vec![outer.into()]));
+        let page = &layout.pages[0];
+        assert_eq!(page.lines.len(), 3);
+        // Вложенная таблица — под абзацем; её текст, как и у внешней,
+        // начинается на краю текста ячейки.
+        let x = &page.lines[1];
+        let y = &page.lines[2];
+        assert!((y.top - LINE).abs() < 1e-3);
+        assert!(x.x.abs() < 1e-3 && (y.x - 50.0).abs() < 1e-3, "{}", y.x);
+        let inner_cell = y.cell.expect("ячейка");
+        assert!(inner_cell.right - inner_cell.left < 51.0);
+        assert!(
+            page.shapes
+                .iter()
+                .any(|s| s.kind == ShapeKind::Fill && s.color == (200, 0, 0))
+        );
+    }
+
+    #[test]
+    fn table_style_formats_cell_paragraphs() {
+        use letter_model::{Style, StyleKind};
+        let mut d = doc_with(vec![table(&[&["a"]]).into()]);
+        let mut grid = Style::new("Grid", StyleKind::Table);
+        grid.paragraph.spacing.before = Some(Twips(200));
+        d.styles.styles.push(grid);
+        if let Some(Block::Table(t)) = d.sections[0].blocks.first_mut() {
+            t.props.style = Some("Grid".into());
+        }
+        let layout = lay(&d);
+        assert!((layout.pages[0].lines[0].top - 10.0).abs() < 1e-3);
     }
 
     #[test]

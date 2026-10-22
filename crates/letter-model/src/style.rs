@@ -3,7 +3,7 @@
 //! Здесь только хранение. Вычисление итоговых свойств с учётом наследования
 //! (`basedOn`) появится в задаче F1.4.
 
-use crate::{ParagraphProps, RawXml, RunProps};
+use crate::{ParagraphProps, RawXml, RunProps, TableProps};
 
 /// Все стили документа (содержимое `word/styles.xml`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -61,6 +61,8 @@ pub struct Style {
     pub paragraph: ParagraphProps,
     /// Оформление символов, заданное стилем.
     pub run: RunProps,
+    /// Свойства таблицы (`w:tblPr`) — у стилей таблиц.
+    pub table: TableProps,
     /// Стиль создан пользователем, а не встроен в Word (`w:customStyle`).
     pub custom: bool,
     /// Непонятые элементы стиля (`w:uiPriority`, `w:qFormat`, свойства
@@ -80,6 +82,7 @@ impl Style {
             next: None,
             paragraph: ParagraphProps::default(),
             run: RunProps::default(),
+            table: TableProps::default(),
             custom: false,
             unknown: Vec::new(),
         }

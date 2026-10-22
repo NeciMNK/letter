@@ -60,10 +60,13 @@ pub fn reference_lines(pdf: &[PdfPage], layout: &DocumentLayout) -> Vec<CompareL
     out
 }
 
-/// Наши строки с текстом (пустые абзацы в PDF не видны).
+/// Наши строки с текстом (пустые абзацы в PDF не видны). Строки на
+/// одной высоте (ячейки одной строки таблицы) соединяются через пробел
+/// слева направо — так их выдаёт и разбор PDF.
 pub fn layout_lines(layout: &DocumentLayout) -> Vec<CompareLine> {
-    let mut out = Vec::new();
+    let mut out: Vec<CompareLine> = Vec::new();
     for (i, page) in layout.pages.iter().enumerate() {
+        let page_start = out.len();
         for line in &page.lines {
             let text = line.text.get(line.line.range.clone()).unwrap_or_default();
             if text.trim().is_empty() {
@@ -76,12 +79,27 @@ pub fn layout_lines(layout: &DocumentLayout) -> Vec<CompareLine> {
                 .and_then(|l| l.items.first())
                 .map(|item| item.x());
             let start = label.map_or(line.line.x, |x| x.min(line.line.x));
-            out.push(CompareLine {
-                page: i + 1,
-                x: line.x + start,
-                baseline: line.baseline,
-                text: text.trim().to_string(),
-            });
+            let x = line.x + start;
+            let text = text.trim().to_string();
+            match out[page_start..]
+                .iter_mut()
+                .find(|l| (l.baseline - line.baseline).abs() < 0.5)
+            {
+                Some(same) if x < same.x => {
+                    same.text = format!("{text} {}", same.text);
+                    same.x = x;
+                }
+                Some(same) => {
+                    same.text.push(' ');
+                    same.text.push_str(&text);
+                }
+                None => out.push(CompareLine {
+                    page: i + 1,
+                    x,
+                    baseline: line.baseline,
+                    text,
+                }),
+            }
         }
     }
     out

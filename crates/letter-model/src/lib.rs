@@ -45,7 +45,7 @@ pub use paragraph::{
 };
 pub use properties::{AppProperties, CoreProperties, Properties, Statistics};
 pub use raw::RawXml;
-pub use resolve::{ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps};
+pub use resolve::{ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps, overlay_borders};
 pub use run::{
     BreakKind, Color, Highlight, Run, RunContent, RunFonts, RunProps, ThemeColor, ThemeFont,
     Underline, VerticalAlign,

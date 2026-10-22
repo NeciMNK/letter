@@ -360,6 +360,12 @@ fn everything() -> Document {
     normal.is_default = true;
     let mut mine = Style::new("Mine", StyleKind::Character);
     mine.custom = true;
+    let mut grid = Style::new("Grid", StyleKind::Table);
+    grid.table.borders = Some(Borders::all(Border::single(4)));
+    grid.table.cell_margins = Some(CellMargins {
+        left: Some(TableWidth::Twips(Twips(108))),
+        ..CellMargins::default()
+    });
     let mut doc = Document::new();
     doc.sections = vec![first, second];
     doc.styles = Styles {
@@ -377,7 +383,7 @@ fn everything() -> Document {
                 ..ParagraphProps::default()
             },
         },
-        styles: vec![normal, heading, mine],
+        styles: vec![normal, heading, mine, grid],
         unknown: Vec::new(),
     };
     doc
