@@ -69,9 +69,16 @@ pub fn layout_lines(layout: &DocumentLayout) -> Vec<CompareLine> {
             if text.trim().is_empty() {
                 continue;
             }
+            // В PDF строка пункта списка начинается с номера.
+            let label = line
+                .label
+                .as_ref()
+                .and_then(|l| l.items.first())
+                .map(|item| item.x());
+            let start = label.map_or(line.line.x, |x| x.min(line.line.x));
             out.push(CompareLine {
                 page: i + 1,
-                x: line.x + line.line.x,
+                x: line.x + start,
                 baseline: line.baseline,
                 text: text.trim().to_string(),
             });

@@ -211,9 +211,14 @@ pub fn pages(doc: &Document, library: &FontLibrary) -> String {
         );
         for line in &page.lines {
             let text = line.text.get(line.line.range.clone()).unwrap_or_default();
+            let label = line
+                .label
+                .as_ref()
+                .map(|l| format!("{} ", l.text))
+                .unwrap_or_default();
             let _ = writeln!(
                 out,
-                "  {:7.2} пт  абзац {:<3} {:?}",
+                "  {:7.2} пт  абзац {:<3} {label}{:?}",
                 line.top,
                 line.paragraph + 1,
                 text.trim_end()

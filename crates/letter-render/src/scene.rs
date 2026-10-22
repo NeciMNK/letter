@@ -92,6 +92,24 @@ pub fn page_scene(
                 }
             }
         }
+        // Номер или маркер пункта списка.
+        if let Some(label) = &line.label {
+            let props = &label.props;
+            let color = text_color(props);
+            for item in &label.items {
+                let LineItem::Text(text) = item else {
+                    continue;
+                };
+                if text.run.hidden {
+                    continue;
+                }
+                push_glyphs(&mut glyphs, line, text, baseline_rise(props), scale, color);
+                let (x, width) = (line.x + text.x, text.run.width());
+                decorate(
+                    &mut lines, library, cache, line, text, props, x, width, scale, color,
+                );
+            }
+        }
     }
     backgrounds.extend(glyphs);
     backgrounds.extend(lines);
