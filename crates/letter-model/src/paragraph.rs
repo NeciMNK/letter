@@ -19,9 +19,24 @@ pub struct Paragraph {
 pub enum Inline {
     /// Фрагмент текста.
     Run(Run),
+    /// Начало закладки (`w:bookmarkStart`).
+    BookmarkStart(Bookmark),
+    /// Конец закладки (`w:bookmarkEnd`) с номером закладки.
+    BookmarkEnd(String),
     /// Непонятый элемент (гиперссылка, закладка, исправление и т. п.),
     /// сохранённый как есть.
     Unknown(RawXml),
+}
+
+/// Закладка: именованное место или кусок документа. Начало и конец
+/// лежат в содержимом абзацев (могут быть в разных абзацах) и связаны
+/// номером.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bookmark {
+    /// Номер (`w:id`), общий у начала и конца.
+    pub id: String,
+    /// Имя (`w:name`). Имена на `_` — скрытые (оглавление, ссылки).
+    pub name: String,
 }
 
 impl From<Run> for Inline {
@@ -48,7 +63,7 @@ impl Paragraph {
     pub fn runs(&self) -> impl Iterator<Item = &Run> {
         self.content.iter().filter_map(|item| match item {
             Inline::Run(run) => Some(run),
-            Inline::Unknown(_) => None,
+            _ => None,
         })
     }
 

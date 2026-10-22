@@ -11,7 +11,7 @@ use std::io::{Seek, Write};
 use std::sync::Arc;
 
 use letter_model::{
-    AppProperties, Block, CoreProperties, Document, HeaderFooterKind, ImageData, Picture,
+    AppProperties, Block, CoreProperties, Document, HeaderFooterKind, ImageData, Inline, Picture,
     RunContent, SourcePackage, Styles,
 };
 use zip::ZipWriter;
@@ -44,6 +44,8 @@ const REL_HEADER: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header";
 const REL_FOOTER: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer";
+const REL_HYPERLINK: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
 const CT_HEADER: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml";
 const CT_FOOTER: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml";
 const REL_IMAGE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
@@ -80,8 +82,12 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
     // вставленные из другого документа), записываются новыми частями.
     let mut media = Vec::new();
     let doc = link_pictures(doc, &main, &mut links, &mut media);
-    let (doc, stories) = link_headers_footers(doc, &main, &mut links);
+    let (doc, mut stories) = link_headers_footers(doc, &main, &mut links);
+    let doc = link_hyperlinks_in(doc, &main, &mut links);
     let doc = doc.as_ref();
+    for (name, _, blocks) in &mut stories {
+        link_hyperlinks(blocks, name, &mut links);
+    }
     for (name, header, blocks) in stories {
         let root = source
             .header_footer_parts
@@ -351,6 +357,67 @@ fn link_headers_footers<'d>(
     (doc, stories)
 }
 
+/// Гиперссылки документа получают связи с адресами (см.
+/// [`link_hyperlinks`]); без ссылок документ не копируется.
+fn link_hyperlinks_in<'d>(
+    doc: Cow<'d, Document>,
+    main: &str,
+    links: &mut Links<'_>,
+) -> Cow<'d, Document> {
+    fn has_links(blocks: &[Block]) -> bool {
+        blocks.iter().any(|block| match block {
+            Block::Paragraph(p) => p.runs().any(|r| r.props.link.is_some()),
+            Block::Table(t) => t
+                .rows
+                .iter()
+                .flat_map(|r| &r.cells)
+                .any(|c| has_links(&c.blocks)),
+            Block::Unknown(_) => false,
+        })
+    }
+    if !doc.sections.iter().any(|s| has_links(&s.blocks)) {
+        return doc;
+    }
+    let mut doc = doc.into_owned();
+    for section in &mut doc.sections {
+        link_hyperlinks(&mut section.blocks, main, links);
+    }
+    Cow::Owned(doc)
+}
+
+/// Ссылки с адресом получают связь части `from` с этим адресом: свою,
+/// если она ведёт туда же, иначе такую же или новую. У ссылки без адреса
+/// (только на закладку) связи нет.
+fn link_hyperlinks(blocks: &mut [Block], from: &str, links: &mut Links<'_>) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(p) => {
+                for inline in &mut p.content {
+                    let Inline::Run(run) = inline else {
+                        continue;
+                    };
+                    let Some(link) = &mut run.props.link else {
+                        continue;
+                    };
+                    match &link.target {
+                        Some(address) => {
+                            let id = links.external(from, link.relationship.as_deref(), address);
+                            link.relationship = Some(id);
+                        }
+                        None => link.relationship = None,
+                    }
+                }
+            }
+            Block::Table(t) => {
+                for cell in t.rows.iter_mut().flat_map(|r| &mut r.cells) {
+                    link_hyperlinks(&mut cell.blocks, from, links);
+                }
+            }
+            Block::Unknown(_) => {}
+        }
+    }
+}
+
 /// Вызывает `f` для каждого рисунка документа (без изменения).
 fn visit_pictures(doc: &Document, f: &mut impl FnMut(&Picture)) {
     fn blocks(list: &[Block], f: &mut impl FnMut(&Picture)) {
@@ -505,6 +572,39 @@ impl<'a> Links<'a> {
         let name = self.free_name(wanted);
         let id = push_relationship(&mut self.changed[index].1, kind, &name);
         (id, name)
+    }
+
+    /// Внешняя связь части `from` с адресом гиперссылки `address`:
+    /// `id`, если она ведёт туда же, иначе такая же связь или новая.
+    fn external(&mut self, from: &str, id: Option<&str>, address: &str) -> String {
+        let matches =
+            |r: &Relationship| r.external && r.kind.ends_with("/hyperlink") && r.target == address;
+        let found = |rels: &[Relationship]| {
+            id.filter(|id| rels.iter().any(|r| r.id == *id && matches(r)))
+                .map(str::to_string)
+                .or_else(|| rels.iter().find(|r| matches(r)).map(|r| r.id.clone()))
+        };
+        let rels_name = rels_part_for(from);
+        let index = match self.changed.iter().position(|(n, _)| *n == rels_name) {
+            Some(i) => i,
+            None => {
+                let rels = self.load(from, &rels_name);
+                if let Some(id) = found(&rels) {
+                    return id;
+                }
+                self.changed.push((rels_name, rels));
+                self.changed.len() - 1
+            }
+        };
+        let rels = &mut self.changed[index].1;
+        if let Some(id) = found(rels) {
+            return id;
+        }
+        let id = push_relationship(rels, REL_HYPERLINK, address);
+        if let Some(last) = rels.last_mut() {
+            last.external = true;
+        }
+        id
     }
 
     /// Имя части, к которой ведёт внутренняя связь `id` части `from`.

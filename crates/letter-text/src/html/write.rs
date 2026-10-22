@@ -243,6 +243,10 @@ fn content(
     for run in p.runs() {
         let r = doc.resolve_run(&p.props, &run.props);
         let mut open = Vec::new();
+        if let Some(link) = &run.props.link {
+            let _ = write!(out, "<a href=\"{}\">", escape(&link.address()));
+            open.push("a");
+        }
         let mut css = String::new();
         if r.fonts.ascii != base.fonts.ascii {
             let _ = write!(css, "font-family:{};", font_name(&r.fonts.ascii));
@@ -251,7 +255,12 @@ fn content(
             let size = i32::try_from(r.size.0).unwrap_or(24) * 10;
             let _ = write!(css, "font-size:{};", points(size));
         }
-        if r.color != base.color {
+        // Браузер красит ссылку сам: цвет и подчёркивание ссылки пишем всегда.
+        let link = run.props.link.is_some();
+        if link && r.underline == Underline::None {
+            css.push_str("text-decoration:none;");
+        }
+        if r.color != base.color || link {
             let color = color_css(r.color).unwrap_or_else(|| "windowtext".into());
             let _ = write!(css, "color:{color};");
         }

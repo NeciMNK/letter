@@ -264,6 +264,61 @@ def add_field(paragraph, code: str, result: str) -> None:
     char("end")
 
 
+def add_hyperlink(paragraph, text: str, url: str | None = None, anchor: str | None = None) -> None:
+    """Гиперссылка со стилем «Hyperlink»: на адрес (через связь) или на
+    закладку."""
+    from docx.opc.constants import RELATIONSHIP_TYPE
+    from docx.oxml import OxmlElement
+
+    link = OxmlElement("w:hyperlink")
+    if url is not None:
+        rid = paragraph.part.relate_to(url, RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+        link.set(qn("r:id"), rid)
+    if anchor is not None:
+        link.set(qn("w:anchor"), anchor)
+    link.set(qn("w:history"), "1")
+    run = OxmlElement("w:r")
+    props = OxmlElement("w:rPr")
+    style = OxmlElement("w:rStyle")
+    style.set(qn("w:val"), "Hyperlink")
+    props.append(style)
+    run.append(props)
+    text_element = OxmlElement("w:t")
+    text_element.text = text
+    run.append(text_element)
+    link.append(run)
+    paragraph._p.append(link)
+
+
+def add_bookmark(paragraph, name: str, text: str, number: int) -> None:
+    """Закладка вокруг текста `text`."""
+    from docx.oxml import OxmlElement
+
+    start = OxmlElement("w:bookmarkStart")
+    start.set(qn("w:id"), str(number))
+    start.set(qn("w:name"), name)
+    paragraph._p.append(start)
+    paragraph.add_run(text)
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), str(number))
+    paragraph._p.append(end)
+
+
+def links() -> Document:
+    """Гиперссылки на сайт и на закладку, закладка вокруг слова."""
+    doc = new_document("Ссылки")
+    p = doc.add_paragraph("Site: ")
+    add_hyperlink(p, "example site", url="https://example.com/page?a=1&b=2")
+    p.add_run(".")
+    p = doc.add_paragraph("Go to ")
+    add_hyperlink(p, "the target", anchor="target")
+    p.add_run(" below.")
+    p = doc.add_paragraph("This is ")
+    add_bookmark(p, "target", "the target", 0)
+    p.add_run(" paragraph.")
+    return doc
+
+
 def headers() -> Document:
     """Колонтитулы: особый для первой страницы, разные для чётных
     и нечётных; второй раздел берёт верхний колонтитул первого, а нижний
@@ -346,6 +401,7 @@ FIXTURES = {
     "ru-en.docx": mixed_languages,
     "pages.docx": pages,
     "headers.docx": headers,
+    "links.docx": links,
 }
 
 

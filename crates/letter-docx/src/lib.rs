@@ -37,7 +37,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use letter_model::{
-    Block, Document, HeaderFooterKind, ImageData, Picture, SourcePackage, SourcePart,
+    Block, Document, HeaderFooterKind, ImageData, Inline, Picture, SourcePackage, SourcePart,
     for_each_picture_in,
 };
 
@@ -109,6 +109,10 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
     rebuilt.extend(stories.iter().map(|(name, _)| Some(name.clone())));
     let mut source = read_source(&mut package, &rebuilt)?;
     attach_images(|f| doc.for_each_picture_mut(f), &images, &source);
+    let addresses = package.external_links(&main);
+    for section in &mut doc.sections {
+        attach_links(&mut section.blocks, &addresses);
+    }
     // Картинки колонтитулов — по связям своих частей.
     for (name, _) in &stories {
         let relationships = package.relationships(name);
@@ -125,6 +129,7 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
                         .and_then(|id| images.iter().find(|r| r.id == id))
                         .map(|r| r.target.as_str());
                     if target.is_some_and(|t| t.eq_ignore_ascii_case(name)) {
+                        attach_links(&mut story.blocks, &package.external_links(name));
                         attach_images(
                             |f| for_each_picture_in(&mut story.blocks, f),
                             &relationships,
@@ -245,6 +250,32 @@ fn read_source<R: Read + Seek>(
 /// Даёт рисункам байты картинок по их связям (`r:embed`). Части
 /// картинок остаются и в [`SourcePackage`]: при сохранении они
 /// записываются оттуда.
+/// Адреса гиперссылок по их связям `r:id` (`addresses` — имя связи
+/// и адрес).
+fn attach_links(blocks: &mut [Block], addresses: &[(String, String)]) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(p) => {
+                for inline in &mut p.content {
+                    if let Inline::Run(run) = inline
+                        && let Some(link) = &mut run.props.link
+                        && let Some(id) = &link.relationship
+                        && let Some((_, address)) = addresses.iter().find(|(i, _)| i == id)
+                    {
+                        link.target = Some(address.clone());
+                    }
+                }
+            }
+            Block::Table(t) => {
+                for cell in t.rows.iter_mut().flat_map(|r| &mut r.cells) {
+                    attach_links(&mut cell.blocks, addresses);
+                }
+            }
+            Block::Unknown(_) => {}
+        }
+    }
+}
+
 fn attach_images(
     visit: impl FnOnce(&mut dyn FnMut(&mut Picture)),
     relationships: &[package::Relationship],

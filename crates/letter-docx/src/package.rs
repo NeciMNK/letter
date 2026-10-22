@@ -115,6 +115,21 @@ impl<R: Read + Seek> Package<R> {
         }
     }
 
+    /// Внешние связи части `part` (адреса гиперссылок): имя связи и адрес.
+    pub fn external_links(&mut self, part: &str) -> Vec<(String, String)> {
+        let Ok(Some(bytes)) = self.read_part(&rels_part_for(part)) else {
+            return Vec::new();
+        };
+        let Ok(root) = xml::parse(&bytes) else {
+            return Vec::new();
+        };
+        root.elements()
+            .filter(|e| e.local == "Relationship")
+            .filter(|e| attr(e, "TargetMode") == Some("External"))
+            .filter_map(|e| Some((attr(e, "Id")?.to_string(), attr(e, "Target")?.to_string())))
+            .collect()
+    }
+
     /// Первая связь части `part` с типом, оканчивающимся на `/<kind>`
     /// (например, `styles`), — имя части-цели.
     pub fn related_part(&mut self, part: &str, kind: &str) -> Option<String> {

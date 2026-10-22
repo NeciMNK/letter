@@ -5,11 +5,11 @@
 //! [`RawXml`], чтобы при записи вернуть его на место без потерь.
 
 use letter_model::{
-    Block, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind, FirstLineIndent,
-    HalfPoints, HeaderFooter, HeaderFooterKind, HeaderFooters, Indentation, Inline, LineSpacing,
-    NumberingRef, Orientation, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run,
-    RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Spacing, TabStop,
-    ThemeColor, Twips, Underline, VerticalAlign,
+    Block, Bookmark, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind,
+    FirstLineIndent, HalfPoints, HeaderFooter, HeaderFooterKind, HeaderFooters, Hyperlink,
+    Indentation, Inline, LineSpacing, NumberingRef, Orientation, PageMargins, PageSize, Paragraph,
+    ParagraphProps, RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps,
+    SectionStart, Spacing, TabStop, ThemeColor, Twips, Underline, VerticalAlign,
 };
 
 use crate::ReadError;
@@ -130,11 +130,81 @@ fn read_paragraph(p: &Element, allow_section: bool) -> (Paragraph, Option<Sectio
             paragraph.content.push(Inline::Run(read_run(child)));
         } else if let Some(runs) = simple_field(child) {
             paragraph.content.extend(runs.into_iter().map(Inline::Run));
+        } else if let Some(items) = read_hyperlink(child) {
+            paragraph.content.extend(items);
+        } else if let Some(mark) = read_bookmark(child) {
+            paragraph.content.push(mark);
         } else {
             paragraph.content.push(Inline::Unknown(child.raw()));
         }
     }
     (paragraph, section)
+}
+
+/// Начало или конец закладки; с другими атрибутами (закладка столбцов
+/// таблицы и т. п.) — `None`.
+fn read_bookmark(element: &Element) -> Option<Inline> {
+    if element.elements().next().is_some() {
+        return None;
+    }
+    if element.is_w("bookmarkStart") && element.only_attrs(&["id", "name"]) {
+        Some(Inline::BookmarkStart(Bookmark {
+            id: element.w_attr("id")?.to_string(),
+            name: element.w_attr("name")?.to_string(),
+        }))
+    } else if element.is_w("bookmarkEnd") && element.only_attrs(&["id"]) {
+        Some(Inline::BookmarkEnd(element.w_attr("id")?.to_string()))
+    } else {
+        None
+    }
+}
+
+/// Гиперссылка `w:hyperlink`: её фрагменты получают ссылку в оформлении
+/// (адрес по связи `r:id` подставляется после чтения связей). Ссылка
+/// с чем-то, кроме фрагментов, простых полей и закладок, остаётся как есть.
+fn read_hyperlink(element: &Element) -> Option<Vec<Inline>> {
+    if !element.is_w("hyperlink") {
+        return None;
+    }
+    let mut link = Hyperlink::default();
+    for attribute in &element.attrs {
+        let value = Some(attribute.value.clone());
+        if attribute.ns.as_deref() == Some(crate::serialize::R_NS) && attribute.local == "id" {
+            link.relationship = value;
+            continue;
+        }
+        if attribute.ns.is_some() && !is_w_ns(attribute.ns.as_deref()) {
+            return None;
+        }
+        match attribute.local.as_str() {
+            "anchor" => link.anchor = value,
+            "tooltip" => link.tooltip = value,
+            "tgtFrame" => link.frame = value,
+            "history" => {
+                link.history = match attribute.value.as_str() {
+                    "1" | "true" | "on" => true,
+                    "0" | "false" | "off" => false,
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        }
+    }
+    let mut items = Vec::new();
+    let with_link = |mut run: Run| {
+        run.props.link = Some(link.clone());
+        Inline::Run(run)
+    };
+    for child in element.elements() {
+        if child.is_w("r") {
+            items.push(with_link(read_run(child)));
+        } else if let Some(runs) = simple_field(child) {
+            items.extend(runs.into_iter().map(with_link));
+        } else {
+            items.push(read_bookmark(child)?);
+        }
+    }
+    Some(items)
 }
 
 /// Простое поле `w:fldSimple` превращается в такое же поле из знаков
@@ -976,12 +1046,12 @@ mod tests {
     #[test]
     fn unknown_inlines_and_blocks() {
         let doc = read_body_xml(
-            r#"<w:p w14:paraId="1"><w:bookmarkStart w:id="0" w:name="b"/><w:r><w:t>x</w:t></w:r><w:bookmarkEnd w:id="0"/></w:p>
+            r#"<w:p w14:paraId="1"><w:permStart w:id="0" w:edGrp="everyone"/><w:r><w:t>x</w:t></w:r><w:permEnd w:id="0"/></w:p>
                <w:sdt><w:sdtContent><w:p/></w:sdtContent></w:sdt>"#,
         );
         let p = first_paragraph(&doc);
         assert_eq!(p.content.len(), 3);
-        assert!(matches!(&p.content[0], Inline::Unknown(r) if r.local_name() == "bookmarkStart"));
+        assert!(matches!(&p.content[0], Inline::Unknown(r) if r.local_name() == "permStart"));
         let blocks: Vec<_> = doc.blocks().collect();
         assert!(matches!(blocks[1], Block::Unknown(r) if r.local_name() == "sdt"));
         // Фрагмент несёт объявление пространства имён и снова читается.
