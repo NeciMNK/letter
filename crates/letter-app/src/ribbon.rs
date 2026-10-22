@@ -34,6 +34,8 @@ pub enum Tab {
     Home,
     /// «Вставка».
     Insert,
+    /// «Конструктор»: фон страницы.
+    Design,
     /// «Макет».
     Layout,
     /// «Ссылки».
@@ -54,9 +56,10 @@ pub enum Tab {
 
 impl Tab {
     /// Все вкладки по порядку.
-    pub const ALL: [Tab; 6] = [
+    pub const ALL: [Tab; 7] = [
         Tab::Home,
         Tab::Insert,
+        Tab::Design,
         Tab::Layout,
         Tab::References,
         Tab::Review,
@@ -68,6 +71,7 @@ impl Tab {
         match self {
             Tab::Home => "keytip-tab-home",
             Tab::Insert => "keytip-tab-insert",
+            Tab::Design => "keytip-tab-design",
             Tab::Layout => "keytip-tab-layout",
             Tab::References => "keytip-tab-references",
             Tab::Review => "keytip-tab-review",
@@ -84,6 +88,7 @@ impl Tab {
         match self {
             Tab::Home => tr("tab-home"),
             Tab::Insert => tr("tab-insert"),
+            Tab::Design => tr("tab-design"),
             Tab::Layout => tr("tab-layout"),
             Tab::References => tr("tab-references"),
             Tab::Review => tr("tab-review"),
@@ -350,6 +355,7 @@ impl Ribbon {
                         Tab::Home => home(ui, &mut self.home, info, &mut out),
                         Tab::View => view(ui, info, &mut out),
                         Tab::Insert => crate::insert::insert(ui, info, &mut out),
+                        Tab::Design => crate::design::design(ui, info, &mut out),
                         Tab::References => crate::references::references(ui, info, &mut out),
                         Tab::Layout => crate::layout::layout(ui, info, &mut out),
                         Tab::TableDesign => crate::insert::table_design(ui, info, &mut out),
@@ -745,6 +751,37 @@ mod tests {
             vec![
                 RibbonCommand::Paragraph(ParagraphFormat::Shading(Some((0xD9, 0xD9, 0xD9)))),
                 RibbonCommand::Paragraph(ParagraphFormat::Border(BorderEdge::Bottom)),
+            ]
+        );
+    }
+
+    #[test]
+    fn design_tab_sets_page_color_and_borders() {
+        use letter_editor::{Command, PageBorderPreset, PageSetup};
+        let mut h = harness(document());
+        h.get_by_label("Конструктор").click();
+        h.run();
+        h.get_all_by_label("Цвет страницы")
+            .next()
+            .expect("кнопка")
+            .click();
+        h.run();
+        h.get_by_label("Нет цвета").click();
+        h.run();
+        h.get_all_by_label("Границы страниц")
+            .next()
+            .expect("кнопка")
+            .click();
+        h.run();
+        h.get_by_label("Рамка").click();
+        h.run();
+        assert_eq!(
+            h.state().out,
+            vec![
+                RibbonCommand::Edit(Command::PageColor(None)),
+                RibbonCommand::Edit(Command::PageSetup(PageSetup::Borders(
+                    PageBorderPreset::Box
+                ))),
             ]
         );
     }

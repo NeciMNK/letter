@@ -624,3 +624,17 @@ toc-update = Update Table
 toc-update-hint = Rebuild the table of contents: new headings and page numbers
 keytip-references-toc = T
 keytip-references-update-toc = U
+
+# Вкладка «Конструктор»
+tab-design = Design
+keytip-tab-design = G
+group-page-background = Page Background
+page-color = Page Color
+page-color-hint = Background color of the document pages
+page-borders = Page Borders
+page-borders-hint = Border around every page of the document
+page-borders-none = None
+page-borders-box = Box
+page-borders-thick = Thick Box
+keytip-design-page-color = PC
+keytip-design-page-borders = PB

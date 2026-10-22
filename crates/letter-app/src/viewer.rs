@@ -1439,6 +1439,7 @@ impl Viewer {
                             Command::Break(_)
                                 | Command::SectionBreak(_)
                                 | Command::PageSetup(_)
+                                | Command::PageColor(_)
                                 | Command::HeaderFooter { .. }
                                 | Command::InsertPicture(_)
                         )
