@@ -7,7 +7,7 @@ use letter_editor::{ParagraphFormat, RunFormat};
 use letter_model::{Alignment, Color, HalfPoints, Highlight, LineSpacing, Twips};
 
 use crate::icons::{self, Icon, color_button, icon_button, icon_text_button};
-use crate::ribbon::{RibbonCommand, RibbonInfo, group};
+use crate::ribbon::{RibbonCommand, RibbonInfo, group, group_with_launcher};
 
 /// Размеры в списке «Размер шрифта», как в Word, пт.
 pub const FONT_SIZES: [f32; 17] = [
@@ -148,8 +148,30 @@ pub fn home(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Vec
             });
         });
     });
-    group(ui, "Шрифт", |ui| font_group(ui, state, info, out));
-    group(ui, "Абзац", |ui| paragraph_group(ui, info, out));
+    let mut font = Vec::new();
+    if group_with_launcher(
+        ui,
+        "Шрифт",
+        Some("Параметры шрифта"),
+        |ui| {
+            font_group(ui, state, info, &mut font);
+        },
+    ) {
+        font.push(RibbonCommand::FontDialog);
+    }
+    out.extend(font);
+    let mut paragraph = Vec::new();
+    if group_with_launcher(
+        ui,
+        "Абзац",
+        Some("Параметры абзаца"),
+        |ui| {
+            paragraph_group(ui, info, &mut paragraph);
+        },
+    ) {
+        paragraph.push(RibbonCommand::ParagraphDialog);
+    }
+    out.extend(paragraph);
     group(ui, "Стили", |ui| styles_group(ui, info, out));
     group(ui, "Редактирование", |ui| {
         for (icon, name, tip, command) in [

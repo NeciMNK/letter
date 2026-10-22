@@ -28,8 +28,8 @@ pub use edit::{
     split_paragraph,
 };
 pub use format::{
-    ParagraphFormat, RunFormat, align_paragraphs, apply_style, format_paragraphs, format_runs,
-    formatting_at, language_at,
+    ParagraphChanges, ParagraphFormat, RunFormat, align_paragraphs, apply_style, format_paragraphs,
+    format_runs, formatting_at, language_at,
 };
 pub use history::{Command, History};
 pub use navigation::{Motion, Moved, move_cursor};

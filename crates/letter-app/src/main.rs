@@ -13,10 +13,12 @@ mod find;
 mod home;
 mod icons;
 mod language;
+mod paragraph_dialog;
 mod ribbon;
 mod ruler;
 mod settings;
 mod styles;
+mod units;
 mod view;
 mod viewer;
 
