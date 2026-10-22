@@ -11,19 +11,19 @@
 //! Shift+щелчок, двойной щелчок — слово, тройной — абзац) и Ctrl+A.
 //! Ctrl+Z отменяет правку, Ctrl+Y (и Ctrl+Shift+Z) повторяет.
 //! Ctrl+C, Ctrl+X, Ctrl+V — копировать, вырезать, вставить.
-//! Ctrl+B, Ctrl+I, Ctrl+U — полужирный, курсив, подчёркивание; Ctrl+] и
-//! Ctrl+[ — шрифт больше и меньше; Ctrl+L, Ctrl+E, Ctrl+R, Ctrl+J —
-//! выравнивание абзаца.
+//! Остальные сочетания Word (Ctrl+B, Ctrl+L, Ctrl+M, Ctrl+Alt+1…) — в
+//! таблице `shortcuts.rs`.
 
 use crate::i18n::{tr, tr_args};
+use crate::shortcuts::{self, Shortcut};
 use std::path::{Path, PathBuf};
 
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui::{
-    self, Align, Align2, Color32, Context, CursorIcon, Key, KeyboardShortcut, Layout, Modifiers,
-    Pos2, Rect, Sense, Vec2, ViewportCommand, emath::GuiRounding, pos2,
+    self, Align, Align2, Color32, Context, CursorIcon, Key, Layout, Modifiers, Pos2, Rect, Sense,
+    Vec2, ViewportCommand, emath::GuiRounding, pos2,
 };
 use letter_editor::{
     Command, History, Motion, Position, RunFormat, Selection, caret, copy_range, find_all,
@@ -106,19 +106,8 @@ fn paint_font_sample(
 /// Название программы в заголовке окна.
 pub const APP_NAME: &str = "letter";
 
-const OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
-const NEW: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::N);
-const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
-const SAVE_AS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F12);
-const SAVE_AS_CTRL: KeyboardShortcut =
-    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
-
 /// Имя ещё не сохранённого документа.
 const UNTITLED: &str = "new-document";
-const ZOOM_IN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Equals);
-const ZOOM_IN_PLUS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Plus);
-const ZOOM_OUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Minus);
-const ZOOM_RESET: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num0);
 
 /// Заливка выделения: полупрозрачная серо-голубая, текст под ней виден.
 const SELECTION_COLOR: Color32 = Color32::from_rgba_premultiplied(0, 50, 110, 70);
@@ -276,6 +265,40 @@ enum Action {
     Cut,
     /// Вставить; система передала текст из буфера.
     Paste(String, PasteMode),
+}
+
+/// Нажатие клавиши: сочетание из таблицы Word или правка и движение.
+enum Step {
+    Command(RibbonCommand),
+    Action(Action),
+}
+
+/// Забирает из событий нажатия сочетаний из таблицы (`global_only` —
+/// только общих) и возвращает их команды по порядку.
+fn take_shortcuts(ctx: &Context, table: &[Shortcut], global_only: bool) -> Vec<RibbonCommand> {
+    ctx.input_mut(|i| {
+        let mut commands = Vec::new();
+        i.events.retain(|event| {
+            let command = match event {
+                egui::Event::Key {
+                    key,
+                    physical_key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => shortcuts::find(table, *key, *physical_key, *modifiers, global_only),
+                _ => None,
+            };
+            match command {
+                Some(command) => {
+                    commands.push(command);
+                    false
+                }
+                None => true,
+            }
+        });
+        commands
+    })
 }
 
 /// Что сделать, когда пользователь ответит, сохранять ли изменения.
@@ -901,46 +924,20 @@ impl Viewer {
 
     /// Сочетания клавиш и перетаскивание файла в окно.
     fn handle_input(&mut self, ctx: &Context) {
-        let (new, save_as, save) = ctx.input_mut(|i| {
-            (
-                i.consume_shortcut(&NEW),
-                i.consume_shortcut(&SAVE_AS) || i.consume_shortcut(&SAVE_AS_CTRL),
-                i.consume_shortcut(&SAVE),
-            )
+        // Общие сочетания (Ctrl+N, Ctrl+S…) работают всегда, кроме
+        // окон с вопросом.
+        if self.error.is_none() && self.ask.is_none() {
+            let table = shortcuts::table();
+            let commands = take_shortcuts(ctx, &table, true);
+            self.run_ribbon(ctx, commands);
+        }
+        let dropped = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .find(|p| !p.as_os_str().is_empty())
         });
-        if new {
-            self.request(Intent::New);
-        }
-        if save_as {
-            self.save_as();
-        } else if save {
-            self.save();
-        }
-        let (open, zoom_in, zoom_out, reset, dropped) = ctx.input_mut(|i| {
-            (
-                i.consume_shortcut(&OPEN),
-                i.consume_shortcut(&ZOOM_IN) || i.consume_shortcut(&ZOOM_IN_PLUS),
-                i.consume_shortcut(&ZOOM_OUT),
-                i.consume_shortcut(&ZOOM_RESET),
-                i.raw
-                    .dropped_files
-                    .iter()
-                    .map(|f| f.path().to_path_buf())
-                    .find(|p| !p.as_os_str().is_empty()),
-            )
-        });
-        if open {
-            self.open_requested = true;
-        }
-        if zoom_in {
-            self.zoom_step(true);
-        }
-        if zoom_out {
-            self.zoom_step(false);
-        }
-        if reset {
-            self.set_zoom(Zoom::Fixed(1.0), None);
-        }
         if let Some(path) = dropped {
             self.request(Intent::Open(Some(path)));
         }
@@ -959,44 +956,44 @@ impl Viewer {
         if self.document.is_none() || ctx.egui_wants_keyboard_input() {
             return;
         }
-        // Ctrl+Shift+8 (Ctrl+*): знаки форматирования.
-        // С Shift клавиша 8 — это «*», поэтому смотрим и на саму клавишу.
-        let marks = ctx.input_mut(|i| {
-            let before = i.events.len();
+        // Сочетания Word и обычные клавиши — по порядку нажатия: «Ctrl+B,
+        // текст» печатает текст полужирным.
+        let table = shortcuts::table();
+        let steps = ctx.input_mut(|i| {
+            let mut steps = Vec::new();
             i.events.retain(|event| {
-                !matches!(event, egui::Event::Key {
-                    key,
-                    physical_key,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } if modifiers.command
-                    && modifiers.shift
-                    && (*key == Key::Num8 || *physical_key == Some(Key::Num8)))
-            });
-            i.events.len() != before
-        });
-        if marks {
-            self.show_marks = !self.show_marks;
-        }
-        // Ctrl+F и Ctrl+H: окно «Найти и заменить».
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
-            self.find.show(false);
-        }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::H)) {
-            self.find.show(true);
-        }
-        let actions = ctx.input_mut(|i| {
-            let mut actions = Vec::new();
-            i.events.retain(|event| match key_action(event, screen) {
-                Some(action) => {
-                    actions.push(action);
-                    false
+                let step = match event {
+                    egui::Event::Key {
+                        key,
+                        physical_key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => shortcuts::find(&table, *key, *physical_key, *modifiers, false)
+                        .map(Step::Command),
+                    _ => None,
                 }
-                None => true,
+                .or_else(|| key_action(event, screen).map(Step::Action));
+                match step {
+                    Some(step) => {
+                        steps.push(step);
+                        false
+                    }
+                    None => true,
+                }
             });
-            actions
+            steps
         });
+        let mut actions = Vec::new();
+        for step in steps {
+            match step {
+                Step::Action(action) => actions.push(action),
+                Step::Command(command) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    self.run_ribbon(ctx, vec![command]);
+                }
+            }
+        }
         self.apply_actions(ctx, actions);
     }
 
@@ -1255,6 +1252,30 @@ impl Viewer {
                     actions.push(Action::Edit(Command::Paragraph(format)));
                 }
                 RibbonCommand::Style(id) => actions.push(Action::Edit(Command::Style(id))),
+                RibbonCommand::BuiltInStyle(name) => {
+                    if let Some(id) = self
+                        .document
+                        .as_ref()
+                        .and_then(|d| crate::styles::built_in_id(&d.doc, name))
+                    {
+                        actions.push(Action::Edit(Command::Style(id)));
+                    }
+                }
+                RibbonCommand::Insert(text) => {
+                    actions.push(Action::Edit(Command::Type(text.to_owned())));
+                }
+                RibbonCommand::DeleteWord { forward } => {
+                    // С выделением удаляется только оно, как в Word.
+                    if self.document.as_ref().is_some_and(|d| d.anchor == d.cursor) {
+                        let motion = if forward {
+                            Motion::WordRight
+                        } else {
+                            Motion::WordLeft
+                        };
+                        actions.push(Action::Move(motion, true));
+                    }
+                    actions.push(Action::Edit(Command::DeleteBackward));
+                }
                 RibbonCommand::Find => self.find.show(false),
                 RibbonCommand::Replace => self.find.show(true),
                 RibbonCommand::SelectAll => actions.push(Action::SelectAll),
@@ -1851,32 +1872,6 @@ fn key_action(event: &egui::Event, screen: f32) -> Option<Action> {
                 Key::Delete if plain => Some(Command::DeleteForward),
                 _ => None,
             };
-            let ctrl = modifiers.command && !modifiers.alt;
-            match key {
-                Key::A if ctrl && !modifiers.shift => return Some(Action::SelectAll),
-                Key::Z if ctrl && !modifiers.shift => return Some(Action::Undo),
-                Key::Y if ctrl && !modifiers.shift => return Some(Action::Redo),
-                Key::Z if ctrl => return Some(Action::Redo),
-                _ => {}
-            }
-            if ctrl && !modifiers.shift {
-                let command = match key {
-                    Key::B => Some(Command::Format(RunFormat::Bold)),
-                    Key::I => Some(Command::Format(RunFormat::Italic)),
-                    Key::U => Some(Command::Format(RunFormat::Underline)),
-                    Key::CloseBracket => Some(Command::Format(RunFormat::Grow)),
-                    Key::OpenBracket => Some(Command::Format(RunFormat::Shrink)),
-                    Key::Space => Some(Command::Format(RunFormat::Clear)),
-                    Key::L => Some(Command::Align(Alignment::Left)),
-                    Key::E => Some(Command::Align(Alignment::Center)),
-                    Key::R => Some(Command::Align(Alignment::Right)),
-                    Key::J => Some(Command::Align(Alignment::Justify)),
-                    _ => None,
-                };
-                if let Some(command) = command {
-                    return Some(Action::Edit(command));
-                }
-            }
             edit.map(Action::Edit).or_else(|| {
                 key_motion(*key, *modifiers, screen).map(|m| Action::Move(m, modifiers.shift))
             })
@@ -2108,20 +2103,13 @@ mod tests {
         }
         assert!(viewer.zoom() > 1.0, "{}", viewer.zoom());
 
-        // Ctrl+0 — 100 %, Ctrl+минус — 90 %.
-        for (key, expected) in [(Key::Num0, 1.0), (Key::Minus, 0.9)] {
-            let mut input = screen();
-            input.events = vec![
-                Event::ModifiersChanged(Modifiers::COMMAND),
-                Event::Key {
-                    key,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers: Modifiers::COMMAND,
-                },
-            ];
-            frame(&ctx, &mut viewer, input);
+        // Кнопки: 100 %, потом мельче — 90 %. Клавиш для масштаба в
+        // Word нет: Ctrl+0 и Ctrl+= заняты оформлением.
+        for (command, expected) in [
+            (RibbonCommand::ZoomReset, 1.0),
+            (RibbonCommand::ZoomOut, 0.9),
+        ] {
+            viewer.run_ribbon(&ctx, vec![command]);
             assert!((viewer.zoom() - expected).abs() < 1e-4, "{}", viewer.zoom());
         }
     }
@@ -2410,10 +2398,6 @@ mod tests {
             key_action(&press(Key::ArrowRight, Modifiers::SHIFT), 0.0),
             Some(Action::Move(Motion::Right, true))
         );
-        assert_eq!(
-            key_action(&press(Key::A, Modifiers::COMMAND), 0.0),
-            Some(Action::SelectAll)
-        );
 
         let ctx = Context::default();
         let mut viewer = Viewer::new(FontLibrary::embedded_only());
@@ -2533,12 +2517,6 @@ mod tests {
     #[test]
     fn ctrl_z_undoes_and_ctrl_y_redoes() {
         let ctrl = Modifiers::COMMAND;
-        assert_eq!(key_action(&press(Key::Z, ctrl), 0.0), Some(Action::Undo));
-        assert_eq!(key_action(&press(Key::Y, ctrl), 0.0), Some(Action::Redo));
-        assert_eq!(
-            key_action(&press(Key::Z, ctrl | Modifiers::SHIFT), 0.0),
-            Some(Action::Redo)
-        );
 
         let ctx = Context::default();
         let mut viewer = Viewer::new(FontLibrary::embedded_only());
@@ -2640,16 +2618,58 @@ mod tests {
     }
 
     #[test]
+    fn word_shortcuts_for_styles_words_and_dialogs() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("headings.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let style = |viewer: &mut Viewer| {
+            let document = viewer.document.as_mut().unwrap();
+            let paragraph = letter_editor::paragraph_mut(&mut document.doc, 0).unwrap();
+            paragraph.props.style.clone()
+        };
+        let before = style(&mut viewer);
+        let ctrl_alt = Modifiers::COMMAND | Modifiers::ALT;
+        frame(&ctx, &mut viewer, events(vec![press(Key::Num1, ctrl_alt)]));
+        assert_eq!(style(&mut viewer).as_deref(), Some("Heading1"));
+        assert_ne!(style(&mut viewer), before);
+        // Ctrl+Shift+= приходит как «+» на месте клавиши «=».
+        let superscript = Event::Key {
+            key: Key::Plus,
+            physical_key: Some(Key::Equals),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::COMMAND | Modifiers::SHIFT,
+        };
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![
+                press(Key::End, Modifiers::NONE),
+                superscript,
+                Event::Text("2".into()),
+            ]),
+        );
+        let text = first_text(&mut viewer);
+        assert!(text.ends_with('2'), "{text}");
+        // Ctrl+Backspace стирает слово перед курсором (вместе с «2»).
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(Key::Backspace, Modifiers::COMMAND)]),
+        );
+        assert_eq!(first_text(&mut viewer), "Document ");
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(Key::D, Modifiers::COMMAND)]),
+        );
+        assert!(viewer.font_dialog.open);
+    }
+
+    #[test]
     fn ctrl_b_and_ctrl_e_format_the_selection() {
         let ctrl = Modifiers::COMMAND;
-        assert_eq!(
-            key_action(&press(Key::CloseBracket, ctrl), 0.0),
-            Some(Action::Edit(Command::Format(RunFormat::Grow)))
-        );
-        assert_eq!(
-            key_action(&press(Key::J, ctrl), 0.0),
-            Some(Action::Edit(Command::Align(Alignment::Justify)))
-        );
 
         let ctx = Context::default();
         let mut viewer = Viewer::new(FontLibrary::embedded_only());

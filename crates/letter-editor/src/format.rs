@@ -27,6 +27,20 @@ pub enum RunFormat {
     Grow,
     /// Ctrl+[: шрифт на 1 пт меньше.
     Shrink,
+    /// Ctrl+Shift+>: следующий размер из списка размеров Word.
+    GrowStep,
+    /// Ctrl+Shift+<: предыдущий размер из списка.
+    ShrinkStep,
+    /// Ctrl+Shift+A: все прописные — включить или выключить.
+    Caps,
+    /// Ctrl+Shift+K: малые прописные — включить или выключить.
+    SmallCaps,
+    /// Ctrl+Shift+H: скрытый текст — включить или выключить.
+    Hidden,
+    /// Ctrl+Shift+D: двойное подчёркивание — включить или выключить.
+    DoubleUnderline,
+    /// Ctrl+Shift+W: подчёркивание только слов — включить или выключить.
+    WordUnderline,
     /// Зачёркнутый — включить или выключить.
     Strike,
     /// Ctrl+=: подстрочный знак — включить или выключить.
@@ -100,6 +114,31 @@ impl RunChanges {
 const MIN_SIZE: u32 = 2;
 const MAX_SIZE: u32 = 3276;
 
+/// Размеры из списка Word в полупунктах: по ним ходят Ctrl+Shift+> и
+/// Ctrl+Shift+<. Меньше 8 пт шаг — 1 пт, больше 72 пт — 10 пт.
+const SIZE_STEPS: [u32; 17] = [
+    16, 18, 20, 21, 22, 24, 28, 32, 36, 40, 44, 48, 52, 56, 72, 96, 144,
+];
+
+/// Следующий (`grow`) или предыдущий размер шрифта по списку Word.
+fn size_step(size: u32, grow: bool) -> u32 {
+    const FIRST: u32 = SIZE_STEPS[0];
+    const LAST: u32 = SIZE_STEPS[SIZE_STEPS.len() - 1];
+    if grow {
+        match SIZE_STEPS.iter().find(|&&s| s > size) {
+            _ if size < FIRST => size + 2,
+            Some(&next) => next,
+            None => (size / 20 + 1) * 20,
+        }
+    } else {
+        match SIZE_STEPS.iter().rev().find(|&&s| s < size) {
+            _ if size > LAST => ((size - 1) / 20 * 20).max(LAST),
+            Some(&previous) if size > FIRST => previous,
+            _ => size.saturating_sub(2),
+        }
+    }
+}
+
 /// Кусок абзаца, который меняется: номер абзаца, начало и конец.
 type Piece = (usize, usize, usize);
 
@@ -134,6 +173,11 @@ pub fn format_runs(doc: &mut Document, start: Position, end: Position, format: R
                 RunFormat::Strike => resolved.strike,
                 RunFormat::Subscript => resolved.vertical_align == VerticalAlign::Subscript,
                 RunFormat::Superscript => resolved.vertical_align == VerticalAlign::Superscript,
+                RunFormat::Caps => resolved.caps,
+                RunFormat::SmallCaps => resolved.small_caps,
+                RunFormat::Hidden => resolved.hidden,
+                RunFormat::DoubleUnderline => resolved.underline == Underline::Double,
+                RunFormat::WordUnderline => resolved.underline == Underline::Words,
                 _ => true,
             };
         }
@@ -169,6 +213,33 @@ pub fn format_runs(doc: &mut Document, start: Position, end: Position, format: R
                     size.saturating_sub(2)
                 };
                 props.size = Some(HalfPoints(size.clamp(MIN_SIZE, MAX_SIZE)));
+            }
+            RunFormat::GrowStep | RunFormat::ShrinkStep => {
+                let size = sizes.next().unwrap_or(22);
+                let size = size_step(size, format == RunFormat::GrowStep);
+                props.size = Some(HalfPoints(size.clamp(MIN_SIZE, MAX_SIZE)));
+            }
+            RunFormat::Caps => {
+                props.caps = Some(!all_on);
+                if !all_on {
+                    props.small_caps = Some(false);
+                }
+            }
+            RunFormat::SmallCaps => {
+                props.small_caps = Some(!all_on);
+                if !all_on {
+                    props.caps = Some(false);
+                }
+            }
+            RunFormat::Hidden => props.hidden = Some(!all_on),
+            RunFormat::DoubleUnderline | RunFormat::WordUnderline => {
+                props.underline = Some(if all_on {
+                    Underline::None
+                } else if format == RunFormat::DoubleUnderline {
+                    Underline::Double
+                } else {
+                    Underline::Words
+                });
             }
             RunFormat::Strike => {
                 props.strike = Some(!all_on);
@@ -290,6 +361,15 @@ pub enum ParagraphFormat {
     },
     /// Убрать позицию табуляции (стащить с линейки).
     RemoveTab(Twips),
+    /// Ctrl+T: выступ первой строки на шаг табуляции больше (отступ
+    /// слева растёт, первая строка остаётся на месте).
+    HangingMore,
+    /// Ctrl+Shift+T: выступ на шаг меньше.
+    HangingLess,
+    /// Ctrl+0: добавить интервал 12 пт перед абзацем или убрать его.
+    ToggleSpaceBefore,
+    /// Ctrl+Q: убрать оформление абзаца, оставив оформление стиля.
+    Reset,
     /// Изменения из окна «Абзац».
     Set(ParagraphChanges),
 }
@@ -341,12 +421,15 @@ pub fn format_paragraphs(
     let (first, last) = ordered(start, end);
     // Шаг отступа — табуляция по умолчанию (в русском Word 1,25 см).
     let step = doc.settings.default_tab_stop.0.max(1);
+    // Ctrl+0 смотрит на первый абзац: есть интервал — убрать у всех.
+    let had_space_before = paragraph_ref(doc, first.paragraph)
+        .is_some_and(|p| doc.resolve_paragraph(&p.props).space_before.0 > 0);
     for index in first.paragraph..=last.paragraph {
-        let Some(left) =
-            paragraph_ref(doc, index).map(|p| doc.resolve_paragraph(&p.props).indent_left.0)
+        let Some(resolved) = paragraph_ref(doc, index).map(|p| doc.resolve_paragraph(&p.props))
         else {
             continue;
         };
+        let left = resolved.indent_left.0;
         let Some(paragraph) = paragraph_mut(doc, index) else {
             continue;
         };
@@ -359,6 +442,39 @@ pub fn format_paragraphs(
             ParagraphFormat::IndentLess => {
                 let previous = (left + step - 1).div_euclid(step) - 1;
                 props.indentation.left = Some(Twips((previous * step).max(0)));
+            }
+            ParagraphFormat::HangingMore | ParagraphFormat::HangingLess => {
+                // Где начинается первая строка — там она и остаётся.
+                let hanging = match resolved.first_line {
+                    Some(FirstLineIndent::Hanging(h)) => h.0,
+                    Some(FirstLineIndent::FirstLine(f)) => -f.0,
+                    None => 0,
+                };
+                let start = left - hanging;
+                let new_left = if format == ParagraphFormat::HangingMore {
+                    (left.div_euclid(step) + 1) * step
+                } else {
+                    (((left + step - 1).div_euclid(step) - 1) * step).max(start)
+                };
+                props.indentation.left = Some(Twips(new_left));
+                props.indentation.first_line = Some(if new_left > start {
+                    FirstLineIndent::Hanging(Twips(new_left - start))
+                } else {
+                    FirstLineIndent::FirstLine(Twips(start - new_left))
+                });
+            }
+            ParagraphFormat::ToggleSpaceBefore => {
+                props.spacing.before = Some(Twips(if had_space_before { 0 } else { 240 }));
+            }
+            ParagraphFormat::Reset => {
+                // Непонятые нами свойства (списки, границы) не трогаем.
+                let style = props.style.take();
+                let unknown = std::mem::take(&mut props.unknown);
+                *props = letter_model::ParagraphProps {
+                    style,
+                    unknown,
+                    ..Default::default()
+                };
             }
             ParagraphFormat::LineSpacing(line) => props.spacing.line = Some(line),
             ParagraphFormat::SpaceBefore(before) => props.spacing.before = Some(before),
@@ -1058,6 +1174,87 @@ mod tests {
             },
         );
         assert_eq!(tabs(&d, 0), [stop(1000, TabStopKind::Left)]);
+    }
+
+    #[test]
+    fn word_size_steps() {
+        let grow = |s| size_step(s, true);
+        let shrink = |s| size_step(s, false);
+        assert_eq!((grow(22), grow(21), grow(20)), (24, 22, 21));
+        assert_eq!(
+            (grow(12), grow(56), grow(144), grow(150)),
+            (14, 72, 160, 160)
+        );
+        assert_eq!((shrink(24), shrink(21), shrink(17)), (22, 20, 16));
+        assert_eq!((shrink(16), shrink(160), shrink(200)), (14, 144, 180));
+        assert_eq!(shrink(2), 0);
+    }
+
+    #[test]
+    fn caps_hidden_and_underlines_toggle() {
+        let mut d = doc(vec![Paragraph::text("abcd")]);
+        let all = |d: &mut Document, f: RunFormat| {
+            format_runs(d, Position::new(0, 0), Position::new(0, 4), f);
+        };
+        let props = |d: &Document| para(d, 0).runs().next().unwrap().props.clone();
+        all(&mut d, RunFormat::SmallCaps);
+        assert_eq!(props(&d).small_caps, Some(true));
+        // Все прописные выключают малые.
+        all(&mut d, RunFormat::Caps);
+        assert_eq!(
+            (props(&d).caps, props(&d).small_caps),
+            (Some(true), Some(false))
+        );
+        all(&mut d, RunFormat::Caps);
+        assert_eq!(props(&d).caps, Some(false));
+        all(&mut d, RunFormat::Hidden);
+        assert_eq!(props(&d).hidden, Some(true));
+        all(&mut d, RunFormat::DoubleUnderline);
+        assert_eq!(props(&d).underline, Some(Underline::Double));
+        all(&mut d, RunFormat::WordUnderline);
+        assert_eq!(props(&d).underline, Some(Underline::Words));
+        all(&mut d, RunFormat::WordUnderline);
+        assert_eq!(props(&d).underline, Some(Underline::None));
+        all(&mut d, RunFormat::GrowStep);
+        assert_eq!(props(&d).size, Some(HalfPoints(21)));
+    }
+
+    #[test]
+    fn hanging_space_before_and_reset() {
+        let mut d = doc(vec![Paragraph::text("a"), Paragraph::text("b")]);
+        d.settings.default_tab_stop = Twips(709);
+        let run = |d: &mut Document, f| {
+            format_paragraphs(d, Position::new(0, 0), Position::new(1, 0), f);
+        };
+        let indents = |d: &Document| para(d, 1).props.indentation;
+        run(&mut d, ParagraphFormat::HangingMore);
+        assert_eq!(indents(&d).left, Some(Twips(709)));
+        assert_eq!(
+            indents(&d).first_line,
+            Some(FirstLineIndent::Hanging(Twips(709)))
+        );
+        run(&mut d, ParagraphFormat::HangingMore);
+        assert_eq!(
+            indents(&d).first_line,
+            Some(FirstLineIndent::Hanging(Twips(1418)))
+        );
+        run(&mut d, ParagraphFormat::HangingLess);
+        run(&mut d, ParagraphFormat::HangingLess);
+        run(&mut d, ParagraphFormat::HangingLess);
+        assert_eq!(indents(&d).left, Some(Twips(0)));
+        assert_eq!(
+            indents(&d).first_line,
+            Some(FirstLineIndent::FirstLine(Twips(0)))
+        );
+        run(&mut d, ParagraphFormat::ToggleSpaceBefore);
+        assert_eq!(para(&d, 1).props.spacing.before, Some(Twips(240)));
+        run(&mut d, ParagraphFormat::ToggleSpaceBefore);
+        assert_eq!(para(&d, 1).props.spacing.before, Some(Twips(0)));
+        para_mut(&mut d, 0).props.style = Some("Heading1".into());
+        run(&mut d, ParagraphFormat::Reset);
+        assert_eq!(para(&d, 0).props.style.as_deref(), Some("Heading1"));
+        assert_eq!(para(&d, 0).props.indentation, Default::default());
+        assert_eq!(para(&d, 1).props.spacing.before, None);
     }
 
     #[test]

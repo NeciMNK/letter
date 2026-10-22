@@ -20,6 +20,7 @@ mod paragraph_dialog;
 mod ribbon;
 mod ruler;
 mod settings;
+mod shortcuts;
 mod styles;
 mod theme;
 mod units;

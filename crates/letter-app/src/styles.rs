@@ -65,6 +65,17 @@ pub fn display_name(style: &Style) -> String {
     }
 }
 
+/// Идентификатор встроенного стиля по его английскому имени
+/// (`heading 1` → `Heading1`, а в русском документе — например, `1`).
+pub fn built_in_id(doc: &Document, name: &str) -> Option<String> {
+    let squeezed: String = name.split_whitespace().collect();
+    doc.styles
+        .styles
+        .iter()
+        .find(|s| file_name(s).eq_ignore_ascii_case(name) || s.id.eq_ignore_ascii_case(&squeezed))
+        .map(|s| s.id.clone())
+}
+
 /// Стили для галереи: стили абзацев и символов с признаком «показывать
 /// в галерее» или встроенные из списка Word, кроме скрытых. Порядок:
 /// стиль по умолчанию, потом по `w:uiPriority`, потом как в Word, потом

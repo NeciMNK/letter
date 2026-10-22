@@ -133,6 +133,15 @@ pub enum RibbonCommand {
     PageWidth,
     /// Показать или скрыть линейку.
     ToggleRuler,
+    /// Ctrl+Backspace и Ctrl+Delete: удалить слово до или после курсора.
+    DeleteWord {
+        /// Слово после курсора.
+        forward: bool,
+    },
+    /// Вставить знак (неразрывный пробел).
+    Insert(&'static str),
+    /// Встроенный стиль Word по имени (`heading 1`).
+    BuiltInStyle(&'static str),
 }
 
 /// Что лента показывает о документе.

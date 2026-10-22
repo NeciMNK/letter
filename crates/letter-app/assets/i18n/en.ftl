@@ -103,7 +103,7 @@ font-dialog-menu = Font…
 font-double-strike = Double strikethrough
 font-effects = Effects
 font-grow = Increase Font Size
-font-grow-hint = Increase Font Size (Ctrl+])
+font-grow-hint = Increase Font Size (Ctrl+Shift+>)
 font-hidden = Hidden
 font-kerning = Kerning for fonts:
 font-kerning-from = Points and above:
@@ -117,7 +117,7 @@ font-scales = Scales
 font-search = Find a font
 font-settings = Font Settings
 font-shrink = Decrease Font Size
-font-shrink-hint = Decrease Font Size (Ctrl+[)
+font-shrink-hint = Decrease Font Size (Ctrl+Shift+<)
 font-size = Size:
 font-size-box = Font Size
 font-sizes = Font sizes
@@ -368,3 +368,5 @@ zoom-page-width = Page Width
 format-md = Markdown
 filter-md = Markdown (*.md)
 zoom-fit = Fit Width
+subscript-hint = Subscript (Ctrl+=)
+superscript-hint = Superscript (Ctrl+Shift+=)
