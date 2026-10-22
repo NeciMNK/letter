@@ -26,9 +26,10 @@ use eframe::egui::{
     Vec2, ViewportCommand, emath::GuiRounding, pos2,
 };
 use letter_editor::{
-    Command, History, ListKind, Motion, Position, RunFormat, Selection, can_continue_numbering,
-    caret, copy_range, find_all, find_next, formatting_at, hit_test, language_at, list_kind,
-    move_cursor, paragraph_at, select_all, selection_rects, word_at,
+    Command, History, ListKind, Motion, PictureBox, Position, RunFormat, Selection,
+    can_continue_numbering, caret, copy_range, find_all, find_next, formatting_at, hit_test,
+    language_at, list_kind, move_cursor, paragraph_at, picture_at_point, select_all,
+    selected_picture, selection_rects, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
 use letter_model::{Alignment, Document, Statistics};
@@ -41,6 +42,7 @@ use crate::find::{FindAction, FindDialog};
 use crate::font_dialog::{FontDialog, FontValues};
 use crate::icons::{self, Icon};
 use crate::paragraph_dialog::{ParagraphDialog, ParagraphValues};
+use crate::picture::PictureDrag;
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
 use crate::ruler::{self, RULER_SIZE, RulerParagraph, RulerState};
 use crate::settings::Settings;
@@ -373,6 +375,10 @@ pub struct Viewer {
     title_changed: bool,
     /// Пользователь попросил окно выбора файла.
     open_requested: bool,
+    /// Пользователь попросил вставить рисунок из файла.
+    picture_requested: bool,
+    /// Размер рисунка меняют мышью: какой маркер тянут и новый размер.
+    picture_drag: Option<PictureDrag>,
     /// Курсор сдвинули с клавиатуры: прокрутить так, чтобы он был виден.
     reveal_cursor: bool,
     /// Буфер обмена.
@@ -518,6 +524,8 @@ impl Viewer {
             current_page: 0,
             title_changed: false,
             open_requested: false,
+            picture_requested: false,
+            picture_drag: None,
             reveal_cursor: false,
             clipboard: Clipboard::new(Box::new(SystemBuffer::default())),
             ribbon: Ribbon::default(),
@@ -867,6 +875,9 @@ impl Viewer {
         if std::mem::take(&mut self.open_requested) {
             self.request(Intent::Open(None));
         }
+        if std::mem::take(&mut self.picture_requested) {
+            self.pick_picture(&ctx);
+        }
     }
 
     /// Заголовок окна: «имя.docx — letter».
@@ -1112,6 +1123,34 @@ impl Viewer {
         self.reveal_cursor = true;
     }
 
+    /// «Вставка → Рисунки»: окно выбора картинки, потом вставка.
+    fn pick_picture(&mut self, ctx: &Context) {
+        if self.document.is_none() {
+            return;
+        }
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(tr("insert-picture"))
+            .add_filter(tr("filter-pictures"), crate::picture::PICTURE_EXTENSIONS)
+            .add_filter(tr("filter-all-files"), &["*"]);
+        if let Some(dir) = self.dialog_dir() {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(path) = dialog.pick_file() {
+            self.insert_picture_file(ctx, &path);
+        }
+    }
+
+    /// Вставляет рисунок из файла картинки у курсора.
+    fn insert_picture_file(&mut self, ctx: &Context, path: &Path) {
+        match crate::picture::picture_from_file(path) {
+            Ok(picture) => {
+                let command = Command::InsertPicture(Box::new(picture));
+                self.apply_actions(ctx, vec![Action::Edit(command)]);
+            }
+            Err(message) => self.report("error-picture", message),
+        }
+    }
+
     /// Системное окно выбора файла.
     fn pick_file(&mut self) {
         let mut dialog = rfd::FileDialog::new().set_title(tr("open-document"));
@@ -1295,6 +1334,7 @@ impl Viewer {
                 }
                 RibbonCommand::Style(id) => actions.push(Action::Edit(Command::Style(id))),
                 RibbonCommand::Edit(command) => actions.push(Action::Edit(command)),
+                RibbonCommand::InsertPicture => self.picture_requested = true,
                 RibbonCommand::BuiltInStyle(name) => {
                     if let Some(id) = self
                         .document
@@ -1582,6 +1622,7 @@ impl Viewer {
             painter,
             document,
             show_marks,
+            picture_drag,
             ..
         } = self;
         let Some(document) = document else {
@@ -1640,12 +1681,89 @@ impl Viewer {
                     i.modifiers.shift,
                 )
             });
-            let under_pointer = pointer.and_then(|pointer| {
+            let spot = pointer.and_then(|pointer| {
                 let page = nearest_page(&placement.rects, pointer - origin.to_vec2())?;
-                let local = (pointer - screen_rect(page).min) * points;
-                hit_test(&document.layout, page, local.x, local.y)
+                Some((page, (pointer - screen_rect(page).min) * points))
             });
-            if let Some(position) = under_pointer {
+            let under_pointer =
+                spot.and_then(|(page, local)| hit_test(&document.layout, page, local.x, local.y));
+
+            // Рисунки: щелчок выделяет рисунок, маркеры рамки меняют размер.
+            let picture_rect = |p: &PictureBox| {
+                let page = screen_rect(p.page);
+                Rect::from_min_size(
+                    page.min + Vec2::new(p.left, p.top) / points,
+                    Vec2::new(p.width, p.height) / points,
+                )
+            };
+            let selected = selected_picture(
+                &document.layout,
+                Selection::new(document.anchor, document.cursor),
+            );
+            let hover = ui.input(|i| i.pointer.hover_pos());
+            let handle_under = |at: Option<Pos2>| {
+                let p = selected?;
+                let handle = crate::picture::handle_at(picture_rect(&p), at?)?;
+                Some((p, handle))
+            };
+            if let Some((_, handle)) = handle_under(hover) {
+                ui.ctx().set_cursor_icon(handle.cursor());
+            }
+            let mut on_picture = false;
+            if press
+                && response.hovered()
+                && let Some((p, handle)) = handle_under(pointer)
+                && let Some(start) = pointer
+            {
+                *picture_drag = Some(PictureDrag {
+                    picture: p,
+                    handle,
+                    start,
+                    size: Vec2::new(p.width, p.height),
+                });
+            }
+            if let Some(drag) = picture_drag.as_mut() {
+                on_picture = true;
+                if dragging {
+                    if let Some(at) = pointer {
+                        let size = Vec2::new(drag.picture.width, drag.picture.height);
+                        drag.size =
+                            crate::picture::resized(size, drag.handle, (at - drag.start) * points);
+                    }
+                } else {
+                    if drag.size != Vec2::new(drag.picture.width, drag.picture.height) {
+                        menu.push(RibbonCommand::Edit(Command::ResizePicture {
+                            width: crate::picture::to_emu(drag.size.x),
+                            height: crate::picture::to_emu(drag.size.y),
+                        }));
+                    }
+                    *picture_drag = None;
+                }
+            }
+            // Нажатие на сам выделенный рисунок не начинает выделение текста.
+            let press_origin = ui.input(|i| i.pointer.press_origin());
+            if dragging
+                && let (Some(p), Some(at)) = (selected, press_origin)
+                && picture_rect(&p).contains(at)
+            {
+                on_picture = true;
+            }
+            if press
+                && !on_picture
+                && response.hovered()
+                && !shift
+                && let Some((page, local)) = spot
+                && let Some(p) = picture_at_point(&document.layout, page, local.x, local.y)
+            {
+                let picked = p.selection();
+                document.anchor = picked.anchor;
+                document.cursor = picked.focus;
+                document.history.seal();
+                document.cursor_since = now;
+                document.goal_x = None;
+                on_picture = true;
+            }
+            if let Some(position) = under_pointer.filter(|_| !on_picture) {
                 if press && response.hovered() {
                     document.cursor = position;
                     if !shift {
@@ -1705,9 +1823,24 @@ impl Viewer {
                 }
             }
 
-            // Выделение — полупрозрачная заливка поверх текста.
+            // Выделение — полупрозрачная заливка поверх текста. У
+            // выделенного рисунка вместо неё — рамка с маркерами.
             let selection = Selection::new(document.anchor, document.cursor);
-            for r in selection_rects(&document.layout, selection) {
+            let framed = selected_picture(&document.layout, selection);
+            if let Some(p) = framed {
+                let rect = picture_rect(&p);
+                let rect = match *picture_drag {
+                    Some(drag) => crate::picture::preview(rect, drag.handle, drag.size / points),
+                    None => rect,
+                };
+                crate::picture::paint_frame(ui.painter(), rect);
+            }
+            let rects = if framed.is_some() {
+                Vec::new()
+            } else {
+                selection_rects(&document.layout, selection)
+            };
+            for r in rects {
                 if r.page < placement.rects.len() {
                     let page = screen_rect(r.page);
                     let scale = 1.0 / points;
@@ -2492,6 +2625,119 @@ mod tests {
         let document = viewer.document.as_ref().unwrap();
         assert_eq!(document.layout.pages.len(), 1);
         assert_eq!(document.layout.pages[0].lines.len(), 1);
+    }
+
+    #[test]
+    fn pictures_are_selected_and_resized_with_the_mouse() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("image.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        frame(&ctx, &mut viewer, screen());
+
+        let document = viewer.document.as_ref().unwrap();
+        let [picture] = letter_editor::pictures_on_page(&document.layout, 0)[..] else {
+            panic!("рисунок не найден");
+        };
+        let scale = viewer.zoom() * SCREEN_PIXELS_PER_POINT;
+        let page = place_pages(
+            &[(
+                document.layout.pages[0].width,
+                document.layout.pages[0].height,
+            )],
+            viewer.zoom(),
+            viewer.view_size.x,
+        )
+        .rects[0];
+        let origin = viewer.view_origin;
+        let at = move |x: f32, y: f32| origin + page.min.to_vec2() + vec2(x, y) * scale;
+        let button = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+
+        // Щелчок по рисунку выделяет его.
+        let middle = at(
+            picture.left + picture.width / 2.0,
+            picture.top + picture.height / 2.0,
+        );
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![Event::PointerMoved(middle), button(middle, true)]),
+        );
+        frame(&ctx, &mut viewer, events(vec![button(middle, false)]));
+        assert_eq!(viewer.selection(), Some(picture.selection()));
+
+        // Правый нижний маркер на 36 пт вправо: шире и выше в той же
+        // пропорции.
+        let corner = at(picture.left + picture.width, picture.top + picture.height);
+        let moved = at(
+            picture.left + picture.width + 36.0,
+            picture.top + picture.height,
+        );
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![Event::PointerMoved(corner), button(corner, true)]),
+        );
+        frame(&ctx, &mut viewer, events(vec![Event::PointerMoved(moved)]));
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![Event::PointerMoved(moved), button(moved, false)]),
+        );
+        frame(&ctx, &mut viewer, screen());
+        let document = viewer.document.as_ref().unwrap();
+        let resized = letter_editor::picture_ref(&document.doc, picture.at).unwrap();
+        let width = resized.width_points();
+        let height = resized.height_points();
+        assert!((width - (picture.width + 36.0)).abs() < 0.5, "{width}");
+        assert!(
+            (height / width - picture.height / picture.width).abs() < 0.01,
+            "{width} × {height}"
+        );
+        // Рисунок остался выделенным; Ctrl+Z возвращает размер.
+        assert_eq!(viewer.selection(), Some(picture.selection()));
+        frame(&ctx, &mut viewer, key(Key::Z, Modifiers::COMMAND));
+        let document = viewer.document.as_ref().unwrap();
+        let back = letter_editor::picture_ref(&document.doc, picture.at).unwrap();
+        assert!((back.width_points() - picture.width).abs() < 0.01);
+    }
+
+    #[test]
+    fn picture_file_is_inserted_at_the_cursor() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.new_document();
+        let dir = std::env::temp_dir().join(format!("letter-picture-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("точка.png");
+        let mut png = Vec::new();
+        image_png(&mut png);
+        std::fs::write(&path, &png).unwrap();
+        viewer.insert_picture_file(&ctx, &path);
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(document.doc.plain_text(), "\u{fffc}");
+        assert_eq!(viewer.cursor(), Some(Position::new(0, 3)));
+        // Не картинка — сообщение об ошибке, документ не меняется.
+        let bad = dir.join("плохой.png");
+        std::fs::write(&bad, b"not a picture").unwrap();
+        viewer.insert_picture_file(&ctx, &bad);
+        assert!(viewer.error.is_some());
+        assert_eq!(
+            viewer.document.as_ref().unwrap().doc.plain_text(),
+            "\u{fffc}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// PNG 1 × 1 с прозрачной точкой.
+    fn image_png(out: &mut Vec<u8>) {
+        let picture = crate::picture::tests_png();
+        out.extend_from_slice(&picture);
     }
 
     #[test]

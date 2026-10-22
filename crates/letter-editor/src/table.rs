@@ -142,6 +142,11 @@ fn cell_start(doc: &Document, table: &Path, row: usize, cell: usize) -> usize {
     )
 }
 
+/// Ширина текста в месте абзаца `paragraph` (раздела или ячейки), твипы.
+pub(crate) fn text_width(doc: &Document, paragraph: usize) -> i32 {
+    find(doc, paragraph).map_or(9000, |path| available_width(doc, &path))
+}
+
 /// Ширина, в которую встаёт таблица в месте `path`, твипы: ширина
 /// текста раздела или ячейки.
 fn available_width(doc: &Document, path: &Path) -> i32 {

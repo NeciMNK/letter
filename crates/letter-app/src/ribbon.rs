@@ -171,6 +171,8 @@ pub enum RibbonCommand {
     Insert(&'static str),
     /// Встроенный стиль Word по имени (`heading 1`).
     BuiltInStyle(&'static str),
+    /// «Вставка → Рисунки»: выбрать файл картинки и вставить рисунок.
+    InsertPicture,
     /// Правка документа командой редактора (вставка таблицы и т. п.).
     Edit(letter_editor::Command),
     /// Открыть список или меню на ленте (подсказки клавиш).

@@ -1,4 +1,4 @@
-//! Вкладки «Вставка» (пока — только группа «Таблицы»), «Конструктор
+//! Вкладки «Вставка» (пока — группы «Таблицы» и «Иллюстрации»), «Конструктор
 //! таблиц» и «Макет таблицы» (две последние видны, когда курсор
 //! в таблице).
 
@@ -19,7 +19,7 @@ const SQUARE: f32 = 16.0;
 
 /// Подсказки клавиш вкладки «Вставка» (для проверки).
 #[cfg(test)]
-pub const INSERT_KEYTIPS: [&str; 1] = ["keytip-insert-table"];
+pub const INSERT_KEYTIPS: [&str; 2] = ["keytip-insert-table", "keytip-insert-picture"];
 
 /// Подсказки клавиш вкладки «Макет таблицы» (для проверки).
 #[cfg(test)]
@@ -61,6 +61,31 @@ pub fn insert(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
             );
             egui::Popup::menu(&response).show(|ui| table_picker(ui, out));
             ui.label(tr("table"));
+        });
+    });
+    group(ui, tr("group-illustrations"), |ui| {
+        ui.vertical(|ui| {
+            let response = icon_button(
+                ui,
+                Icon::Picture,
+                tr("pictures"),
+                vec2(44.0, 34.0),
+                doc,
+                false,
+            )
+            .on_hover_text(tr("pictures-hint"));
+            let command = RibbonCommand::InsertPicture;
+            keytips::tip(
+                ui,
+                &response,
+                Level::Commands,
+                "keytip-insert-picture",
+                TipAction::Command(command.clone()),
+            );
+            if response.clicked() {
+                out.push(command);
+            }
+            ui.label(tr("pictures"));
         });
     });
 }
