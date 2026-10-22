@@ -10,6 +10,7 @@
 use letter_model::{Alignment, Block, Document, Section};
 
 use crate::clipboard::{insert_fragment, insert_plain_text};
+use crate::edit::paragraph_count;
 use crate::edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, split_paragraph,
     top_level,
@@ -17,6 +18,7 @@ use crate::edit::{
 use crate::format::{
     ParagraphFormat, RunFormat, align_paragraphs, apply_style, format_paragraphs, format_runs,
 };
+use crate::search::{SearchOptions, clamp, replace_all};
 use crate::selection::Selection;
 
 /// Правка документа.
@@ -44,6 +46,17 @@ pub enum Command {
     Paragraph(ParagraphFormat),
     /// Применить стиль с этим идентификатором.
     Style(String),
+    /// «Заменить все»: найденное `query` заменить на `replacement` во
+    /// всём документе. Курсор остаётся в том же абзаце (выделение
+    /// снимается).
+    ReplaceAll {
+        /// Что искать.
+        query: String,
+        /// На что заменить.
+        replacement: String,
+        /// Параметры поиска.
+        options: SearchOptions,
+    },
 }
 
 /// Сколько шагов помнить.
@@ -145,7 +158,11 @@ impl History {
         // Оформление меняет выделенное, а не заменяет его.
         let formatting = matches!(
             command,
-            Command::Format(_) | Command::Align(_) | Command::Paragraph(_) | Command::Style(_)
+            Command::Format(_)
+                | Command::Align(_)
+                | Command::Paragraph(_)
+                | Command::Style(_)
+                | Command::ReplaceAll { .. }
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -153,6 +170,8 @@ impl History {
                 (start.paragraph.saturating_sub(1), end.paragraph)
             }
             Command::DeleteForward if !erasing => (start.paragraph, end.paragraph + 1),
+            // Замена может задеть любой абзац.
+            Command::ReplaceAll { .. } => (0, paragraph_count(doc).saturating_sub(1)),
             _ => (start.paragraph, end.paragraph),
         };
         let from = top_level(doc, first).or_else(|| top_level(doc, start.paragraph));
@@ -190,6 +209,14 @@ impl History {
                 apply_style(doc, start, end, id);
                 Some(selection)
             }
+            Command::ReplaceAll {
+                query,
+                replacement,
+                options,
+            } => {
+                replace_all(doc, query, replacement, *options);
+                Some(Selection::caret(clamp(doc, selection.focus)))
+            }
             _ => None,
         };
         let focus = match &command {
@@ -202,9 +229,11 @@ impl History {
             Command::DeleteForward => delete_forward(doc, at),
             Command::Paste(fragment) => insert_fragment(doc, at, fragment),
             Command::PasteText(text) => insert_plain_text(doc, at, text),
-            Command::Format(_) | Command::Align(_) | Command::Paragraph(_) | Command::Style(_) => {
-                at
-            }
+            Command::Format(_)
+            | Command::Align(_)
+            | Command::Paragraph(_)
+            | Command::Style(_)
+            | Command::ReplaceAll { .. } => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
 
@@ -370,6 +399,23 @@ mod tests {
         let mut doc = Document::new();
         doc.sections[0].blocks = texts.iter().map(|t| Paragraph::text(*t).into()).collect();
         doc
+    }
+
+    #[test]
+    fn replace_all_is_one_undo_step() {
+        let mut d = doc(&["кот и кот", "кот"]);
+        let mut h = History::new();
+        let all = Selection::caret(Position::new(1, 3));
+        let command = Command::ReplaceAll {
+            query: "кот".into(),
+            replacement: "пёс".into(),
+            options: SearchOptions::default(),
+        };
+        let after = h.run(&mut d, all, command);
+        assert_eq!(texts(&d), ["пёс и пёс", "пёс"]);
+        assert_eq!(after, Selection::caret(Position::new(1, 2)));
+        h.undo(&mut d);
+        assert_eq!(texts(&d), ["кот и кот", "кот"]);
     }
 
     fn texts(doc: &Document) -> Vec<String> {

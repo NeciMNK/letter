@@ -57,6 +57,12 @@ pub enum Icon {
     TabMark,
     /// Знак разрыва строки: стрелка вниз и влево.
     LineBreakMark,
+    /// Найти: лупа.
+    Search,
+    /// Заменить.
+    Replace,
+    /// Выделить все.
+    SelectAll,
 }
 
 /// Шрифт со значками.
@@ -101,6 +107,9 @@ impl Icon {
             Icon::Pilcrow => ("pilcrow", '\u{E3A3}'),
             Icon::TabMark => ("move-right", '\u{E490}'),
             Icon::LineBreakMark => ("corner-down-left", '\u{E0A1}'),
+            Icon::Search => ("search", '\u{E151}'),
+            Icon::Replace => ("replace", '\u{E3DB}'),
+            Icon::SelectAll => ("text-select", '\u{E6EA}'),
         }
     }
 }
@@ -270,7 +279,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 26] = [
+    const ALL: [Icon; 29] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -297,6 +306,9 @@ mod tests {
         Icon::Pilcrow,
         Icon::TabMark,
         Icon::LineBreakMark,
+        Icon::Search,
+        Icon::Replace,
+        Icon::SelectAll,
     ];
 
     #[test]

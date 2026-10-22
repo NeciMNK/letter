@@ -25,8 +25,9 @@ use eframe::egui::{
     Pos2, Rect, Sense, Vec2, ViewportCommand, emath::GuiRounding, pos2,
 };
 use letter_editor::{
-    Command, History, Motion, Position, RunFormat, Selection, caret, copy_range, formatting_at,
-    hit_test, move_cursor, paragraph_at, select_all, selection_rects, word_at,
+    Command, History, Motion, Position, RunFormat, Selection, caret, copy_range, find_all,
+    find_next, formatting_at, hit_test, move_cursor, paragraph_at, select_all, selection_rects,
+    word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
 use letter_model::{Alignment, Document};
@@ -34,6 +35,7 @@ use letter_render::{DESK_COLOR, MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, 
 
 use crate::clipboard::{Clipboard, SystemBuffer};
 use crate::files::{self, Autosave, OPEN_FILTERS, Recent, Recovered, SAVE_FILTERS};
+use crate::find::{FindAction, FindDialog};
 use crate::icons::{self, Icon};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
 use crate::ruler::{self, RULER_SIZE};
@@ -264,6 +266,8 @@ pub struct Viewer {
     ruler_page: Option<(usize, Rect)>,
     /// Шрифты для списка на ленте.
     font_names: Arc<[String]>,
+    /// Окно «Найти и заменить».
+    find: FindDialog,
 }
 
 /// Шрифты Word, которые заменяются похожими (см. `FontLibrary::find`):
@@ -357,6 +361,7 @@ impl Viewer {
             autosave: autosave_dir.as_deref().and_then(Autosave::start),
             last_autosave: Instant::now(),
             font_names: font_names(&library),
+            find: FindDialog::default(),
             library,
             shaper: Shaper::new(),
             painter: PagePainter::new(),
@@ -589,6 +594,9 @@ impl Viewer {
             .show(ui, |ui| self.ribbon.ui(ui, &info))
             .inner;
         self.run_ribbon(&ctx, commands);
+        if let Some(action) = self.find.ui(&ctx) {
+            self.find_action(&ctx, action);
+        }
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         egui::CentralPanel::no_frame()
             .frame(egui::Frame::new().fill(DESK_COLOR))
@@ -754,6 +762,13 @@ impl Viewer {
         if marks {
             self.show_marks = !self.show_marks;
         }
+        // Ctrl+F и Ctrl+H: окно «Найти и заменить».
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
+            self.find.show(false);
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::H)) {
+            self.find.show(true);
+        }
         let actions = ctx.input_mut(|i| {
             let mut actions = Vec::new();
             i.events.retain(|event| match key_action(event, screen) {
@@ -875,6 +890,63 @@ impl Viewer {
     }
 
     /// Что показать на ленте: состояние документа и оформление у курсора.
+    /// Выполняет просьбу окна «Найти и заменить».
+    fn find_action(&mut self, ctx: &Context, action: FindAction) {
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        let find = &mut self.find;
+        let (query, options) = (find.query.clone(), find.options);
+        let selection = document.selection();
+        let found = find_all(&document.doc, &query, options);
+        let mut actions = Vec::new();
+        match action {
+            FindAction::ReplaceAll => {
+                find.message = Some(if found.is_empty() {
+                    "Ничего не найдено.".to_owned()
+                } else {
+                    format!("Выполнено замен: {}.", found.len())
+                });
+                if !found.is_empty() {
+                    document.history.seal();
+                    actions.push(Action::Edit(Command::ReplaceAll {
+                        query,
+                        replacement: find.replacement.clone(),
+                        options,
+                    }));
+                }
+                self.apply_actions(ctx, actions);
+                return;
+            }
+            FindAction::Replace => {
+                // Заменяется только выделенное найденное, как в Word.
+                if found.contains(&(selection.start(), selection.end())) && !selection.is_empty() {
+                    document.history.seal();
+                    actions.push(Action::Edit(if find.replacement.is_empty() {
+                        Command::DeleteBackward
+                    } else {
+                        Command::Type(find.replacement.clone())
+                    }));
+                }
+            }
+            FindAction::Next => {}
+        }
+        self.apply_actions(ctx, actions);
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        document.history.seal();
+        let from = document.selection().end();
+        match find_next(&document.doc, from, &self.find.query, self.find.options) {
+            Some((start, end)) => {
+                document.set_selection(Selection::new(start, end));
+                self.find.message = None;
+                self.reveal_cursor = true;
+            }
+            None => self.find.message = Some("Ничего не найдено.".to_owned()),
+        }
+    }
+
     fn ribbon_info(&self) -> RibbonInfo {
         let mut info = RibbonInfo {
             recent: self.recent.items().to_vec(),
@@ -949,6 +1021,9 @@ impl Viewer {
                     actions.push(Action::Edit(Command::Paragraph(format)));
                 }
                 RibbonCommand::Style(id) => actions.push(Action::Edit(Command::Style(id))),
+                RibbonCommand::Find => self.find.show(false),
+                RibbonCommand::Replace => self.find.show(true),
+                RibbonCommand::SelectAll => actions.push(Action::SelectAll),
             }
         }
         self.apply_actions(ctx, actions);
@@ -2335,6 +2410,44 @@ mod tests {
         drop(viewer);
         assert_eq!(std::fs::read_dir(&autosave).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn find_and_replace() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.new_document();
+        frame(&ctx, &mut viewer, screen());
+        viewer.apply_actions(
+            &ctx,
+            vec![Action::Edit(Command::Type("кот и кот, Кот".into()))],
+        );
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(Key::H, Modifiers::COMMAND)]),
+        );
+        assert!(viewer.find.open && viewer.find.replace);
+        viewer.find.query = "кот".into();
+        viewer.find.replacement = "пёс".into();
+        viewer.find_action(&ctx, FindAction::Next);
+        let at = |o| Position::new(0, o);
+        assert_eq!(viewer.selection(), Some(Selection::new(at(0), at(6))));
+        // Курсор после первого — находится второй.
+        viewer.find_action(&ctx, FindAction::Next);
+        assert_eq!(viewer.selection(), Some(Selection::new(at(10), at(16))));
+        viewer.find_action(&ctx, FindAction::Replace);
+        assert_eq!(first_text(&mut viewer), "кот и пёс, Кот");
+        assert_eq!(viewer.selection(), Some(Selection::new(at(18), at(24))));
+        viewer.find.options.match_case = true;
+        viewer.find_action(&ctx, FindAction::ReplaceAll);
+        assert_eq!(first_text(&mut viewer), "пёс и пёс, Кот");
+        assert_eq!(viewer.find.message.as_deref(), Some("Выполнено замен: 1."));
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
+        assert_eq!(first_text(&mut viewer), "кот и пёс, Кот");
+        viewer.find.query = "собака".into();
+        viewer.find_action(&ctx, FindAction::Next);
+        assert_eq!(viewer.find.message.as_deref(), Some("Ничего не найдено."));
     }
 
     #[test]

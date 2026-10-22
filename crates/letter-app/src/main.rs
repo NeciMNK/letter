@@ -8,6 +8,7 @@
 
 mod clipboard;
 mod files;
+mod find;
 mod home;
 mod icons;
 mod ribbon;
