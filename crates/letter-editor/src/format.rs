@@ -5,9 +5,9 @@
 //! Ctrl+R, Ctrl+J).
 
 use letter_model::{
-    Alignment, Color, Document, HalfPoints, Highlight, Inline, LineSpacing, Paragraph,
-    ResolvedParagraphProps, ResolvedRunProps, Run, RunProps, StyleKind, Twips, Underline,
-    VerticalAlign,
+    Alignment, Color, Document, FirstLineIndent, HalfPoints, Highlight, Inline, LineSpacing,
+    Paragraph, ResolvedParagraphProps, ResolvedRunProps, Run, RunProps, StyleKind, TabLeader,
+    TabStop, TabStopKind, Twips, Underline, VerticalAlign,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -201,6 +201,27 @@ pub enum ParagraphFormat {
     SpaceBefore(Twips),
     /// Интервал после абзаца.
     SpaceAfter(Twips),
+    /// Отступы, как их ставит линейка: слева, справа и первой строки.
+    Indents {
+        /// Отступ слева.
+        left: Twips,
+        /// Отступ справа.
+        right: Twips,
+        /// Отступ или выступ первой строки.
+        first_line: Option<FirstLineIndent>,
+    },
+    /// Добавить позицию табуляции (щелчок по линейке). Позиция в том же
+    /// месте заменяется.
+    AddTab(TabStop),
+    /// Перенести позицию табуляции (перетаскивание по линейке).
+    MoveTab {
+        /// Где была.
+        from: Twips,
+        /// Куда перенесена.
+        to: Twips,
+    },
+    /// Убрать позицию табуляции (стащить с линейки).
+    RemoveTab(Twips),
 }
 
 /// Меняет оформление абзацев от `start` до `end`.
@@ -235,7 +256,62 @@ pub fn format_paragraphs(
             ParagraphFormat::LineSpacing(line) => props.spacing.line = Some(line),
             ParagraphFormat::SpaceBefore(before) => props.spacing.before = Some(before),
             ParagraphFormat::SpaceAfter(after) => props.spacing.after = Some(after),
+            ParagraphFormat::Indents {
+                left,
+                right,
+                first_line,
+            } => {
+                props.indentation.left = Some(left);
+                props.indentation.right = Some(right);
+                props.indentation.first_line = first_line;
+            }
+            ParagraphFormat::AddTab(stop) => {
+                change_tabs(doc, index, |tabs| {
+                    tabs.retain(|t| t.position != stop.position);
+                    tabs.push(stop);
+                });
+            }
+            ParagraphFormat::MoveTab { from, to } => change_tabs(doc, index, |tabs| {
+                if let Some(moved) = tabs.iter().find(|t| t.position == from).copied() {
+                    tabs.retain(|t| t.position != from && t.position != to);
+                    tabs.push(TabStop {
+                        position: to,
+                        ..moved
+                    });
+                }
+            }),
+            ParagraphFormat::RemoveTab(at) => {
+                change_tabs(doc, index, |tabs| tabs.retain(|t| t.position != at));
+            }
         }
+    }
+}
+
+/// Меняет итоговые позиции табуляции абзаца `index` и записывает в абзац
+/// только отличия от стиля: новые позиции и [`TabStopKind::Clear`] для
+/// убранных позиций стиля.
+fn change_tabs(doc: &mut Document, index: usize, change: impl FnOnce(&mut Vec<TabStop>)) {
+    let Some(paragraph) = paragraph_ref(doc, index) else {
+        return;
+    };
+    let mut tabs = doc.resolve_paragraph(&paragraph.props).tabs;
+    change(&mut tabs);
+    let mut own = paragraph.props.clone();
+    own.tabs.clear();
+    let inherited = doc.resolve_paragraph(&own).tabs;
+    let mut direct: Vec<TabStop> = inherited
+        .iter()
+        .filter(|t| !tabs.iter().any(|n| n.position == t.position))
+        .map(|t| TabStop {
+            position: t.position,
+            kind: TabStopKind::Clear,
+            leader: TabLeader::None,
+        })
+        .chain(tabs.iter().filter(|t| !inherited.contains(t)).copied())
+        .collect();
+    direct.sort_by_key(|t| t.position);
+    if let Some(paragraph) = paragraph_mut(doc, index) {
+        paragraph.props.tabs = direct;
     }
 }
 
@@ -677,6 +753,98 @@ mod tests {
         all(&mut d, RunFormat::Bold);
         all(&mut d, RunFormat::Clear);
         assert_eq!(props(&d), RunProps::default());
+    }
+
+    #[test]
+    fn ruler_indents_and_tabs() {
+        let mut d = doc(vec![Paragraph::text("a"), Paragraph::text("b")]);
+        let stop = |at: i32, kind| TabStop {
+            position: Twips(at),
+            kind,
+            leader: TabLeader::None,
+        };
+        // Стиль абзаца даёт позицию 1000.
+        let mut normal = letter_model::Style::new("Normal", StyleKind::Paragraph);
+        normal.is_default = true;
+        normal.paragraph.tabs = vec![stop(1000, TabStopKind::Left)];
+        d.styles.styles.push(normal);
+        let run = |d: &mut Document, f| {
+            format_paragraphs(d, Position::new(0, 0), Position::new(1, 0), f);
+        };
+        let tabs = |d: &Document, i| d.resolve_paragraph(&para(d, i).props).tabs;
+        run(
+            &mut d,
+            ParagraphFormat::Indents {
+                left: Twips(720),
+                right: Twips(360),
+                first_line: Some(FirstLineIndent::Hanging(Twips(360))),
+            },
+        );
+        let resolved = d.resolve_paragraph(&para(&d, 1).props);
+        assert_eq!(
+            (
+                resolved.indent_left,
+                resolved.indent_right,
+                resolved.first_line
+            ),
+            (
+                Twips(720),
+                Twips(360),
+                Some(FirstLineIndent::Hanging(Twips(360)))
+            )
+        );
+        run(
+            &mut d,
+            ParagraphFormat::AddTab(stop(2000, TabStopKind::Center)),
+        );
+        assert_eq!(
+            tabs(&d, 0),
+            [
+                stop(1000, TabStopKind::Left),
+                stop(2000, TabStopKind::Center)
+            ]
+        );
+        // В абзаце — только новая позиция, позиция стиля не повторяется.
+        assert_eq!(para(&d, 0).props.tabs, [stop(2000, TabStopKind::Center)]);
+        run(
+            &mut d,
+            ParagraphFormat::MoveTab {
+                from: Twips(1000),
+                to: Twips(1500),
+            },
+        );
+        assert_eq!(
+            tabs(&d, 1),
+            [
+                stop(1500, TabStopKind::Left),
+                stop(2000, TabStopKind::Center)
+            ]
+        );
+        // Позиция стиля убрана знаком «очистить».
+        assert!(
+            para(&d, 1)
+                .props
+                .tabs
+                .contains(&stop(1000, TabStopKind::Clear))
+        );
+        run(&mut d, ParagraphFormat::RemoveTab(Twips(2000)));
+        run(&mut d, ParagraphFormat::RemoveTab(Twips(1500)));
+        assert!(tabs(&d, 0).is_empty());
+        // Возврат позиции стиля снимает «очистить».
+        run(
+            &mut d,
+            ParagraphFormat::AddTab(stop(1000, TabStopKind::Left)),
+        );
+        assert!(para(&d, 0).props.tabs.is_empty());
+        // Перенос несуществующей позиции ничего не меняет.
+        run(
+            &mut d,
+            ParagraphFormat::MoveTab {
+                from: Twips(7),
+                to: Twips(8),
+            },
+        );
+        assert_eq!(tabs(&d, 0), [stop(1000, TabStopKind::Left)]);
     }
 
     #[test]
