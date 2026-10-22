@@ -6,9 +6,9 @@
 //! вместе, а потом упорядочиваются по таблицам ниже.
 
 use letter_model::{
-    Block, BreakKind, Color, Columns, Document, FirstLineIndent, Inline, LineSpacing, Orientation,
-    Paragraph, ParagraphProps, RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps,
-    SectionStart, Style, StyleKind, Styles, VerticalAlign,
+    Block, BreakKind, Color, Columns, Document, FirstLineIndent, HeaderFooterKind, Inline,
+    LineSpacing, Orientation, Paragraph, ParagraphProps, RawXml, Run, RunContent, RunFonts,
+    RunProps, Section, SectionProps, SectionStart, Style, StyleKind, Styles, VerticalAlign,
 };
 
 use crate::document::{W_NS, is_w_ns};
@@ -18,7 +18,7 @@ use crate::names::{
 use crate::xml;
 
 /// Пространство имён связей (`r:id`).
-const R_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+pub(crate) const R_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
 /// Порядок дочерних элементов `w:document`.
 const DOCUMENT_ORDER: &[&str] = &["background", "body"];
@@ -175,6 +175,10 @@ pub(crate) fn root_attributes(original: Option<&[(String, String)]>) -> Vec<(Str
         Some((_, uri)) => *uri = W_NS.into(),
         None => attrs.insert(0, ("xmlns:w".into(), W_NS.into())),
     }
+    // Ссылки на колонтитулы и рисунки пишутся с префиксом `r:`.
+    if !attrs.iter().any(|(name, _)| name == "xmlns:r") {
+        attrs.push(("xmlns:r".into(), R_NS.into()));
+    }
     attrs
 }
 
@@ -190,6 +194,23 @@ pub(crate) fn document_xml(doc: &Document) -> String {
     children.raw(&doc.unknown);
     children.push("body", body(&doc.sections));
     xml_part(&element_with("w:document", &attrs, &children.finish()))
+}
+
+/// Часть колонтитула (`w:hdr` или `w:ftr`) с атрибутами корня `root`
+/// из исходного файла.
+pub(crate) fn header_footer_xml(
+    blocks: &[Block],
+    header: bool,
+    root: Option<&[(String, String)]>,
+) -> String {
+    let attrs = root_attributes(root);
+    let mut content: String = blocks.iter().map(block_xml).collect();
+    // Колонтитул обязан содержать хотя бы один абзац.
+    if blocks.is_empty() {
+        content = paragraph(&Paragraph::default(), None);
+    }
+    let name = if header { "w:hdr" } else { "w:ftr" };
+    xml_part(&element_with(name, &attrs, &content))
 }
 
 /// Тело документа. Параметры каждого раздела, кроме последнего, пишутся
@@ -532,6 +553,26 @@ fn section_props(props: &SectionProps) -> String {
     }
     if let Some(columns) = &props.columns {
         children.push("cols", columns_xml(columns));
+    }
+    for (set, name, element) in [
+        (&props.headers, "headerReference", "w:headerReference"),
+        (&props.footers, "footerReference", "w:footerReference"),
+    ] {
+        for (kind, story) in set.iter() {
+            let Some(id) = &story.relationship else {
+                continue;
+            };
+            let kind = match kind {
+                HeaderFooterKind::Default => "default",
+                HeaderFooterKind::First => "first",
+                HeaderFooterKind::Even => "even",
+            };
+            let attrs = [("w:type", kind.to_string()), ("r:id", id.clone())];
+            children.push(name, empty(element, &attrs));
+        }
+    }
+    if props.title_page {
+        children.push("titlePg", empty("w:titlePg", &[]));
     }
     children.raw(&props.unknown);
     element("w:sectPr", &children.finish())

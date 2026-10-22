@@ -31,6 +31,9 @@ pub struct SourcePackage {
     pub main_root_attributes: Vec<(String, String)>,
     /// То же для корневого элемента части стилей.
     pub styles_root_attributes: Vec<(String, String)>,
+    /// Части колонтитулов, прочитанные в модель (при сохранении строятся
+    /// заново), и атрибуты их корневых элементов.
+    pub header_footer_parts: Vec<(String, Vec<(String, String)>)>,
     /// Типы содержимого по расширению имени (`Default` в `[Content_Types].xml`):
     /// пары «расширение — тип».
     pub default_content_types: Vec<(String, String)>,

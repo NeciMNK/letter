@@ -29,8 +29,8 @@ pub use lines::{
     break_lines_around,
 };
 pub use pages::{
-    CellArea, DocumentLayout, Float, LayoutCache, Margins, Page, PageLine, Shape, ShapeKind,
-    baseline_rise, layout_document, layout_document_cached,
+    CellArea, DocumentLayout, Float, LayoutCache, Margins, Page, PageLine, PageStory, Shape,
+    ShapeKind, baseline_rise, layout_document, layout_document_cached,
 };
 pub use shaping::{FontMetrics, ShapedGlyph, ShapedRun, Shaper, TextStyle};
 pub use spacing::{

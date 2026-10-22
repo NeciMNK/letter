@@ -244,6 +244,38 @@ def header_footer() -> Document:
     return doc
 
 
+def headers() -> Document:
+    """Колонтитулы: особый для первой страницы, разные для чётных
+    и нечётных; второй раздел берёт верхний колонтитул первого, а нижний
+    у него свой."""
+    from docx.enum.section import WD_SECTION
+
+    doc = new_document("Колонтитулы")
+    doc.settings.odd_and_even_pages_header_footer = True
+    first = doc.sections[0]
+    first.different_first_page_header_footer = True
+    first.first_page_header.paragraphs[0].text = "First page header"
+    first.header.paragraphs[0].text = "Odd page header"
+    first.even_page_header.paragraphs[0].text = "Even page header"
+    first.footer.paragraphs[0].text = "Odd page footer"
+    first.even_page_footer.paragraphs[0].text = "Even page footer"
+    first.first_page_footer.paragraphs[0].text = "First page footer"
+    text = (
+        "Body text that fills the pages so that the headers and footers of "
+        "the first, even and odd pages can be seen"
+    )
+    for i in range(1, 91):
+        doc.add_paragraph(f"{i}. {text}.")
+    second = doc.add_section(WD_SECTION.NEW_PAGE)
+    second.different_first_page_header_footer = False
+    second.footer.is_linked_to_previous = False
+    second.footer.paragraphs[0].text = "Second section footer"
+    second.even_page_footer.is_linked_to_previous = False
+    second.even_page_footer.paragraphs[0].text = "Second section even footer"
+    doc.add_paragraph("The second section keeps the header of the first one.")
+    return doc
+
+
 def mixed_languages() -> Document:
     doc = new_document("Русский и английский")
     doc.add_paragraph("Съешь же ещё этих мягких французских булок, да выпей чаю.")
@@ -289,6 +321,7 @@ FIXTURES = {
     "header-footer.docx": header_footer,
     "ru-en.docx": mixed_languages,
     "pages.docx": pages,
+    "headers.docx": headers,
 }
 
 

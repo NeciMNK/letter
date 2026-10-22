@@ -209,22 +209,36 @@ pub fn pages(doc: &Document, library: &FontLibrary) -> String {
             mm(page.height),
             page.lines.len()
         );
-        for line in &page.lines {
-            let text = line.text.get(line.line.range.clone()).unwrap_or_default();
-            let label = line
-                .label
-                .as_ref()
-                .map(|l| format!("{} ", l.text))
-                .unwrap_or_default();
-            let _ = writeln!(
-                out,
-                "  {:7.2} пт  h {:5.2}  x {:6.2}  абзац {:<3} {label}{:?}",
-                line.top,
-                line.height,
-                line.x + line.line.x,
-                line.paragraph + 1,
-                text.trim_end()
-            );
+        let stories = [
+            ("верхний колонтитул", &page.header.lines),
+            ("текст", &page.lines),
+            ("нижний колонтитул", &page.footer.lines),
+        ];
+        for (name, lines) in stories {
+            // Строки текста — без подписи, как раньше.
+            if name != "текст" && !lines.is_empty() {
+                let _ = writeln!(out, "  {name}:");
+            }
+            for line in lines {
+                let text = line.text.get(line.line.range.clone()).unwrap_or_default();
+                let label = line
+                    .label
+                    .as_ref()
+                    .map(|l| format!("{} ", l.text))
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    out,
+                    "  {:7.2} пт  h {:5.2}  x {:6.2}  абзац {:<3} {label}{:?}",
+                    line.top,
+                    line.height,
+                    line.x + line.line.x,
+                    line.paragraph + 1,
+                    text.trim_end()
+                );
+            }
+            if name != "текст" && !lines.is_empty() {
+                let _ = writeln!(out, "  ---");
+            }
         }
     }
     out

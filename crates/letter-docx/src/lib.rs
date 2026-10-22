@@ -36,7 +36,10 @@ use std::path::Path;
 
 use std::sync::Arc;
 
-use letter_model::{Document, ImageData, SourcePackage, SourcePart};
+use letter_model::{
+    Block, Document, HeaderFooterKind, ImageData, Picture, SourcePackage, SourcePart,
+    for_each_picture_in,
+};
 
 pub use error::{ReadError, WriteError};
 
@@ -94,16 +97,45 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
         app_part = Some(name);
     }
 
-    let rebuilt = [
+    let images = package.relationships(&main);
+    let stories = read_headers_footers(&mut package, &mut doc, &images);
+    let mut rebuilt = vec![
         Some(main.clone()),
         styles_part.clone(),
         numbering_part.clone(),
         core_part.clone(),
         app_part.clone(),
     ];
-    let images = package.relationships(&main);
+    rebuilt.extend(stories.iter().map(|(name, _)| Some(name.clone())));
     let mut source = read_source(&mut package, &rebuilt)?;
-    attach_images(&mut doc, &images, &source);
+    attach_images(|f| doc.for_each_picture_mut(f), &images, &source);
+    // Картинки колонтитулов — по связям своих частей.
+    for (name, _) in &stories {
+        let relationships = package.relationships(name);
+        for section in &mut doc.sections {
+            let props = &mut section.props;
+            for set in [&mut props.headers, &mut props.footers] {
+                for kind in HeaderFooterKind::ALL {
+                    let Some(story) = set.get_mut(kind) else {
+                        continue;
+                    };
+                    let target = story
+                        .relationship
+                        .as_deref()
+                        .and_then(|id| images.iter().find(|r| r.id == id))
+                        .map(|r| r.target.as_str());
+                    if target.is_some_and(|t| t.eq_ignore_ascii_case(name)) {
+                        attach_images(
+                            |f| for_each_picture_in(&mut story.blocks, f),
+                            &relationships,
+                            &source,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    source.header_footer_parts = stories;
     source.main_part = main;
     source.styles_part = styles_part;
     source.numbering_part = numbering_part;
@@ -114,6 +146,66 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
     source.styles_root_attributes = styles_root_attributes;
     doc.source = Some(source);
     Ok(doc)
+}
+
+/// Читает содержимое колонтитулов, на которые ссылаются разделы, из их
+/// частей. Возвращает прочитанные части и атрибуты их корневых
+/// элементов. Колонтитул, часть которого не читается, остаётся пустым
+/// со своей связью: часть тогда сохраняется как есть.
+fn read_headers_footers<R: Read + Seek>(
+    package: &mut package::Package<R>,
+    doc: &mut Document,
+    relationships: &[package::Relationship],
+) -> Vec<(String, Vec<(String, String)>)> {
+    // Прочитанные части: имя, атрибуты корня, содержимое.
+    type Part = (String, Vec<(String, String)>, Vec<Block>);
+    let mut parts: Vec<Part> = Vec::new();
+    for section in &mut doc.sections {
+        let props = &mut section.props;
+        for (set, suffix) in [
+            (&mut props.headers, "/header"),
+            (&mut props.footers, "/footer"),
+        ] {
+            for kind in HeaderFooterKind::ALL {
+                let Some(story) = set.get_mut(kind) else {
+                    continue;
+                };
+                let Some(target) = story
+                    .relationship
+                    .as_deref()
+                    .and_then(|id| relationships.iter().find(|r| r.id == id))
+                    .filter(|r| r.kind.ends_with(suffix))
+                    .map(|r| r.target.clone())
+                else {
+                    continue;
+                };
+                if let Some((_, _, blocks)) = parts
+                    .iter()
+                    .find(|(name, _, _)| name.eq_ignore_ascii_case(&target))
+                {
+                    story.blocks = blocks.clone();
+                    continue;
+                }
+                let Some(root) = package
+                    .read_part(&target)
+                    .ok()
+                    .flatten()
+                    .and_then(|bytes| xml::parse(&bytes).ok())
+                else {
+                    continue;
+                };
+                let Some(blocks) = document::read_header_footer(&root) else {
+                    continue;
+                };
+                story.blocks = blocks.clone();
+                parts.push((target, root.root_attributes(), blocks));
+            }
+        }
+    }
+    parts
+        .into_iter()
+        .map(|(name, attributes, _)| (name, attributes))
+        .collect()
 }
 
 /// Собирает части пакета, которые запись не строит заново из модели,
@@ -154,12 +246,12 @@ fn read_source<R: Read + Seek>(
 /// картинок остаются и в [`SourcePackage`]: при сохранении они
 /// записываются оттуда.
 fn attach_images(
-    doc: &mut Document,
+    visit: impl FnOnce(&mut dyn FnMut(&mut Picture)),
     relationships: &[package::Relationship],
     source: &SourcePackage,
 ) {
     let mut loaded: Vec<(&str, Option<Arc<ImageData>>)> = Vec::new();
-    doc.for_each_picture_mut(|picture| {
+    visit(&mut |picture: &mut Picture| {
         let Some(id) = picture.relationship.as_deref() else {
             return;
         };

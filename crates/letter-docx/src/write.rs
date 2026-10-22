@@ -11,8 +11,8 @@ use std::io::{Seek, Write};
 use std::sync::Arc;
 
 use letter_model::{
-    AppProperties, Block, CoreProperties, Document, ImageData, Picture, RunContent, SourcePackage,
-    Styles,
+    AppProperties, Block, CoreProperties, Document, HeaderFooterKind, ImageData, Picture,
+    RunContent, SourcePackage, Styles,
 };
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
@@ -40,6 +40,12 @@ const REL_CORE: &str =
     "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties";
 const REL_APP: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties";
+const REL_HEADER: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header";
+const REL_FOOTER: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer";
+const CT_HEADER: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml";
+const CT_FOOTER: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml";
 const REL_IMAGE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
 const CT_CORE: &str = "application/vnd.openxmlformats-package.core-properties+xml";
 const CT_APP: &str = "application/vnd.openxmlformats-officedocument.extended-properties+xml";
@@ -74,7 +80,20 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
     // вставленные из другого документа), записываются новыми частями.
     let mut media = Vec::new();
     let doc = link_pictures(doc, &main, &mut links, &mut media);
+    let (doc, stories) = link_headers_footers(doc, &main, &mut links);
     let doc = doc.as_ref();
+    for (name, header, blocks) in stories {
+        let root = source
+            .header_footer_parts
+            .iter()
+            .find(|(part, _)| part.eq_ignore_ascii_case(&name))
+            .map(|(_, attributes)| attributes.as_slice());
+        let xml = serialize::header_footer_xml(&blocks, header, root);
+        let content_type = if header { CT_HEADER } else { CT_FOOTER };
+        ensure_override(&mut overrides, &name, content_type);
+        replaced.push(name.clone());
+        parts.push((name, Cow::Owned(xml.into_bytes())));
+    }
     for (name, data) in media {
         if let Some((_, ext)) = name.rsplit_once('.')
             && !defaults.iter().any(|(e, _)| e.eq_ignore_ascii_case(ext))
@@ -253,6 +272,85 @@ fn link_pictures<'d>(
     Cow::Owned(fixed)
 }
 
+/// Колонтитулы, которые нужно записать: имя части, верхний ли
+/// колонтитул и содержимое. Новые колонтитулы (без связи) получают
+/// новую часть и связь — в копии документа. Колонтитул, часть которого
+/// не была прочитана в модель, не переписывается: его часть сохранится
+/// как есть.
+type Stories = Vec<(String, bool, Vec<Block>)>;
+
+fn link_headers_footers<'d>(
+    doc: Cow<'d, Document>,
+    main: &str,
+    links: &mut Links<'_>,
+) -> (Cow<'d, Document>, Stories) {
+    let unlinked = doc.sections.iter().any(|s| {
+        [&s.props.headers, &s.props.footers]
+            .iter()
+            .any(|set| set.iter().any(|(_, story)| story.relationship.is_none()))
+    });
+    let base = main.rsplit_once('/').map_or("", |(dir, _)| dir);
+    let mut created: Vec<String> = Vec::new();
+    let doc = if unlinked {
+        let mut doc = doc.into_owned();
+        for section in &mut doc.sections {
+            let props = &mut section.props;
+            for (set, header) in [(&mut props.headers, true), (&mut props.footers, false)] {
+                for kind in HeaderFooterKind::ALL {
+                    let Some(story) = set.get_mut(kind) else {
+                        continue;
+                    };
+                    if story.relationship.is_some() {
+                        continue;
+                    }
+                    let (kind, file) = if header {
+                        (REL_HEADER, "header.xml")
+                    } else {
+                        (REL_FOOTER, "footer.xml")
+                    };
+                    let (id, name) = links.add(main, kind, &join(base, file));
+                    story.relationship = Some(id);
+                    created.push(name);
+                }
+            }
+        }
+        Cow::Owned(doc)
+    } else {
+        doc
+    };
+    let mut stories: Stories = Vec::new();
+    for section in &doc.sections {
+        for (set, header) in [
+            (&section.props.headers, true),
+            (&section.props.footers, false),
+        ] {
+            for (_, story) in set.iter() {
+                let Some(name) = story
+                    .relationship
+                    .as_deref()
+                    .and_then(|id| links.target(main, id))
+                else {
+                    continue;
+                };
+                let known = created.iter().any(|c| c.eq_ignore_ascii_case(&name))
+                    || links
+                        .source
+                        .header_footer_parts
+                        .iter()
+                        .any(|(part, _)| part.eq_ignore_ascii_case(&name));
+                if known
+                    && !stories
+                        .iter()
+                        .any(|(n, _, _)| n.eq_ignore_ascii_case(&name))
+                {
+                    stories.push((name, header, story.blocks.clone()));
+                }
+            }
+        }
+    }
+    (doc, stories)
+}
+
 /// Вызывает `f` для каждого рисунка документа (без изменения).
 fn visit_pictures(doc: &Document, f: &mut impl FnMut(&Picture)) {
     fn blocks(list: &[Block], f: &mut impl FnMut(&Picture)) {
@@ -407,6 +505,20 @@ impl<'a> Links<'a> {
         let name = self.free_name(wanted);
         let id = push_relationship(&mut self.changed[index].1, kind, &name);
         (id, name)
+    }
+
+    /// Имя части, к которой ведёт внутренняя связь `id` части `from`.
+    fn target(&self, from: &str, id: &str) -> Option<String> {
+        let rels_name = rels_part_for(from);
+        let find = |rels: &[Relationship]| {
+            rels.iter()
+                .find(|r| r.id == id && !r.external)
+                .map(|r| r.target.clone())
+        };
+        match self.changed.iter().find(|(n, _)| *n == rels_name) {
+            Some((_, rels)) => find(rels),
+            None => find(&self.load(from, &rels_name)),
+        }
     }
 
     /// Связи из исходного файла (битый или отсутствующий файл — нет связей).

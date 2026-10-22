@@ -49,7 +49,8 @@ pub struct Mark {
 /// Знаки форматирования листа `page`.
 pub fn formatting_marks(page: &Page) -> Vec<Mark> {
     let mut marks = Vec::new();
-    for line in &page.lines {
+    let stories = page.header.lines.iter().chain(&page.footer.lines);
+    for line in stories.chain(&page.lines) {
         let mark = |kind, x: f32, size: f32| Mark {
             kind,
             x: line.x + x,

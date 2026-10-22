@@ -70,6 +70,12 @@ impl Document {
     }
 }
 
+/// Вызывает `f` для каждого рисунка в блоках `blocks`, включая рисунки
+/// в таблицах (например, в колонтитуле).
+pub fn for_each_picture_in(blocks: &mut [Block], mut f: impl FnMut(&mut Picture)) {
+    pictures_in(blocks, &mut f);
+}
+
 fn pictures_in(blocks: &mut [Block], f: &mut impl FnMut(&mut Picture)) {
     for block in blocks {
         match block {
@@ -116,6 +122,9 @@ pub struct Settings {
     /// если режим не указан). От него зависит, например, где стоит левая
     /// граница таблицы.
     pub compatibility_mode: u32,
+    /// «Разные колонтитулы для чётных и нечётных страниц»
+    /// (`w:evenAndOddHeaders`).
+    pub even_and_odd_headers: bool,
 }
 
 impl Default for Settings {
@@ -125,6 +134,7 @@ impl Default for Settings {
             default_tab_stop: Twips(708),
             add_paragraph_spacing: false,
             compatibility_mode: 12,
+            even_and_odd_headers: false,
         }
     }
 }

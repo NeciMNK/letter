@@ -26,17 +26,21 @@
 //!   которая не влезает, переносится или делится между страницами,
 //!   строки-заголовки повторяются на каждой странице.
 //!
-//! Пока не учитываются: колонтитулы, сноски, колонки, рисунки,
-//! гиперссылки и другие непонятые элементы внутри абзаца.
+//! - колонтитулы (верхний и нижний; первой страницы раздела, чётных
+//!   страниц) верстаются отдельно и ставятся на расстоянии от края листа;
+//!   высокий колонтитул отодвигает текст.
+//!
+//! Пока не учитываются: сноски, поля (номер страницы), гиперссылки
+//! и другие непонятые элементы внутри абзаца.
 
 use std::sync::Arc;
 
 use letter_model::{
-    Alignment, Anchor, AnchorAlign, Block, Document, EMU_PER_POINT, FirstLineIndent,
-    HorizontalFrom, ImageData, LevelSuffix, LineSpacing, ListCounters, ListLabel, Numbering,
-    PageSize, Paragraph, Placement, ResolvedFonts, ResolvedRunProps, RunContent, RunFonts,
-    RunProps, Section, SectionProps, SectionStart, Settings, Styles, TabStopKind, Theme, Twips,
-    VerticalAlign, VerticalFrom, Wrap,
+    Alignment, Anchor, AnchorAlign, Block, Document, EMU_PER_POINT, FirstLineIndent, HeaderFooter,
+    HeaderFooterKind, HorizontalFrom, ImageData, LevelSuffix, LineSpacing, ListCounters, ListLabel,
+    Numbering, PageSize, Paragraph, Placement, ResolvedFonts, ResolvedRunProps, RunContent,
+    RunFonts, RunProps, Section, SectionProps, SectionStart, Settings, Styles, TabStopKind, Theme,
+    Twips, VerticalAlign, VerticalFrom, Wrap,
 };
 
 use crate::fonts::FontLibrary;
@@ -87,6 +91,51 @@ pub struct Page {
     pub shapes: Vec<Shape>,
     /// Плавающие рисунки в порядке привязки.
     pub floats: Vec<Float>,
+    /// Раздел, в котором началась страница (номер по порядку).
+    pub section: usize,
+    /// Какие колонтитулы раздела у страницы.
+    pub kind: HeaderFooterKind,
+    /// Верхний колонтитул.
+    pub header: PageStory,
+    /// Нижний колонтитул.
+    pub footer: PageStory,
+}
+
+/// Колонтитул на странице. Координаты, как у текста страницы, — пт
+/// от левого верхнего угла листа; [`PageLine::paragraph`] — номер абзаца
+/// в колонтитуле.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PageStory {
+    /// Строки.
+    pub lines: Vec<PageLine>,
+    /// Заливка ячеек и линии границ таблиц.
+    pub shapes: Vec<Shape>,
+    /// Плавающие рисунки.
+    pub floats: Vec<Float>,
+}
+
+impl PageStory {
+    /// Колонтитул пуст: рисовать нечего.
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty() && self.shapes.is_empty() && self.floats.is_empty()
+    }
+
+    /// Колонтитул, сдвинутый вниз на `dy`.
+    fn moved(mut self, dy: f32) -> PageStory {
+        for line in &mut self.lines {
+            line.top += dy;
+            line.baseline += dy;
+            line.cell = line.cell.map(|c| c.moved(0.0, dy));
+        }
+        for shape in &mut self.shapes {
+            shape.y += dy;
+        }
+        for float in &mut self.floats {
+            float.y += dy;
+            float.paragraph_top += dy;
+        }
+        self
+    }
 }
 
 /// Плавающий рисунок на странице. Координаты — пт от левого верхнего
@@ -374,55 +423,29 @@ pub fn layout_document_cached(
         next: 0,
         add_spacing: doc.settings.add_paragraph_spacing,
     };
-    for section in &doc.sections {
+    // Колонтитулы каждого раздела (свои или от предыдущего раздела),
+    // свёрстанные от верха колонтитула.
+    let stories = section_stories(doc, shaper, library);
+    for (index, section) in doc.sections.iter().enumerate() {
         let geometry = Geometry::of(section);
         let columns = section_columns(section, &geometry);
         let column_width = columns.first().map_or(0.0, |c| c.1);
+        pager.section = index;
+        pager.bands = bands(
+            section,
+            &geometry,
+            &stories[index],
+            doc.settings.even_and_odd_headers,
+        );
         pager.start_section(geometry, &section.props, columns);
-        let mut i = 0;
-        let blocks = &section.blocks;
-        while i < blocks.len() {
-            match &blocks[i] {
-                Block::Paragraph(_) => {
-                    // Подряд идущие абзацы раскладываются вместе: правила
-                    // «не отрывать» и «одного стиля» смотрят на соседей.
-                    let run = blocks[i..]
-                        .iter()
-                        .take_while(|b| !matches!(b, Block::Table(_)))
-                        .filter(|b| matches!(b, Block::Paragraph(_)))
-                        .count();
-                    let span = blocks[i..]
-                        .iter()
-                        .take_while(|b| !matches!(b, Block::Table(_)))
-                        .count();
-                    let first = ctx.next;
-                    let group =
-                        &prepared[first.min(prepared.len())..(first + run).min(prepared.len())];
-                    ctx.next += run;
-                    let spacing: Vec<ParagraphBlock<'_>> = group
-                        .iter()
-                        .map(|p| ParagraphBlock {
-                            // Раскладке по страницам нужны только интервалы
-                            // и стиль (`effective_spacing`), строки она
-                            // берёт из `Prepared`.
-                            lines: &[],
-                            spacing: p.spacing,
-                            style: p.style.as_deref(),
-                        })
-                        .collect();
-                    for j in 0..group.len() {
-                        pager.place(group, &spacing, j, first + j, shaper, library);
-                    }
-                    i += span;
-                }
-                Block::Table(table) => {
-                    let rows = build_rows(&mut ctx, table, 0.0, column_width);
-                    pager.place_table(rows);
-                    i += 1;
-                }
-                Block::Unknown(_) => i += 1,
-            }
-        }
+        flow(
+            &mut pager,
+            &mut ctx,
+            &section.blocks,
+            column_width,
+            shaper,
+            library,
+        );
     }
     if pager.pages.is_empty() {
         let section = Section::default();
@@ -433,7 +456,223 @@ pub fn layout_document_cached(
     pager.close_columns();
     cache.entries = entries;
     cache.rebuilt = rebuilt;
-    DocumentLayout { pages: pager.pages }
+    let mut pages = pager.pages;
+    place_stories(doc, &mut pages, &stories);
+    DocumentLayout { pages }
+}
+
+/// Раскладывает блоки раздела или колонтитула: подряд идущие абзацы
+/// вместе (правила «не отрывать» и «одного стиля» смотрят на соседей),
+/// таблицы по строкам.
+fn flow(
+    pager: &mut Pager,
+    ctx: &mut Ctx<'_>,
+    blocks: &[Block],
+    column_width: f32,
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+) {
+    let prepared = ctx.prepared;
+    let mut i = 0;
+    while i < blocks.len() {
+        match &blocks[i] {
+            Block::Paragraph(_) => {
+                let run = blocks[i..]
+                    .iter()
+                    .take_while(|b| !matches!(b, Block::Table(_)))
+                    .filter(|b| matches!(b, Block::Paragraph(_)))
+                    .count();
+                let span = blocks[i..]
+                    .iter()
+                    .take_while(|b| !matches!(b, Block::Table(_)))
+                    .count();
+                let first = ctx.next;
+                let group = &prepared[first.min(prepared.len())..(first + run).min(prepared.len())];
+                ctx.next += run;
+                let spacing: Vec<ParagraphBlock<'_>> = group
+                    .iter()
+                    .map(|p| ParagraphBlock {
+                        // Раскладке по страницам нужны только интервалы
+                        // и стиль (`effective_spacing`), строки она
+                        // берёт из `Prepared`.
+                        lines: &[],
+                        spacing: p.spacing,
+                        style: p.style.as_deref(),
+                    })
+                    .collect();
+                for j in 0..group.len() {
+                    pager.place(group, &spacing, j, first + j, shaper, library);
+                }
+                i += span;
+            }
+            Block::Table(table) => {
+                let rows = build_rows(ctx, table, 0.0, column_width);
+                pager.place_table(rows);
+                i += 1;
+            }
+            Block::Unknown(_) => i += 1,
+        }
+    }
+}
+
+/// Колонтитул, свёрстанный от своего верха.
+#[derive(Debug, Clone)]
+struct StoryBox {
+    story: PageStory,
+    height: f32,
+}
+
+/// Колонтитулы раздела: верхние и нижние для каждого вида страниц (см.
+/// [`kind_index`]); `None` — колонтитула нет.
+type SectionStories = [[Option<StoryBox>; 3]; 2];
+
+/// Колонтитулы всех разделов. Раздел, у которого нет своего колонтитула
+/// какого-то вида, берёт его у предыдущего раздела.
+fn section_stories(
+    doc: &Document,
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+) -> Vec<SectionStories> {
+    let mut current: [[Option<&HeaderFooter>; 3]; 2] = Default::default();
+    let mut out = Vec::with_capacity(doc.sections.len());
+    for section in &doc.sections {
+        let geometry = Geometry::of(section);
+        let mut boxes: SectionStories = Default::default();
+        for (side, set) in [&section.props.headers, &section.props.footers]
+            .into_iter()
+            .enumerate()
+        {
+            for kind in HeaderFooterKind::ALL {
+                let k = kind_index(kind);
+                if let Some(story) = set.get(kind) {
+                    current[side][k] = Some(story);
+                }
+                boxes[side][k] = current[side][k]
+                    .map(|story| lay_story(doc, &story.blocks, &geometry, shaper, library));
+            }
+        }
+        out.push(boxes);
+    }
+    out
+}
+
+/// Высота листа для вёрстки колонтитула: колонтитул не делится на
+/// страницы.
+const STORY_HEIGHT: f32 = 100_000.0;
+
+/// Верстает колонтитул по ширине текста раздела.
+fn lay_story(
+    doc: &Document,
+    blocks: &[Block],
+    g: &Geometry,
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+) -> StoryBox {
+    let width = g.text_width();
+    let mut items = Vec::new();
+    collect_paragraphs(doc, blocks, width, None, &mut items);
+    let labels = list_labels(doc, &items);
+    let prepared: Vec<Arc<Prepared>> = items
+        .iter()
+        .zip(&labels)
+        .map(|(item, label)| {
+            Arc::new(prepare(
+                doc,
+                item.paragraph,
+                label.as_ref(),
+                item.table.as_deref(),
+                item.width,
+                shaper,
+                library,
+            ))
+        })
+        .collect();
+    let geometry = Geometry {
+        width: g.width,
+        height: STORY_HEIGHT,
+        margins: Margins {
+            top: 0.0,
+            bottom: 0.0,
+            ..g.margins
+        },
+    };
+    let mut pager = Pager {
+        add_spacing: doc.settings.add_paragraph_spacing,
+        ..Pager::default()
+    };
+    let mut ctx = Ctx {
+        doc,
+        prepared: &prepared,
+        next: 0,
+        add_spacing: doc.settings.add_paragraph_spacing,
+    };
+    pager.start_section(geometry, &SectionProps::default(), vec![(0.0, width)]);
+    flow(&mut pager, &mut ctx, blocks, width, shaper, library);
+    pager.close_columns();
+    let page = pager.pages.into_iter().next();
+    let story = page.map_or_else(PageStory::default, |page| PageStory {
+        lines: page.lines,
+        shapes: page.shapes,
+        floats: page.floats,
+    });
+    let height = story
+        .lines
+        .iter()
+        .map(|l| l.top + l.height)
+        .chain(story.shapes.iter().map(|s| s.y + s.height))
+        .fold(0.0, f32::max);
+    StoryBox { story, height }
+}
+
+/// Место колонтитулов раздела. Колонтитул, который не влезает в поле,
+/// отодвигает текст (если поле не отрицательное).
+fn bands(section: &Section, g: &Geometry, stories: &SectionStories, even_and_odd: bool) -> Bands {
+    let m = section.props.margins.unwrap_or_default();
+    let header = points(m.header).max(0.0);
+    let footer = points(m.footer).max(0.0);
+    let mut bands = Bands {
+        title_page: section.props.title_page,
+        even_and_odd,
+        ..Bands::default()
+    };
+    let [headers, footers] = stories;
+    for (top, story) in bands.top.iter_mut().zip(headers) {
+        if let Some(story) = story
+            && m.top.0 >= 0
+        {
+            *top = header + story.height;
+        }
+    }
+    for (bottom, story) in bands.bottom.iter_mut().zip(footers) {
+        if let Some(story) = story
+            && m.bottom.0 >= 0
+        {
+            *bottom = g.height - footer - story.height;
+        }
+    }
+    bands
+}
+
+/// Ставит колонтитулы на страницы: верхний — на расстоянии от верха
+/// листа, нижний — так, чтобы его низ был на расстоянии от низа листа.
+fn place_stories(doc: &Document, pages: &mut [Page], stories: &[SectionStories]) {
+    for page in pages {
+        let Some(section) = doc.sections.get(page.section) else {
+            continue;
+        };
+        let Some(boxes) = stories.get(page.section) else {
+            continue;
+        };
+        let m = section.props.margins.unwrap_or_default();
+        let k = kind_index(page.kind);
+        if let Some(story) = &boxes[0][k] {
+            page.header = story.story.clone().moved(points(m.header).max(0.0));
+        }
+        if let Some(story) = &boxes[1][k] {
+            let top = page.height - points(m.footer).max(0.0) - story.height;
+            page.footer = story.story.clone().moved(top);
+        }
+    }
 }
 
 /// Номера пунктов списков у абзацев по порядку.
@@ -1195,6 +1434,45 @@ struct Pager {
     column_pending: bool,
     /// С какой строки и какой фигуры страницы начались колонки на ней.
     region_start: (usize, usize),
+    /// Номер текущего раздела.
+    section: usize,
+    /// Сколько страниц у текущего раздела.
+    section_pages: usize,
+    /// Место колонтитулов текущего раздела.
+    bands: Bands,
+    /// Верх и низ текста на текущей странице (с колонтитулами).
+    page_top: Option<f32>,
+    page_bottom: Option<f32>,
+}
+
+/// Сколько места занимают колонтитулы раздела: для каждого вида страниц
+/// (см. [`kind_index`]) верх и низ текста, пт от верха листа.
+#[derive(Debug, Clone, Copy)]
+struct Bands {
+    title_page: bool,
+    even_and_odd: bool,
+    top: [f32; 3],
+    bottom: [f32; 3],
+}
+
+impl Default for Bands {
+    fn default() -> Bands {
+        Bands {
+            title_page: false,
+            even_and_odd: false,
+            top: [0.0; 3],
+            bottom: [f32::INFINITY; 3],
+        }
+    }
+}
+
+/// Номер вида колонтитула в массивах.
+fn kind_index(kind: HeaderFooterKind) -> usize {
+    match kind {
+        HeaderFooterKind::Default => 0,
+        HeaderFooterKind::First => 1,
+        HeaderFooterKind::Even => 2,
+    }
 }
 
 impl Pager {
@@ -1235,6 +1513,7 @@ impl Pager {
                 self.geometry = Some(geometry);
                 self.columns = columns;
                 self.separator = separator;
+                self.section_pages = 0;
                 self.new_page(false);
                 let even = self.pages.len().is_multiple_of(2);
                 let wrong = match start {
@@ -1390,6 +1669,22 @@ impl Pager {
         self.column_bottom = g.margins.top;
         self.column_pending = false;
         self.region_start = (0, 0);
+        // Какие колонтитулы у страницы и сколько места они оставляют тексту.
+        let number = self.pages.len() + 1;
+        let kind = if self.section_pages == 0 && self.bands.title_page {
+            HeaderFooterKind::First
+        } else if self.bands.even_and_odd && number.is_multiple_of(2) {
+            HeaderFooterKind::Even
+        } else {
+            HeaderFooterKind::Default
+        };
+        self.section_pages += 1;
+        let k = kind_index(kind);
+        self.page_top = Some(g.margins.top.max(self.bands.top[k]));
+        self.page_bottom = Some((g.height - g.margins.bottom).min(self.bands.bottom[k]));
+        let top = self.top();
+        self.column_top = top;
+        self.column_bottom = top;
         self.pages.push(Page {
             width: g.width,
             height: g.height,
@@ -1397,21 +1692,30 @@ impl Pager {
             lines: Vec::new(),
             shapes: Vec::new(),
             floats: Vec::new(),
+            section: self.section,
+            kind,
+            header: PageStory::default(),
+            footer: PageStory::default(),
         });
-        self.y = g.margins.top;
+        self.y = top;
         self.has_content = false;
         self.soft_top = soft;
         self.break_pending = false;
         self.previous_after = 0.0;
     }
 
+    /// Верх текста на странице: верхнее поле или низ колонтитула.
     fn top(&self) -> f32 {
-        self.geometry.map_or(0.0, |g| g.margins.top)
+        self.page_top
+            .or(self.geometry.map(|g| g.margins.top))
+            .unwrap_or(0.0)
     }
 
+    /// Низ текста на странице: нижнее поле или верх колонтитула.
     fn bottom(&self) -> f32 {
-        self.geometry
-            .map_or(f32::INFINITY, |g| g.height - g.margins.bottom)
+        self.page_bottom
+            .or(self.geometry.map(|g| g.height - g.margins.bottom))
+            .unwrap_or(f32::INFINITY)
     }
 
     /// Высота области текста.
@@ -2275,6 +2579,65 @@ mod tests {
         // «На текущей странице» с другим размером листа — новая страница.
         d.sections[1].props.page_size = Some(PageSize::A4);
         assert_eq!(pages(&lay(&d))[..2], [vec![0], vec![1]]);
+    }
+
+    #[test]
+    fn headers_and_footers_take_their_place() {
+        let story = |text: &str| letter_model::HeaderFooter {
+            blocks: vec![para(text).into()],
+            relationship: None,
+        };
+        let mut d = doc(singles(8));
+        let props = &mut d.sections[0].props;
+        props.margins = props.margins.map(|m| PageMargins {
+            header: Twips(0),
+            footer: Twips(0),
+            ..m
+        });
+        props.title_page = true;
+        props.headers.first = Some(story("first"));
+        props.headers.default = Some(story("header"));
+        props.footers.default = Some(story("footer"));
+        let mut second = doc(vec![para("second section")]).sections.remove(0);
+        second.props.margins = props.margins;
+        d.sections.push(second);
+        let layout = lay(&d);
+        // Колонтитулы отодвигают текст; у первой страницы нижнего нет.
+        assert_eq!(
+            pages(&layout),
+            [vec![0, 1, 2, 3], vec![4, 5, 6], vec![7], vec![8]]
+        );
+        let text = |story: &PageStory| {
+            story
+                .lines
+                .iter()
+                .map(|l| l.text[l.line.range.clone()].to_string())
+                .collect::<Vec<_>>()
+        };
+        let p = &layout.pages;
+        assert_eq!(text(&p[0].header), ["first"]);
+        assert!(p[0].footer.is_empty());
+        assert_eq!(text(&p[1].header), ["header"]);
+        assert_eq!(text(&p[1].footer), ["footer"]);
+        assert!(p[1].header.lines[0].top.abs() < 1e-3);
+        assert!((p[1].footer.lines[0].top - (57.6 - LINE)).abs() < 1e-3);
+        assert!((p[1].lines[0].top - LINE).abs() < 1e-3);
+        // Второй раздел берёт колонтитулы первого.
+        assert_eq!(p[3].section, 1);
+        assert_eq!(text(&p[3].header), ["header"]);
+        assert_eq!(text(&p[3].footer), ["footer"]);
+
+        // Чётные страницы — со своим колонтитулом; нижнего чётного нет,
+        // поэтому на второй странице текст доходит до низа.
+        d.settings.even_and_odd_headers = true;
+        d.sections[0].props.headers.even = Some(story("even"));
+        let layout = lay(&d);
+        let kinds: Vec<_> = layout.pages.iter().map(|p| text(&p.header)).collect();
+        assert_eq!(kinds, [["first"], ["even"], ["header"]]);
+        assert_eq!(
+            pages(&layout),
+            [vec![0, 1, 2, 3], vec![4, 5, 6, 7], vec![8]]
+        );
     }
 
     #[test]

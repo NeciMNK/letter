@@ -17,7 +17,7 @@ word/bold-italic 1 1
 word/empty 0 0
 word/header-footer 3 3
 word/headings 7 1
-word/image 2 1
+word/image 2 2
 word/lists 9 2
 word/pages 65 65
 word/plain-text 4 4

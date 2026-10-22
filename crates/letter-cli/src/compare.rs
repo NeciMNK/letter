@@ -68,7 +68,8 @@ pub fn layout_lines(layout: &DocumentLayout) -> Vec<CompareLine> {
     let mut out: Vec<CompareLine> = Vec::new();
     for (i, page) in layout.pages.iter().enumerate() {
         let page_start = out.len();
-        for line in &page.lines {
+        let lines = page.header.lines.iter().chain(&page.lines);
+        for line in lines.chain(&page.footer.lines) {
             let text = line.text.get(line.line.range.clone()).unwrap_or_default();
             let text = text.replace(letter_model::OBJECT_CHAR, "");
             if text.trim().is_empty() {
