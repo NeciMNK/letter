@@ -38,6 +38,9 @@ pub struct GlyphKey {
     pub italic: bool,
     /// Масштаб по ширине, проценты (`100` — как есть).
     pub width_percent: u16,
+    /// Поворот против часовой стрелки, градусы (`0` — без поворота;
+    /// подложка).
+    pub rotation: u16,
 }
 
 impl GlyphKey {
@@ -161,11 +164,13 @@ impl GlyphCache {
             .then(|| Transform::skew(Angle::from_degrees(SYNTHETIC_ITALIC_DEGREES), Angle::ZERO));
         let stretch = (key.width_percent != 100 && key.width_percent > 0)
             .then(|| Transform::scale(f32::from(key.width_percent) / 100.0, 1.0));
-        match (skew, stretch) {
-            (Some(skew), Some(stretch)) => render.transform(Some(stretch.then(&skew))),
-            (Some(one), None) | (None, Some(one)) => render.transform(Some(one)),
-            (None, None) => &mut render,
-        };
+        let rotate = (!key.rotation.is_multiple_of(360))
+            .then(|| Transform::rotation(Angle::from_degrees(f32::from(key.rotation))));
+        let transform = [stretch, skew, rotate]
+            .into_iter()
+            .flatten()
+            .reduce(|acc, next| acc.then(&next));
+        render.transform(transform);
         let image = render.render(&mut scaler, key.glyph_id)?;
         let placement = image.placement;
         if placement.width == 0 || placement.height == 0 {
@@ -212,6 +217,7 @@ mod tests {
             bold: false,
             italic: false,
             width_percent: 100,
+            rotation: 0,
         }
     }
 
@@ -272,6 +278,25 @@ mod tests {
         );
         assert_ne!(cache.glyph(&library, shifted), cache.glyph(&library, plain));
         assert!(cache.metrics(&library, plain.font).is_some());
+        // Повёрнутая на 90° буква «l» лежит: шире, чем выше.
+        let lying = cache
+            .glyph(
+                &library,
+                GlyphKey {
+                    rotation: 90,
+                    ..plain
+                },
+            )
+            .unwrap();
+        assert!(
+            lying.width > lying.height * 2,
+            "{}×{}",
+            lying.width,
+            lying.height
+        );
+        // Против часовой стрелки: «l» стоит на базовой линии и уходит
+        // влево от своей точки.
+        assert!(lying.left < -10, "{}", lying.left);
     }
 
     fn cache_width(cache: &mut GlyphCache, library: &FontLibrary, key: GlyphKey) -> u32 {

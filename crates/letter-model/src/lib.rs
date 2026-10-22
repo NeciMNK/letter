@@ -34,6 +34,7 @@ mod style;
 mod table;
 mod theme;
 mod units;
+mod watermark;
 
 pub use border::{Border, Borders, ParagraphBorders, Shading};
 pub use document::{Document, Settings, for_each_picture_in};
@@ -70,3 +71,4 @@ pub use table::{
 };
 pub use theme::{Theme, ThemeFontSet};
 pub use units::{HalfPoints, Twips};
+pub use watermark::{Watermark, find_watermark};

@@ -516,6 +516,34 @@ def borders() -> Document:
     return doc
 
 
+WATERMARK = (
+    '<w:pict xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+    'xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">'
+    '<v:shapetype id="_x0000_t136" coordsize="21600,21600" o:spt="136" adj="10800" '
+    'path="m@7,l@8,m@5,21600l@6,21600e"><v:path textpathok="t" o:connecttype="custom"/>'
+    '<v:textpath on="t" fitshape="t"/></v:shapetype>'
+    '<v:shape id="PowerPlusWaterMarkObject1" o:spid="_x0000_s2049" type="#_x0000_t136" '
+    'style="position:absolute;margin-left:0;margin-top:0;width:412.4pt;height:137.45pt;'
+    "rotation:315;z-index:-251657216;mso-position-horizontal:center;"
+    "mso-position-horizontal-relative:margin;mso-position-vertical:center;"
+    'mso-position-vertical-relative:margin" o:allowincell="f" fillcolor="silver" stroked="f">'
+    '<v:fill opacity=".5"/><v:textpath style="font-family:&quot;Calibri&quot;;font-size:1pt" '
+    'string="ОБРАЗЕЦ"/></v:shape></w:pict>'
+)
+
+
+def watermark() -> Document:
+    """Подложка «ОБРАЗЕЦ», как её вставляет Word: фигура VML с текстом
+    в верхнем колонтитуле."""
+    doc = new_document("Подложка")
+    for i in range(3):
+        doc.add_paragraph(f"Абзац {i + 1} документа с подложкой.")
+    header = doc.sections[0].header
+    run = header.paragraphs[0].add_run()
+    run._r.append(etree.fromstring(WATERMARK))
+    return doc
+
+
 FIXTURES = {
     "empty.docx": empty,
     "plain-text.docx": plain_text,
@@ -533,6 +561,7 @@ FIXTURES = {
     "links.docx": links,
     "notes.docx": notes,
     "borders.docx": borders,
+    "watermark.docx": watermark,
 }
 
 

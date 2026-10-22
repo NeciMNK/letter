@@ -3,8 +3,8 @@
 //! в пикселях. Список одинаков для экрана и для картинки.
 
 use letter_layout::{
-    Float, FontLibrary, LineItem, Page, PageLine, PageStory, ShapeKind, TabItem, TabLeader,
-    TextItem, baseline_rise,
+    Float, FontLibrary, LineItem, Page, PageLine, PageStory, PageWatermark, ShapeKind, TabItem,
+    TabLeader, TextItem, baseline_rise,
 };
 use std::sync::Arc;
 
@@ -96,6 +96,9 @@ pub fn page_scene(
             ShapeKind::Rule => lines.push(item),
         }
     }
+    if let Some(mark) = &page.watermark {
+        watermark(&mut backgrounds, mark, scale);
+    }
     let all_lines = stories.iter().flat_map(|s| &s.lines).chain(&page.lines);
     for line in all_lines {
         for item in &line.line.items {
@@ -176,6 +179,44 @@ pub fn page_scene(
     backgrounds
 }
 
+/// Глифы подложки вдоль повёрнутой базовой линии.
+fn watermark(out: &mut Vec<DrawItem>, mark: &PageWatermark, scale: f32) {
+    let (sin, cos) = mark.rotation.to_radians().sin_cos();
+    // Поворот глифа против часовой стрелки, целые градусы.
+    let rotation = (360.0 - mark.rotation).rem_euclid(360.0).round() as u16 % 360;
+    let (r, g, b) = mark.color;
+    let color = [r, g, b, mark.alpha];
+    let mut pen = 0.0;
+    for run in &mark.runs {
+        let size_64 = (run.size * scale * 64.0).round().max(1.0) as u32;
+        for glyph in &run.glyphs {
+            // Вдоль строки и вверх от неё, потом поворот.
+            let (along, up) = (pen + glyph.x_offset, glyph.y_offset);
+            let x = (mark.x + along * cos + up * sin) * scale;
+            let y = (mark.y + along * sin - up * cos) * scale;
+            let whole = x.floor();
+            let subpixel =
+                (((x - whole) * f32::from(SUBPIXEL_STEPS)).floor() as u8).min(SUBPIXEL_STEPS - 1);
+            out.push(DrawItem::Glyph {
+                key: GlyphKey {
+                    font: run.font.id,
+                    glyph_id: glyph.glyph_id,
+                    size_64,
+                    subpixel,
+                    bold: run.font.synthetic_bold,
+                    italic: run.font.synthetic_italic,
+                    width_percent: (run.width_scale * 100.0).round().clamp(1.0, 600.0) as u16,
+                    rotation,
+                },
+                x: whole as i32,
+                y: y.round() as i32,
+                color,
+            });
+            pen += glyph.x_advance;
+        }
+    }
+}
+
 fn rect(scale: f32, x: f32, y: f32, width: f32, height: f32, color: Rgba) -> DrawItem {
     DrawItem::Rect {
         x: x * scale,
@@ -221,6 +262,7 @@ fn push_glyphs(
                 bold: run.font.synthetic_bold,
                 italic: run.font.synthetic_italic,
                 width_percent: (run.width_scale * 100.0).round().clamp(1.0, 600.0) as u16,
+                rotation: 0,
             },
             x: whole as i32,
             y: y.round() as i32,
