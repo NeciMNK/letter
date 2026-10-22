@@ -17,6 +17,7 @@
 //! Все размеры — в пунктах, отсчёт по горизонтали — от левого поля
 //! страницы (как позиции табуляций в Word).
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -26,7 +27,7 @@ use unicode_bidi::{BidiInfo, Level};
 use unicode_linebreak::{BreakOpportunity, linebreaks};
 
 use crate::fonts::{FontLibrary, FontMatch};
-use crate::shaping::{ShapedRun, Shaper, TextStyle};
+use crate::shaping::{ShapedGlyph, ShapedRun, Shaper, TextStyle};
 
 /// Допуск при сравнении ширин, пт: строка «влезает», если вылезает
 /// меньше чем на эту величину.
@@ -523,6 +524,9 @@ struct Builder<'a> {
     stops: Vec<TabStop>,
     /// Место для текущей строки, если его сужает плавающий рисунок.
     room: Option<LineRoom>,
+    /// Глифы дефиса для кластеров с мягким переносом (U+00AD): дефис
+    /// виден, только если строка перенесена на этом месте.
+    hyphens: HashMap<usize, ShapedGlyph>,
 }
 
 impl<'a> Builder<'a> {
@@ -557,6 +561,7 @@ impl<'a> Builder<'a> {
             stops,
             objects: spans.iter().map(|s| s.object.clone()).collect(),
             room: None,
+            hyphens: HashMap::new(),
         };
         builder.shape(spans);
         builder
@@ -693,6 +698,14 @@ impl<'a> Builder<'a> {
                     .map(|g| g.x_advance)
                     .sum();
                 let space = self.text[range.clone()].chars().all(is_hanging_space);
+                if self.text[range.clone()].ends_with(SOFT_HYPHEN)
+                    && run.level % 2 == 0
+                    && let Some(glyph) = self.hyphen_glyph(&run, &source.style)
+                {
+                    let cluster = range.start;
+                    self.hyphens
+                        .insert(self.clusters.len(), ShapedGlyph { cluster, ..glyph });
+                }
                 self.clusters.push(Cluster {
                     range,
                     width,
@@ -703,6 +716,22 @@ impl<'a> Builder<'a> {
             }
             self.runs.push(run);
         }
+    }
+
+    /// Глиф дефиса тем же шрифтом, что и кусок `run`.
+    fn hyphen_glyph(&mut self, run: &ShapedRun, style: &TextStyle) -> Option<ShapedGlyph> {
+        let runs = self.shaper.shape_range(self.library, "-", 0..1, 0, style);
+        match runs.as_slice() {
+            [hyphen] if hyphen.font.id == run.font.id && hyphen.glyphs.len() == 1 => {
+                hyphen.glyphs.first().copied()
+            }
+            _ => None,
+        }
+    }
+
+    /// Ширина дефиса, который появится при переносе после кластера `i`.
+    fn hyphen_width(&self, i: usize) -> f32 {
+        self.hyphens.get(&i).map_or(0.0, |g| g.x_advance)
     }
 
     /// Следующая позиция табуляции после `x`.
@@ -803,7 +832,12 @@ impl<'a> Builder<'a> {
                     }
                 }
             }
-            if self.breaks[cluster.range.end] {
+            // После мягкого переноса строку можно разорвать, только если
+            // влезет и появившийся дефис.
+            if self.breaks[cluster.range.end]
+                && (!self.hyphens.contains_key(&i)
+                    || state.x() + self.hyphen_width(i) <= line_end + EPSILON)
+            {
                 last_break = Some(i + 1);
             }
         }
@@ -831,6 +865,13 @@ impl<'a> Builder<'a> {
 
         // Ширины табуляций.
         let mut widths: Vec<f32> = clusters.iter().map(|c| c.width).collect();
+        // Перенос на мягком переносе: в конце строки виден дефис.
+        let hyphen = (kind == LineEnd::Wrap && content_end > 0)
+            .then(|| content_end - 1)
+            .filter(|&i| self.hyphens.contains_key(&(start + i)));
+        if let Some(i) = hyphen {
+            widths[i] += self.hyphen_width(start + i);
+        }
         let mut state = TabState::new(line_start);
         let mut leaders = vec![TabLeader::None; clusters.len()];
         let mut pending: Option<usize> = None;
@@ -934,7 +975,7 @@ impl<'a> Builder<'a> {
                 _ => false,
             };
             if !same_run && !group.is_empty() {
-                items.extend(self.text_item(group_x, clusters, &group, &stretched));
+                items.extend(self.text_item(group_x, start, &group, &stretched, hyphen));
                 group.clear();
             }
             match cluster.kind {
@@ -974,7 +1015,7 @@ impl<'a> Builder<'a> {
             x += widths[i];
         }
         if !group.is_empty() {
-            items.extend(self.text_item(group_x, clusters, &group, &stretched));
+            items.extend(self.text_item(group_x, start, &group, &stretched, hyphen));
         }
 
         let range = match (clusters.first(), clusters.last()) {
@@ -1003,21 +1044,25 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// Глифы кластеров `group` (подряд в порядке показа, из одного куска).
+    /// Глифы кластеров `group` (подряд в порядке показа, из одного куска;
+    /// номера — от кластера `start`). `hyphen` — кластер, после которого
+    /// дорисовывается дефис мягкого переноса.
     fn text_item(
         &self,
         x: f32,
-        clusters: &[Cluster],
+        start: usize,
         group: &[usize],
         stretched: &[f32],
+        hyphen: Option<usize>,
     ) -> Option<LineItem> {
+        let clusters = &self.clusters[start..];
         let first = clusters.get(*group.first()?)?;
         let Kind::Text { run, .. } = first.kind else {
             return None;
         };
         let source = self.runs.get(run)?;
         let mut glyphs = Vec::new();
-        let start = group.iter().map(|&i| clusters[i].range.start).min()?;
+        let from = group.iter().map(|&i| clusters[i].range.start).min()?;
         let end = group.iter().map(|&i| clusters[i].range.end).max()?;
         for glyph in &source.glyphs {
             let owner = group
@@ -1027,6 +1072,11 @@ impl<'a> Builder<'a> {
             if owner.is_some() {
                 glyphs.push((owner, *glyph));
             }
+        }
+        if let Some(i) = hyphen.filter(|i| group.contains(i))
+            && let Some(glyph) = self.hyphens.get(&(start + i))
+        {
+            glyphs.push((Some(i), *glyph));
         }
         // Растяжку получает последний глиф кластера.
         for &i in group {
@@ -1040,7 +1090,7 @@ impl<'a> Builder<'a> {
             x,
             span: first.span,
             run: ShapedRun {
-                range: start..end,
+                range: from..end,
                 font: source.font.clone(),
                 size: source.size,
                 level: source.level,
@@ -1091,6 +1141,9 @@ impl<'a> Builder<'a> {
 
 /// Пробел, который может висеть в конце строки. Неразрывные пробелы
 /// ведут себя как буквы.
+/// Мягкий перенос: невидим, но строку можно перенести на нём с дефисом.
+const SOFT_HYPHEN: char = '\u{ad}';
+
 fn is_hanging_space(c: char) -> bool {
     c.is_whitespace()
         && !matches!(
@@ -1218,6 +1271,36 @@ mod tests {
         // Неразрывный пробел не даёт переноса.
         let p = lay_text("ab\u{a0}cd", &ParagraphFormat::new(MONO * 3.0 + 0.001));
         assert_eq!(line_texts(&p), ["ab\u{a0}", "cd"]);
+    }
+
+    #[test]
+    fn soft_hyphen_shows_only_at_line_end() {
+        let glyphs = |line: &Line| -> usize {
+            line.items
+                .iter()
+                .map(|item| match item {
+                    LineItem::Text(t) => t.run.glyphs.iter().filter(|g| g.x_advance > 0.0).count(),
+                    _ => 0,
+                })
+                .sum()
+        };
+        // Влезает: мягкий перенос не виден и не занимает места.
+        let p = lay_text("ab\u{ad}cd", &ParagraphFormat::new(MONO * 10.0));
+        assert_eq!(line_texts(&p), ["ab\u{ad}cd"]);
+        assert!(close(p.lines[0].width, MONO * 4.0), "{}", p.lines[0].width);
+        assert_eq!(glyphs(&p.lines[0]), 4);
+        // Не влезает: перенос на мягком переносе, в конце строки — дефис.
+        let p = lay_text("ab\u{ad}cdef", &ParagraphFormat::new(MONO * 4.0 + 0.001));
+        assert_eq!(line_texts(&p), ["ab\u{ad}", "cdef"]);
+        assert!(close(p.lines[0].width, MONO * 3.0), "{}", p.lines[0].width);
+        assert_eq!(glyphs(&p.lines[0]), 3);
+        // Дефис тоже должен влезть, иначе перенос — на прошлом пробеле.
+        let p = lay_text("ab cd\u{ad}ef", &ParagraphFormat::new(MONO * 5.0 + 0.001));
+        assert_eq!(line_texts(&p), ["ab ", "cd\u{ad}ef"]);
+        // Неразрывный дефис виден всегда и не даёт переноса.
+        let p = lay_text("ab\u{2011}cd", &ParagraphFormat::new(MONO * 4.0 + 0.001));
+        assert_eq!(line_texts(&p), ["ab\u{2011}c", "d"]);
+        assert_eq!(glyphs(&p.lines[0]), 4);
     }
 
     #[test]

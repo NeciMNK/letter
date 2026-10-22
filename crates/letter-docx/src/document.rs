@@ -405,6 +405,8 @@ fn read_run(r: &Element) -> Run {
                 }
                 "t" => RunContent::Text(child.text()),
                 "tab" if child.attrs.is_empty() => RunContent::Tab,
+                "noBreakHyphen" if child.attrs.is_empty() => RunContent::Text("\u{2011}".into()),
+                "softHyphen" if child.attrs.is_empty() => RunContent::Text("\u{ad}".into()),
                 "cr" if child.attrs.is_empty() => RunContent::Break(BreakKind::Line),
                 "drawing" => match crate::picture::read_picture(child) {
                     Some(picture) => RunContent::Picture(picture),
