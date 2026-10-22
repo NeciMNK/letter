@@ -400,6 +400,9 @@ fn run_props(props: &RunProps) -> String {
         (props.italic, "к"),
         (props.strike, "зачёркнутый"),
         (props.double_strike, "двойное зачёркивание"),
+        (props.caps, "все прописные"),
+        (props.small_caps, "малые прописные"),
+        (props.hidden, "скрытый"),
     ];
     for (value, name) in toggles {
         match value {
@@ -422,6 +425,15 @@ fn run_props(props: &RunProps) -> String {
     }
     if let Some(highlight) = props.highlight {
         parts.push(format!("выделение {highlight:?}"));
+    }
+    if let Some(spacing) = props.spacing {
+        parts.push(format!("интервал между буквами {}", spacing.0));
+    }
+    if let Some(scale) = props.scale {
+        parts.push(format!("масштаб {scale} %"));
+    }
+    if let Some(position) = props.position {
+        parts.push(format!("смещение {position}"));
     }
     if let Some(align) = props.vertical_align {
         parts.push(format!("{align:?}"));

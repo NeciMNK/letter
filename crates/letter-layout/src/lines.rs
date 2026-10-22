@@ -827,6 +827,8 @@ impl<'a> Builder<'a> {
                 size: source.size,
                 level: source.level,
                 glyphs: glyphs.into_iter().map(|(_, g)| g).collect(),
+                width_scale: source.width_scale,
+                hidden: source.hidden,
             },
         }))
     }
@@ -837,6 +839,7 @@ impl<'a> Builder<'a> {
         for cluster in &self.clusters[clusters] {
             if let Kind::Text { run, .. } = cluster.kind
                 && let Some(r) = self.runs.get(run)
+                && !r.hidden
                 && !fonts.iter().any(|(f, s)| f.id == r.font.id && *s == r.size)
             {
                 fonts.push((&r.font, r.size));

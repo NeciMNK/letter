@@ -107,6 +107,26 @@ pub struct RunProps {
     pub highlight: Option<Highlight>,
     /// Надстрочный или подстрочный знак.
     pub vertical_align: Option<VerticalAlign>,
+    /// «Все прописные» (`w:caps`): строчные показываются прописными.
+    pub caps: Option<bool>,
+    /// «Малые прописные» (`w:smallCaps`): строчные — уменьшенными
+    /// прописными.
+    pub small_caps: Option<bool>,
+    /// «Скрытый» текст (`w:vanish`).
+    pub hidden: Option<bool>,
+    /// Цвет подчёркивания (`w:u w:color`); `None` — цвет текста.
+    pub underline_color: Option<Color>,
+    /// Интервал между буквами (`w:spacing`): больше нуля — разреженный,
+    /// меньше — уплотнённый.
+    pub spacing: Option<crate::Twips>,
+    /// Масштаб по ширине, проценты (`w:w`, 1–600).
+    pub scale: Option<u16>,
+    /// Смещение вверх (вниз, если меньше нуля), полупункты
+    /// (`w:position`).
+    pub position: Option<i32>,
+    /// Кернинг для шрифтов от этого размера и больше (`w:kern`); ноль —
+    /// выключен.
+    pub kerning: Option<crate::HalfPoints>,
     /// Свойства, которые программа пока не понимает, в порядке из файла.
     pub unknown: Vec<RawXml>,
 }

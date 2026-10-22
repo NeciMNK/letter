@@ -871,7 +871,7 @@ impl Reader {
             theme_color: None,
             highlight: Some(highlight(self.color(chars.highlight), chars.highlight)),
             vertical_align: Some(chars.vertical_align),
-            unknown: Vec::new(),
+            ..RunProps::default()
         }
     }
 
@@ -1080,7 +1080,7 @@ impl Reader {
                 .map(|()| highlight(self.color(chars.highlight), chars.highlight)),
             vertical_align: some(chars.vertical_align != base.vertical_align)
                 .map(|()| chars.vertical_align),
-            unknown: Vec::new(),
+            ..RunProps::default()
         }
     }
 

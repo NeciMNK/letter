@@ -64,6 +64,9 @@ pub fn page_scene(
                     let Some(props) = line.spans.get(text.span) else {
                         continue;
                     };
+                    if text.run.hidden {
+                        continue;
+                    }
                     let x = line.x + text.x;
                     let width = text.run.width();
                     if let Some((r, g, b)) = props.highlight.rgb() {
@@ -139,6 +142,7 @@ fn push_glyphs(
                 subpixel,
                 bold: run.font.synthetic_bold,
                 italic: run.font.synthetic_italic,
+                width_percent: (run.width_scale * 100.0).round().clamp(1.0, 600.0) as u16,
             },
             x: whole as i32,
             y: y.round() as i32,
@@ -179,16 +183,21 @@ fn decorate(
         });
     // Линия не тоньше половины пиксельной точки при 100 %.
     let thin = |t: f32| (t * size).max(0.5);
-    let mut bar = |offset: f32, thickness: f32| {
+    let underline_color = match props.underline_color {
+        Some(Color::Rgb(r, g, b)) => [r, g, b, 255],
+        _ => color,
+    };
+    let mut bar = |offset: f32, thickness: f32, color: Rgba| {
         let y = line.baseline - offset - thickness / 2.0;
         out.push(rect(scale, x, y, width, thickness, color));
     };
+    let mut underline = |offset: f32, thickness: f32| bar(offset, thickness, underline_color);
     match props.underline {
         Underline::None => {}
         Underline::Double | Underline::WavyDouble => {
             let t = thin(underline_thickness);
-            bar(underline_at * size, t);
-            bar(underline_at * size - 2.0 * t, t);
+            underline(underline_at * size, t);
+            underline(underline_at * size - 2.0 * t, t);
         }
         Underline::Thick
         | Underline::DottedHeavy
@@ -196,17 +205,17 @@ fn decorate(
         | Underline::DashLongHeavy
         | Underline::DashDotHeavy
         | Underline::DashDotDotHeavy
-        | Underline::WavyHeavy => bar(underline_at * size, 2.0 * thin(underline_thickness)),
+        | Underline::WavyHeavy => underline(underline_at * size, 2.0 * thin(underline_thickness)),
         // Точки, штрихи и волны пока рисуются сплошной линией.
-        _ => bar(underline_at * size, thin(underline_thickness)),
+        _ => underline(underline_at * size, thin(underline_thickness)),
     }
     if props.strike {
-        bar(strike_at * size, thin(strike_thickness));
+        bar(strike_at * size, thin(strike_thickness), color);
     }
     if props.double_strike {
         let t = thin(strike_thickness);
-        bar(strike_at * size + t, t);
-        bar(strike_at * size - t, t);
+        bar(strike_at * size + t, t, color);
+        bar(strike_at * size - t, t, color);
     }
 }
 

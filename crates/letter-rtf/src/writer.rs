@@ -338,7 +338,7 @@ impl Writer {
                 theme_color: None,
                 highlight: Some(resolved.highlight),
                 vertical_align: Some(resolved.vertical_align),
-                unknown: Vec::new(),
+                ..RunProps::default()
             };
             out.push_str("{\\plain");
             if let Some(n) = explicit
