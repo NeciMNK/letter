@@ -45,6 +45,18 @@ pub enum Icon {
     ClearFormat,
     /// Стрелка вниз: открыть список.
     ChevronDown,
+    /// Уменьшить отступ.
+    IndentLess,
+    /// Увеличить отступ.
+    IndentMore,
+    /// Межстрочный интервал.
+    LineSpacing,
+    /// Показать знаки форматирования: «¶».
+    Pilcrow,
+    /// Знак табуляции: стрелка вправо.
+    TabMark,
+    /// Знак разрыва строки: стрелка вниз и влево.
+    LineBreakMark,
 }
 
 /// Шрифт со значками.
@@ -83,6 +95,12 @@ impl Icon {
             Icon::FontColor => ("baseline", '\u{E285}'),
             Icon::ClearFormat => ("remove-formatting", '\u{E3B3}'),
             Icon::ChevronDown => ("chevron-down", '\u{E06D}'),
+            Icon::IndentLess => ("list-indent-decrease", '\u{E107}'),
+            Icon::IndentMore => ("list-indent-increase", '\u{E108}'),
+            Icon::LineSpacing => ("line-height", '\u{E7B7}'),
+            Icon::Pilcrow => ("pilcrow", '\u{E3A3}'),
+            Icon::TabMark => ("move-right", '\u{E490}'),
+            Icon::LineBreakMark => ("corner-down-left", '\u{E0A1}'),
         }
     }
 }
@@ -252,7 +270,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 20] = [
+    const ALL: [Icon; 26] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -273,6 +291,12 @@ mod tests {
         Icon::FontColor,
         Icon::ClearFormat,
         Icon::ChevronDown,
+        Icon::IndentLess,
+        Icon::IndentMore,
+        Icon::LineSpacing,
+        Icon::Pilcrow,
+        Icon::TabMark,
+        Icon::LineBreakMark,
     ];
 
     #[test]

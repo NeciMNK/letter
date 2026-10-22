@@ -116,3 +116,44 @@ fn indexes_are_smaller_and_shifted() {
     assert!(sup < normal && sub < normal, "{glyphs:?}");
     assert!(sup_y < base && sub_y > base, "{glyphs:?}");
 }
+
+#[test]
+fn formatting_marks_follow_the_text() {
+    use letter_model::{Block, BreakKind, Document, Paragraph, Run, RunContent, RunProps};
+    use letter_render::{MarkKind, formatting_marks};
+    let library = FontLibrary::embedded_only();
+    let mut doc = Document::new();
+    let run = Run {
+        props: RunProps::default(),
+        content: vec![
+            RunContent::Text("a b".into()),
+            RunContent::Tab,
+            RunContent::Text("c".into()),
+            RunContent::Break(BreakKind::Line),
+            RunContent::Text("d".into()),
+        ],
+    };
+    doc.sections[0].blocks = vec![
+        Block::from(Paragraph::from_runs([run])),
+        Block::from(Paragraph::default()),
+    ];
+    let layout = layout_document(&doc, &mut Shaper::new(), &library);
+    let marks = formatting_marks(&layout.pages[0]);
+    let kinds: Vec<MarkKind> = marks.iter().map(|m| m.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            MarkKind::Space,
+            MarkKind::Tab,
+            MarkKind::LineBreak,
+            MarkKind::Paragraph,
+            MarkKind::Paragraph
+        ]
+    );
+    // Точка — между «a» и «b», «¶» — после «d», на второй строке.
+    assert!(marks[0].x < marks[1].x && marks[2].x > marks[1].x);
+    assert!(marks[3].baseline > marks[2].baseline);
+    assert!(marks[4].baseline > marks[3].baseline);
+    let margin = layout.pages[0].margins.left;
+    assert!((marks[4].x - margin).abs() < 0.5, "{:?}", marks[4]);
+}

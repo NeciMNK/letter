@@ -14,7 +14,7 @@ use crate::edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, split_paragraph,
     top_level,
 };
-use crate::format::{RunFormat, align_paragraphs, format_runs};
+use crate::format::{ParagraphFormat, RunFormat, align_paragraphs, format_paragraphs, format_runs};
 use crate::selection::Selection;
 
 /// Правка документа.
@@ -38,6 +38,8 @@ pub enum Command {
     Format(RunFormat),
     /// Выровнять абзацы выделенного (Ctrl+L, Ctrl+E, Ctrl+R, Ctrl+J).
     Align(Alignment),
+    /// Поменять отступы и интервалы абзацев выделенного.
+    Paragraph(ParagraphFormat),
 }
 
 /// Сколько шагов помнить.
@@ -137,7 +139,10 @@ impl History {
         // Какие абзацы правка может задеть: Backspace и Delete на краю
         // абзаца соединяют его с соседним.
         // Оформление меняет выделенное, а не заменяет его.
-        let formatting = matches!(command, Command::Format(_) | Command::Align(_));
+        let formatting = matches!(
+            command,
+            Command::Format(_) | Command::Align(_) | Command::Paragraph(_)
+        );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
             Command::DeleteBackward if !erasing => {
@@ -173,6 +178,10 @@ impl History {
                 align_paragraphs(doc, start, end, *alignment);
                 Some(selection)
             }
+            Command::Paragraph(format) => {
+                format_paragraphs(doc, start, end, *format);
+                Some(selection)
+            }
             _ => None,
         };
         let focus = match &command {
@@ -185,7 +194,7 @@ impl History {
             Command::DeleteForward => delete_forward(doc, at),
             Command::Paste(fragment) => insert_fragment(doc, at, fragment),
             Command::PasteText(text) => insert_plain_text(doc, at, text),
-            Command::Format(_) | Command::Align(_) => at,
+            Command::Format(_) | Command::Align(_) | Command::Paragraph(_) => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
 

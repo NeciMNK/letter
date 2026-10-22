@@ -30,10 +30,11 @@ use letter_editor::{
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
 use letter_model::{Alignment, Document};
-use letter_render::{DESK_COLOR, PagePainter, SCREEN_PIXELS_PER_POINT};
+use letter_render::{DESK_COLOR, MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, formatting_marks};
 
 use crate::clipboard::{Clipboard, SystemBuffer};
 use crate::files::{self, Autosave, OPEN_FILTERS, Recent, Recovered, SAVE_FILTERS};
+use crate::icons::{self, Icon};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
 use crate::ruler::{self, RULER_SIZE};
 use crate::view::{
@@ -257,6 +258,8 @@ pub struct Viewer {
     ribbon: Ribbon,
     /// Показывать линейки.
     show_ruler: bool,
+    /// Показывать знаки форматирования (¶).
+    show_marks: bool,
     /// Лист для линеек (с курсором) и где он на экране в прошлом кадре.
     ruler_page: Option<(usize, Rect)>,
     /// Шрифты для списка на ленте.
@@ -273,6 +276,53 @@ const WORD_FONTS: [&str; 6] = [
     "Courier New",
     "Times New Roman",
 ];
+
+/// Цвет знаков форматирования.
+const MARKS_COLOR: Color32 = Color32::from_rgb(0x50, 0x60, 0x80);
+
+/// Рисует знаки форматирования листа `page`, левый верхний угол
+/// которого на экране — `origin`; `scale` — точек экрана на пункт.
+/// Стрелки табуляции и разрыва строки — значки (в шрифте интерфейса
+/// таких букв нет), остальное — буквы.
+fn paint_marks(painter: &egui::Painter, page: &letter_layout::Page, origin: Pos2, scale: f32) {
+    for mark in formatting_marks(page) {
+        let size = (mark.size * scale).max(4.0);
+        let x = origin.x + mark.x * scale;
+        let baseline = origin.y + mark.baseline * scale;
+        let icon = match mark.kind {
+            MarkKind::Tab => Some(Icon::TabMark),
+            MarkKind::LineBreak => Some(Icon::LineBreakMark),
+            _ => None,
+        };
+        if let Some(icon) = icon {
+            let side = size * 0.6;
+            let left = if mark.kind == MarkKind::Tab {
+                x - side / 2.0
+            } else {
+                x
+            };
+            let square = Rect::from_min_size(Pos2::new(left, baseline - side), Vec2::splat(side));
+            icons::paint(painter, square, icon, MARKS_COLOR);
+            continue;
+        }
+        let galley = painter.layout_no_wrap(
+            mark.kind.symbol().to_string(),
+            egui::FontId::proportional(size),
+            MARKS_COLOR,
+        );
+        let Some(row) = galley.rows.first() else {
+            continue;
+        };
+        let row_baseline = row.pos.y + row.row.glyphs.first().map_or(0.0, |g| g.pos.y);
+        let shift = if mark.kind == MarkKind::Paragraph {
+            0.0
+        } else {
+            galley.size().x / 2.0
+        };
+        let at = Pos2::new(x - shift, baseline - row_baseline);
+        painter.galley(at, galley, MARKS_COLOR);
+    }
+}
 
 /// Список шрифтов для ленты: установленные и привычные шрифты Word.
 fn font_names(library: &FontLibrary) -> Arc<[String]> {
@@ -324,6 +374,7 @@ impl Viewer {
             clipboard: Clipboard::new(Box::new(SystemBuffer::default())),
             ribbon: Ribbon::default(),
             show_ruler: true,
+            show_marks: false,
             ruler_page: None,
         }
     }
@@ -683,6 +734,26 @@ impl Viewer {
         if self.document.is_none() || ctx.egui_wants_keyboard_input() {
             return;
         }
+        // Ctrl+Shift+8 (Ctrl+*): знаки форматирования.
+        // С Shift клавиша 8 — это «*», поэтому смотрим и на саму клавишу.
+        let marks = ctx.input_mut(|i| {
+            let before = i.events.len();
+            i.events.retain(|event| {
+                !matches!(event, egui::Event::Key {
+                    key,
+                    physical_key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.command
+                    && modifiers.shift
+                    && (*key == Key::Num8 || *physical_key == Some(Key::Num8)))
+            });
+            i.events.len() != before
+        });
+        if marks {
+            self.show_marks = !self.show_marks;
+        }
         let actions = ctx.input_mut(|i| {
             let mut actions = Vec::new();
             i.events.retain(|event| match key_action(event, screen) {
@@ -809,6 +880,7 @@ impl Viewer {
             recent: self.recent.items().to_vec(),
             page_width: self.zoom == Zoom::PageWidth,
             ruler: self.show_ruler,
+            marks: self.show_marks,
             fonts: self.font_names.clone(),
             ..RibbonInfo::default()
         };
@@ -827,6 +899,9 @@ impl Viewer {
                 info.font = run.fonts.ascii;
                 info.size = run.size.0;
                 info.alignment = Some(paragraph.alignment);
+                info.line_spacing = Some(paragraph.line_spacing);
+                info.space_before = paragraph.space_before.0;
+                info.space_after = paragraph.space_after.0;
             }
         }
         info
@@ -867,6 +942,10 @@ impl Viewer {
                 RibbonCommand::ZoomReset => self.set_zoom(Zoom::Fixed(1.0), None),
                 RibbonCommand::PageWidth => self.set_zoom(Zoom::PageWidth, None),
                 RibbonCommand::ToggleRuler => self.show_ruler = !self.show_ruler,
+                RibbonCommand::ToggleMarks => self.show_marks = !self.show_marks,
+                RibbonCommand::Paragraph(format) => {
+                    actions.push(Action::Edit(Command::Paragraph(format)));
+                }
             }
         }
         self.apply_actions(ctx, actions);
@@ -990,6 +1069,7 @@ impl Viewer {
             library,
             painter,
             document,
+            show_marks,
             ..
         } = self;
         let Some(document) = document else {
@@ -1085,6 +1165,9 @@ impl Viewer {
             for (i, page) in pages.iter().enumerate() {
                 if placement.rects[i].intersects(visible) {
                     painter.paint_page(ui.painter(), library, page, screen_rect(i));
+                    if *show_marks {
+                        paint_marks(ui.painter(), page, screen_rect(i).min, 1.0 / points);
+                    }
                 }
             }
 
@@ -1399,6 +1482,57 @@ fn nearest_page(rects: &[Rect], point: Pos2) -> Option<usize> {
 mod tests {
     use super::*;
     use eframe::egui::{Event, MouseWheelUnit, Pos2, RawInput, Rect, vec2};
+    use letter_editor::ParagraphFormat;
+
+    #[test]
+    fn interface_font_has_the_mark_symbols() {
+        let mut h = egui_kittest::Harness::new_ui(|_| {});
+        h.run();
+        let font = egui::FontId::proportional(12.0);
+        for kind in [
+            MarkKind::Space,
+            MarkKind::NonBreakingSpace,
+            MarkKind::Paragraph,
+        ] {
+            let c = kind.symbol();
+            assert!(h.ctx.fonts_mut(|f| f.has_glyph(&font, c)), "{c}");
+        }
+    }
+
+    #[test]
+    fn marks_and_paragraph_commands() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.new_document();
+        frame(&ctx, &mut viewer, screen());
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(
+                Key::Num8,
+                Modifiers::COMMAND | Modifiers::SHIFT,
+            )]),
+        );
+        assert!(viewer.ribbon_info().marks);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ToggleMarks]);
+        assert!(!viewer.ribbon_info().marks);
+        viewer.run_ribbon(
+            &ctx,
+            vec![
+                RibbonCommand::Paragraph(ParagraphFormat::IndentMore),
+                RibbonCommand::Paragraph(ParagraphFormat::LineSpacing(
+                    letter_model::LineSpacing::DOUBLE,
+                )),
+                RibbonCommand::Paragraph(ParagraphFormat::SpaceBefore(letter_model::Twips(240))),
+            ],
+        );
+        let info = viewer.ribbon_info();
+        assert_eq!(info.line_spacing, Some(letter_model::LineSpacing::DOUBLE));
+        assert_eq!(info.space_before, 240);
+        let document = viewer.document.as_mut().unwrap();
+        let first = letter_editor::paragraph_mut(&mut document.doc, 0).unwrap();
+        assert!(first.props.indentation.left.is_some_and(|l| l.0 > 0));
+    }
 
     fn fixture(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
