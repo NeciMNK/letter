@@ -1,6 +1,7 @@
 //! Поля для чисел с единицами, как в окнах Word: «1,25 см», «6 пт».
 //! Внутри значения в твипах (1/20 пункта), на экране — с запятой.
 
+use crate::i18n::tr_args;
 use eframe::egui::{DragValue, Id, Response, Ui};
 
 /// Размер поля с числом.
@@ -40,7 +41,9 @@ pub fn cm_field(ui: &mut Ui, label: Id, twips: &mut i32, min_cm: f64, max_cm: f6
             DragValue::new(&mut cm)
                 .speed(0.05)
                 .range(min_cm..=max_cm)
-                .custom_formatter(|v, _| format!("{} см", format_number(v, 2)))
+                .custom_formatter(|v, _| {
+                    tr_args("unit-cm", &[("value", format_number(v, 2).into())])
+                })
                 .custom_parser(parse_number),
         )
         .labelled_by(label);
@@ -66,7 +69,9 @@ pub fn pt_field(
             DragValue::new(&mut pt)
                 .speed(speed)
                 .range(min_pt..=max_pt)
-                .custom_formatter(|v, _| format!("{} пт", format_number(v, 1)))
+                .custom_formatter(|v, _| {
+                    tr_args("unit-pt", &[("value", format_number(v, 1).into())])
+                })
                 .custom_parser(parse_number),
         )
         .labelled_by(label);

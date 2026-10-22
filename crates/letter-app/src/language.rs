@@ -1,51 +1,8 @@
 //! Названия языков для строки состояния: код из документа (`ru-RU`,
-//! `en-US`) → «русский», «английский (США)».
+//! `en-US`) → «русский», «английский (США)». Сами названия — в файлах
+//! перевода (`lang-…`, `region-…`).
 
-/// Языки по первой части кода.
-const LANGUAGES: [(&str, &str); 24] = [
-    ("ru", "русский"),
-    ("en", "английский"),
-    ("uk", "украинский"),
-    ("be", "белорусский"),
-    ("kk", "казахский"),
-    ("de", "немецкий"),
-    ("fr", "французский"),
-    ("es", "испанский"),
-    ("it", "итальянский"),
-    ("pt", "португальский"),
-    ("nl", "нидерландский"),
-    ("pl", "польский"),
-    ("cs", "чешский"),
-    ("sk", "словацкий"),
-    ("bg", "болгарский"),
-    ("sr", "сербский"),
-    ("tr", "турецкий"),
-    ("el", "греческий"),
-    ("he", "иврит"),
-    ("ar", "арабский"),
-    ("zh", "китайский"),
-    ("ja", "японский"),
-    ("ko", "корейский"),
-    ("fi", "финский"),
-];
-
-/// Страны по второй части кода, если у языка их несколько.
-const REGIONS: [(&str, &str); 14] = [
-    ("US", "США"),
-    ("GB", "Великобритания"),
-    ("AU", "Австралия"),
-    ("CA", "Канада"),
-    ("DE", "Германия"),
-    ("AT", "Австрия"),
-    ("CH", "Швейцария"),
-    ("FR", "Франция"),
-    ("BE", "Бельгия"),
-    ("ES", "Испания"),
-    ("MX", "Мексика"),
-    ("PT", "Португалия"),
-    ("BR", "Бразилия"),
-    ("CN", "КНР"),
-];
+use crate::i18n::{has, tr, tr_args};
 
 /// Языки, у которых страну не пишут (одна основная).
 const SINGLE: [&str; 6] = ["ru", "uk", "be", "kk", "pl", "ja"];
@@ -55,22 +12,27 @@ const SINGLE: [&str; 6] = ["ru", "uk", "be", "kk", "pl", "ja"];
 pub fn display_name(code: &str) -> String {
     let (language, region) = code.split_once(['-', '_']).unwrap_or((code, ""));
     let lower = language.to_ascii_lowercase();
-    let Some((_, name)) = LANGUAGES.iter().find(|(l, _)| *l == lower) else {
+    let id = format!("lang-{lower}");
+    if lower.is_empty() || !has(&id) {
         return code.to_owned();
-    };
+    }
+    let name = tr(&id);
     if region.is_empty() || SINGLE.contains(&lower.as_str()) {
-        return (*name).to_owned();
+        return name.to_owned();
     }
     let upper = region.to_ascii_uppercase();
-    match REGIONS.iter().find(|(r, _)| *r == upper) {
-        Some((_, country)) => format!("{name} ({country})"),
-        None => format!("{name} ({region})"),
-    }
+    let id = format!("region-{upper}");
+    let country = if has(&id) { tr(&id) } else { region };
+    tr_args(
+        "language-with-region",
+        &[("language", name.into()), ("region", country.into())],
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::{Language, set_language};
 
     #[test]
     fn names() {
@@ -81,5 +43,10 @@ mod tests {
         assert_eq!(display_name("fr-CI"), "французский (CI)");
         assert_eq!(display_name("x-none"), "x-none");
         assert_eq!(display_name(""), "");
+        assert_eq!(display_name("-US"), "-US");
+        set_language(Language::English);
+        assert_eq!(display_name("en-US"), "English (United States)");
+        assert_eq!(display_name("ru-RU"), "Russian");
+        set_language(Language::Russian);
     }
 }

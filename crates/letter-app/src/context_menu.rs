@@ -1,6 +1,7 @@
 //! Меню по правой кнопке мыши над текстом: вырезать, копировать,
 //! параметры вставки, шрифт, абзац — как в Word.
 
+use crate::i18n::tr;
 use eframe::egui::{Ui, vec2};
 
 use crate::clipboard::PasteMode;
@@ -9,21 +10,9 @@ use crate::ribbon::RibbonCommand;
 
 /// Параметры вставки: значок, название, способ.
 const PASTE_OPTIONS: [(Icon, &str, PasteMode); 3] = [
-    (
-        Icon::PasteKeep,
-        "Сохранить исходное форматирование",
-        PasteMode::KeepSource,
-    ),
-    (
-        Icon::PasteMerge,
-        "Объединить форматирование",
-        PasteMode::Merge,
-    ),
-    (
-        Icon::PasteText,
-        "Сохранить только текст",
-        PasteMode::TextOnly,
-    ),
+    (Icon::PasteKeep, "paste-keep", PasteMode::KeepSource),
+    (Icon::PasteMerge, "paste-merge", PasteMode::Merge),
+    (Icon::PasteText, "paste-text", PasteMode::TextOnly),
 ];
 
 /// Содержимое меню. `has_selection` — что-то выделено (иначе вырезать
@@ -36,17 +25,18 @@ pub fn context_menu(ui: &mut Ui, has_selection: bool, out: &mut Vec<RibbonComman
             ui.close();
         }
     };
-    item(ui, Icon::Cut, "Вырезать", has_selection, RibbonCommand::Cut);
+    item(ui, Icon::Cut, tr("cut"), has_selection, RibbonCommand::Cut);
     item(
         ui,
         Icon::Copy,
-        "Копировать",
+        tr("copy"),
         has_selection,
         RibbonCommand::Copy,
     );
-    ui.label("Параметры вставки:");
+    ui.label(tr("paste-options"));
     ui.horizontal(|ui| {
         for (icon, name, mode) in PASTE_OPTIONS {
+            let name = tr(name);
             if icon_button(ui, icon, name, vec2(28.0, 28.0), true, false)
                 .on_hover_text(name)
                 .clicked()
@@ -57,11 +47,11 @@ pub fn context_menu(ui: &mut Ui, has_selection: bool, out: &mut Vec<RibbonComman
         }
     });
     ui.separator();
-    if ui.button("Шрифт…").clicked() {
+    if ui.button(tr("font-dialog-menu")).clicked() {
         out.push(RibbonCommand::FontDialog);
         ui.close();
     }
-    if ui.button("Абзац…").clicked() {
+    if ui.button(tr("paragraph-dialog-menu")).clicked() {
         out.push(RibbonCommand::ParagraphDialog);
         ui.close();
     }

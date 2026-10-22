@@ -5,6 +5,7 @@
 //!
 //! Вкладка «Главная» — в [`crate::home`].
 
+use crate::i18n::tr;
 use crate::theme::Palette;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -56,12 +57,12 @@ impl Tab {
     /// Название на вкладке.
     pub fn title(self) -> &'static str {
         match self {
-            Tab::Home => "Главная",
-            Tab::Insert => "Вставка",
-            Tab::Layout => "Макет",
-            Tab::References => "Ссылки",
-            Tab::Review => "Рецензирование",
-            Tab::View => "Вид",
+            Tab::Home => tr("tab-home"),
+            Tab::Insert => tr("tab-insert"),
+            Tab::Layout => tr("tab-layout"),
+            Tab::References => tr("tab-references"),
+            Tab::Review => tr("tab-review"),
+            Tab::View => tr("tab-view"),
         }
     }
 }
@@ -215,10 +216,7 @@ impl Ribbon {
                         Tab::Home => home(ui, &mut self.home, info, &mut out),
                         Tab::View => view(ui, info, &mut out),
                         _ => {
-                            ui.label(
-                                RichText::new("Команды этой вкладки появятся позже.")
-                                    .color(Color32::GRAY),
-                            );
+                            ui.label(RichText::new(tr("tab-coming-soon")).color(Color32::GRAY));
                         }
                     });
                 });
@@ -229,15 +227,11 @@ impl Ribbon {
     /// Меню «Файл» и вкладки.
     fn tabs(&mut self, ui: &mut Ui, out: &mut Vec<RibbonCommand>) {
         ui.horizontal(|ui| {
-            let file = egui::Button::new(RichText::new("Файл").color(Color32::WHITE))
+            let file = egui::Button::new(RichText::new(tr("tab-file")).color(Color32::WHITE))
                 .fill(ACCENT)
                 .corner_radius(CornerRadius::same(2))
                 .min_size(vec2(52.0, 0.0));
-            if ui
-                .add(file)
-                .on_hover_text("Создать, открыть, сохранить, параметры")
-                .clicked()
-            {
+            if ui.add(file).on_hover_text(tr("tab-file-hint")).clicked() {
                 out.push(RibbonCommand::Backstage);
             }
             for tab in Tab::ALL {
@@ -271,22 +265,22 @@ fn quick_access(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
         for (icon, name, tip, enabled, command) in [
             (
                 Icon::Save,
-                "Сохранить",
-                "Сохранить (Ctrl+S)",
+                tr("save"),
+                tr("save-hint"),
                 info.has_document,
                 RibbonCommand::Save,
             ),
             (
                 Icon::Undo,
-                "Отменить",
-                "Отменить (Ctrl+Z)",
+                tr("undo"),
+                tr("undo-hint"),
                 info.can_undo,
                 RibbonCommand::Undo,
             ),
             (
                 Icon::Redo,
-                "Повторить",
-                "Повторить (Ctrl+Y)",
+                tr("redo"),
+                tr("redo-hint"),
                 info.can_redo,
                 RibbonCommand::Redo,
             ),
@@ -318,6 +312,14 @@ pub(crate) fn group_with_launcher(
 ) -> bool {
     let mut clicked = false;
     ui.vertical(|ui| {
+        // Группа не уже своей подписи (в английском подписи длиннее).
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        let caption_width = ui
+            .painter()
+            .layout_no_wrap(caption.to_owned(), font, Color32::PLACEHOLDER)
+            .size()
+            .x;
+        ui.set_min_width(caption_width + 4.0);
         let top = ui.cursor().top();
         ui.scope(content);
         let width = ui.min_rect().width();
@@ -365,18 +367,18 @@ pub(crate) fn group_with_launcher(
 
 /// Вкладка «Вид».
 fn view(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
-    group(ui, "Показать", |ui| {
+    group(ui, tr("group-show"), |ui| {
         let mut ruler = info.ruler;
-        if ui.checkbox(&mut ruler, "Линейка").changed() {
+        if ui.checkbox(&mut ruler, tr("ruler")).changed() {
             out.push(RibbonCommand::ToggleRuler);
         }
     });
-    group(ui, "Масштаб", |ui| {
+    group(ui, tr("zoom"), |ui| {
         ui.horizontal(|ui| {
-            if ui.button("Увеличить").on_hover_text("Ctrl+=").clicked() {
+            if ui.button(tr("zoom-in")).on_hover_text("Ctrl+=").clicked() {
                 out.push(RibbonCommand::ZoomIn);
             }
-            if ui.button("Уменьшить").on_hover_text("Ctrl+-").clicked() {
+            if ui.button(tr("zoom-out")).on_hover_text("Ctrl+-").clicked() {
                 out.push(RibbonCommand::ZoomOut);
             }
         });
@@ -387,7 +389,7 @@ fn view(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
             if ui
                 .add(egui::Button::selectable(
                     info.page_width,
-                    "По ширине страницы",
+                    tr("zoom-page-width"),
                 ))
                 .clicked()
             {
@@ -573,6 +575,18 @@ mod tests {
         h.run();
         assert!(!h.state().ribbon.collapsed);
         assert!(h.query_by_label("Ж").is_some());
+    }
+
+    #[test]
+    fn english_labels() {
+        crate::i18n::set_language(crate::i18n::Language::English);
+        let mut h = harness(document());
+        h.get_by_label("File").click();
+        h.run();
+        h.get_by_label("Home");
+        h.get_by_label("Clipboard");
+        assert_eq!(h.state().out, vec![RibbonCommand::Backstage]);
+        crate::i18n::set_language(crate::i18n::Language::Russian);
     }
 
     #[test]

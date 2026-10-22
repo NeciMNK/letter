@@ -2,6 +2,7 @@
 //! на «Главной»). Окно только собирает запрос; ищет и меняет документ
 //! просмотрщик.
 
+use crate::i18n::tr;
 use eframe::egui::{self, Context, Key, TextEdit};
 use letter_editor::SearchOptions;
 
@@ -51,22 +52,22 @@ impl FindDialog {
         }
         let mut action = None;
         let mut open = true;
-        egui::Window::new("Найти и заменить")
+        egui::Window::new(tr("find-replace-title"))
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
             .default_pos(ctx.content_rect().right_top() + egui::vec2(-420.0, 140.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.replace, false, "Найти");
-                    ui.selectable_value(&mut self.replace, true, "Заменить");
+                    ui.selectable_value(&mut self.replace, false, tr("find"));
+                    ui.selectable_value(&mut self.replace, true, tr("replace"));
                 });
                 ui.separator();
                 egui::Grid::new("find-fields")
                     .num_columns(2)
                     .spacing(egui::vec2(8.0, 6.0))
                     .show(ui, |ui| {
-                        let label = ui.label("Найти:");
+                        let label = ui.label(tr("find-what"));
                         let query = ui
                             .add(
                                 TextEdit::singleline(&mut self.query)
@@ -83,7 +84,7 @@ impl FindDialog {
                         }
                         ui.end_row();
                         if self.replace {
-                            let label = ui.label("Заменить на:");
+                            let label = ui.label(tr("replace-with"));
                             ui.add(
                                 TextEdit::singleline(&mut self.replacement)
                                     .desired_width(240.0)
@@ -93,8 +94,8 @@ impl FindDialog {
                             ui.end_row();
                         }
                     });
-                ui.checkbox(&mut self.options.match_case, "Учитывать регистр");
-                ui.checkbox(&mut self.options.whole_word, "Только слово целиком");
+                ui.checkbox(&mut self.options.match_case, tr("find-match-case"));
+                ui.checkbox(&mut self.options.whole_word, tr("find-whole-words"));
                 if let Some(message) = &self.message {
                     ui.label(message);
                 }
@@ -103,20 +104,20 @@ impl FindDialog {
                     let ready = !self.query.is_empty();
                     if self.replace {
                         if ui
-                            .add_enabled(ready, egui::Button::new("Заменить"))
+                            .add_enabled(ready, egui::Button::new(tr("replace")))
                             .clicked()
                         {
                             action = Some(FindAction::Replace);
                         }
                         if ui
-                            .add_enabled(ready, egui::Button::new("Заменить все"))
+                            .add_enabled(ready, egui::Button::new(tr("replace-all")))
                             .clicked()
                         {
                             action = Some(FindAction::ReplaceAll);
                         }
                     }
                     if ui
-                        .add_enabled(ready, egui::Button::new("Найти далее"))
+                        .add_enabled(ready, egui::Button::new(tr("find-next")))
                         .clicked()
                     {
                         action = Some(FindAction::Next);

@@ -3,6 +3,7 @@
 //! или клавишей Esc. Как и лента, само ничего не делает — возвращает
 //! команды ([`RibbonCommand`]).
 
+use crate::i18n::{Language, tr};
 use std::path::PathBuf;
 
 use eframe::egui::{self, Align, Color32, Key, Layout, RichText, Ui, vec2};
@@ -84,20 +85,12 @@ pub struct Backstage {
 /// Форматы для «Экспорт → Изменить тип файла»: расширение, название
 /// и пояснение.
 pub const EXPORT_FORMATS: [(&str, &str, &str); 6] = [
-    ("docx", "Документ Word", "Основной формат Word (.docx)"),
-    (
-        "rtf",
-        "Текст в формате RTF",
-        "Читается почти любым редактором",
-    ),
-    (
-        "odt",
-        "Текст OpenDocument",
-        "Формат LibreOffice и OpenOffice",
-    ),
-    ("txt", "Обычный текст", "Только текст, без оформления"),
-    ("html", "Веб-страница", "Открывается в браузере"),
-    ("md", "Markdown", "Простая разметка текста"),
+    ("docx", "format-docx", "format-docx-about"),
+    ("rtf", "format-rtf", "format-rtf-about"),
+    ("odt", "format-odt", "format-odt-about"),
+    ("txt", "format-txt", "format-txt-about"),
+    ("html", "format-html", "format-html-about"),
+    ("md", "format-md", "format-md-about"),
 ];
 
 /// Дата из свойств документа (`2024-05-01T10:30:00Z`) так, как её
@@ -145,7 +138,7 @@ impl Backstage {
                 let back = egui::Button::new(icons::text(ui, Icon::Back, 22.0))
                     .frame(false)
                     .min_size(vec2(36.0, 36.0));
-                if ui.add(back).on_hover_text("Назад (Esc)").clicked() {
+                if ui.add(back).on_hover_text(tr("backstage-back")).clicked() {
                     self.open = false;
                 }
                 ui.add_space(8.0);
@@ -157,9 +150,9 @@ impl Backstage {
                         self.page = page;
                     }
                 };
-                item(ui, Page::Info, "Сведения", has_document);
-                item(ui, Page::New, "Создать", true);
-                item(ui, Page::Open, "Открыть", true);
+                item(ui, Page::Info, tr("backstage-info"), has_document);
+                item(ui, Page::New, tr("backstage-new"), true);
+                item(ui, Page::Open, tr("backstage-open"), true);
                 ui.separator();
                 let mut action =
                     |ui: &mut Ui, text: &str, enabled: bool, command: RibbonCommand| {
@@ -170,14 +163,14 @@ impl Backstage {
                             out.push(command);
                         }
                     };
-                action(ui, "Сохранить", has_document, RibbonCommand::Save);
-                action(ui, "Сохранить как", has_document, RibbonCommand::SaveAs);
-                item(ui, Page::Print, "Печать", has_document);
-                item(ui, Page::Export, "Экспорт", has_document);
-                action(ui, "Закрыть", has_document, RibbonCommand::CloseDocument);
+                action(ui, tr("save"), has_document, RibbonCommand::Save);
+                action(ui, tr("save-as"), has_document, RibbonCommand::SaveAs);
+                item(ui, Page::Print, tr("backstage-print"), has_document);
+                item(ui, Page::Export, tr("backstage-export"), has_document);
+                action(ui, tr("close"), has_document, RibbonCommand::CloseDocument);
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                    action(ui, "Выход", true, RibbonCommand::Exit);
-                    item(ui, Page::Options, "Параметры", true);
+                    action(ui, tr("backstage-exit"), true, RibbonCommand::Exit);
+                    item(ui, Page::Options, tr("backstage-options"), true);
                 });
             });
         egui::CentralPanel::default()
@@ -223,38 +216,41 @@ fn heading(ui: &mut Ui, text: &str) {
 
 /// «Сведения»: имя, путь, свойства и статистика.
 fn info_page(ui: &mut Ui, info: &BackstageInfo) {
-    heading(ui, "Сведения");
+    heading(ui, tr("backstage-info"));
     let Some(document) = &info.document else {
         return;
     };
     ui.label(RichText::new(&document.name).size(18.0).strong());
     match &document.path {
         Some(path) => ui.label(path.display().to_string()),
-        None => ui.label("Документ ещё не сохранён"),
+        None => ui.label(tr("backstage-not-saved")),
     };
     if document.modified {
         ui.label(
-            RichText::new("Есть несохранённые изменения").color(Color32::from_rgb(160, 60, 0)),
+            RichText::new(tr("backstage-unsaved-changes")).color(Color32::from_rgb(160, 60, 0)),
         );
     }
     ui.add_space(16.0);
-    ui.label(RichText::new("Свойства").size(16.0));
+    ui.label(RichText::new(tr("backstage-properties")).size(16.0));
     let unknown = |v: &Option<String>| v.clone().unwrap_or_else(|| "—".to_owned());
     let date = |v: &Option<String>| v.as_deref().map_or_else(|| "—".to_owned(), show_date);
     let rows = [
-        ("Страниц", document.pages.to_string()),
-        ("Слов", document.words.to_string()),
-        ("Знаков (без пробелов)", document.characters.to_string()),
+        (tr("stats-pages"), document.pages.to_string()),
+        (tr("stats-words"), document.words.to_string()),
+        (tr("stats-characters"), document.characters.to_string()),
         (
-            "Знаков (с пробелами)",
+            tr("stats-characters-spaces"),
             document.characters_with_spaces.to_string(),
         ),
-        ("Абзацев", document.paragraphs.to_string()),
-        ("Название", unknown(&document.title)),
-        ("Автор", unknown(&document.author)),
-        ("Кем изменён", unknown(&document.last_modified_by)),
-        ("Создан", date(&document.created)),
-        ("Изменён", date(&document.changed)),
+        (tr("stats-paragraphs"), document.paragraphs.to_string()),
+        (tr("backstage-title"), unknown(&document.title)),
+        (tr("backstage-author"), unknown(&document.author)),
+        (
+            tr("backstage-last-modified-by"),
+            unknown(&document.last_modified_by),
+        ),
+        (tr("backstage-created"), date(&document.created)),
+        (tr("backstage-modified"), date(&document.changed)),
     ];
     egui::Grid::new("document-info")
         .num_columns(2)
@@ -270,34 +266,30 @@ fn info_page(ui: &mut Ui, info: &BackstageInfo) {
 
 /// «Создать»: новый пустой документ.
 fn new_page(ui: &mut Ui, out: &mut Vec<RibbonCommand>) {
-    heading(ui, "Создать");
-    let tile = egui::Button::new(RichText::new("Новый документ").size(15.0))
+    heading(ui, tr("backstage-new"));
+    let tile = egui::Button::new(RichText::new(tr("new-document")).size(15.0))
         .min_size(vec2(160.0, 200.0))
         .fill(Palette::of(ui.ctx()).card)
         .stroke(egui::Stroke::new(1.0, Palette::of(ui.ctx()).border));
-    if ui
-        .add(tile)
-        .on_hover_text("Пустой документ (Ctrl+N)")
-        .clicked()
-    {
+    if ui.add(tile).on_hover_text(tr("backstage-blank")).clicked() {
         out.push(RibbonCommand::New);
     }
 }
 
 /// «Открыть»: «Обзор» и последние файлы.
 fn open_page(ui: &mut Ui, info: &BackstageInfo, out: &mut Vec<RibbonCommand>) {
-    heading(ui, "Открыть");
+    heading(ui, tr("backstage-open"));
     if ui
-        .button(RichText::new("Обзор…").size(15.0))
-        .on_hover_text("Выбрать файл (Ctrl+O)")
+        .button(RichText::new(tr("backstage-browse")).size(15.0))
+        .on_hover_text(tr("backstage-browse-hint"))
         .clicked()
     {
         out.push(RibbonCommand::Open);
     }
     ui.add_space(16.0);
-    ui.label(RichText::new("Последние").size(16.0));
+    ui.label(RichText::new(tr("backstage-recent")).size(16.0));
     if info.recent.is_empty() {
-        ui.label(RichText::new("Здесь появятся открытые недавно файлы.").color(Color32::GRAY));
+        ui.label(RichText::new(tr("backstage-recent-empty")).color(Color32::GRAY));
     }
     for path in &info.recent {
         let name = path.file_name().map_or_else(
@@ -324,51 +316,63 @@ fn open_page(ui: &mut Ui, info: &BackstageInfo, out: &mut Vec<RibbonCommand>) {
 
 /// «Печать». Сама печать — задача фазы 6.
 fn print_page(ui: &mut Ui) {
-    heading(ui, "Печать");
-    ui.label("Печать и предварительный просмотр появятся в одной из следующих версий.");
-    ui.label("Пока можно сохранить документ и напечатать его из другой программы.");
+    heading(ui, tr("backstage-print"));
+    ui.label(tr("backstage-print-soon"));
+    ui.label(tr("backstage-print-workaround"));
 }
 
 /// «Экспорт → Изменить тип файла».
 fn export_page(ui: &mut Ui, out: &mut Vec<RibbonCommand>) {
-    heading(ui, "Экспорт");
-    ui.label(RichText::new("Изменить тип файла").size(16.0));
+    heading(ui, tr("backstage-export"));
+    ui.label(RichText::new(tr("backstage-change-type")).size(16.0));
     ui.add_space(6.0);
     for (extension, name, hint) in EXPORT_FORMATS {
-        let text = format!("{name} (*.{extension})\n{hint}");
+        let text = format!("{} (*.{extension})\n{}", tr(name), tr(hint));
         let button = egui::Button::new(text).min_size(vec2(360.0, 0.0));
         if ui.add(button).clicked() {
             out.push(RibbonCommand::SaveAsFormat(extension));
         }
     }
     ui.add_space(6.0);
-    ui.label(RichText::new("Сохранение в PDF появится вместе с печатью.").color(Color32::GRAY));
+    ui.label(RichText::new(tr("backstage-pdf-soon")).color(Color32::GRAY));
 }
 
 /// «Параметры».
 fn options_page(ui: &mut Ui, settings: Settings, out: &mut Vec<RibbonCommand>) {
-    heading(ui, "Параметры");
+    heading(ui, tr("backstage-options"));
     let mut changed = settings;
-    ui.label(RichText::new("Сохранение").size(16.0));
+    ui.label(RichText::new(tr("options-save")).size(16.0));
     ui.horizontal(|ui| {
-        ui.label("Автосохранение каждые");
+        ui.label(tr("options-autosave"));
         ui.add(
             egui::DragValue::new(&mut changed.autosave_minutes)
                 .range(AUTOSAVE_RANGE)
                 .speed(0.2),
         );
-        ui.label("мин");
+        ui.label(tr("options-minutes"));
     });
     ui.add_space(12.0);
-    ui.label(RichText::new("Вид").size(16.0));
-    ui.checkbox(&mut changed.show_ruler, "Показывать линейку при запуске");
+    ui.label(RichText::new(tr("options-view")).size(16.0));
+    ui.checkbox(&mut changed.show_ruler, tr("options-show-ruler"));
     ui.horizontal(|ui| {
-        let label = ui.label("Тема оформления:");
+        let label = ui.label(tr("options-theme"));
         egui::ComboBox::from_id_salt("theme")
             .selected_text(changed.theme.name())
             .show_ui(ui, |ui| {
                 for theme in ThemeChoice::ALL {
                     ui.selectable_value(&mut changed.theme, theme, theme.name());
+                }
+            })
+            .response
+            .labelled_by(label.id);
+    });
+    ui.horizontal(|ui| {
+        let label = ui.label(tr("options-language"));
+        egui::ComboBox::from_id_salt("language")
+            .selected_text(changed.language.name())
+            .show_ui(ui, |ui| {
+                for language in Language::ALL {
+                    ui.selectable_value(&mut changed.language, language, language.name());
                 }
             })
             .response

@@ -6,6 +6,7 @@
 //! Support/letter`, Linux — `$XDG_CONFIG_HOME/letter` (или
 //! `~/.config/letter`).
 
+use crate::i18n::tr;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -42,27 +43,27 @@ impl FileFormat {
 /// Фильтры окна «Открыть»: название и расширения.
 pub const OPEN_FILTERS: &[(&str, &[&str])] = &[
     (
-        "Все документы",
+        "filter-all-documents",
         &[
             "docx", "docm", "dotx", "dotm", "rtf", "odt", "fodt", "txt", "html", "htm", "md",
         ],
     ),
-    ("Документ Word (*.docx)", &["docx", "docm", "dotx", "dotm"]),
-    ("Текст в формате RTF (*.rtf)", &["rtf"]),
-    ("Текст OpenDocument (*.odt)", &["odt", "fodt"]),
-    ("Обычный текст (*.txt)", &["txt"]),
-    ("Веб-страница (*.html)", &["html", "htm"]),
-    ("Markdown (*.md)", &["md"]),
+    ("filter-docx", &["docx", "docm", "dotx", "dotm"]),
+    ("filter-rtf", &["rtf"]),
+    ("filter-odt", &["odt", "fodt"]),
+    ("filter-txt", &["txt"]),
+    ("filter-html", &["html", "htm"]),
+    ("filter-md", &["md"]),
 ];
 
 /// Фильтры окна «Сохранить как». Первый — формат по умолчанию.
 pub const SAVE_FILTERS: &[(&str, &[&str])] = &[
-    ("Документ Word (*.docx)", &["docx"]),
-    ("Текст в формате RTF (*.rtf)", &["rtf"]),
-    ("Текст OpenDocument (*.odt)", &["odt"]),
-    ("Обычный текст (*.txt)", &["txt"]),
-    ("Веб-страница (*.html)", &["html"]),
-    ("Markdown (*.md)", &["md"]),
+    ("filter-docx", &["docx"]),
+    ("filter-rtf", &["rtf"]),
+    ("filter-odt", &["odt"]),
+    ("filter-txt", &["txt"]),
+    ("filter-html", &["html"]),
+    ("filter-md", &["md"]),
 ];
 
 /// Новый пустой документ: стили как у пустого документа Word.
@@ -73,7 +74,7 @@ pub fn blank() -> Document {
 /// Читает документ; формат — по расширению.
 pub fn read(path: &Path) -> Result<Document, String> {
     let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
-    let format = FileFormat::from_path(path).ok_or_else(|| fail(&"незнакомый формат файла"))?;
+    let format = FileFormat::from_path(path).ok_or_else(|| fail(&tr("error-unknown-format")))?;
     let data = fs::read(path).map_err(|e| fail(&e))?;
     match format {
         FileFormat::Docx => letter_docx::read_bytes(&data).map_err(|e| fail(&e)),
@@ -90,7 +91,7 @@ pub fn read(path: &Path) -> Result<Document, String> {
 /// упадёт посреди записи, старый файл останется целым.
 pub fn write(doc: &Document, path: &Path) -> Result<(), String> {
     let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
-    let format = FileFormat::from_path(path).ok_or_else(|| fail(&"незнакомый формат файла"))?;
+    let format = FileFormat::from_path(path).ok_or_else(|| fail(&tr("error-unknown-format")))?;
     let data = match format {
         FileFormat::Docx => letter_docx::write_bytes(doc).map_err(|e| fail(&e))?,
         FileFormat::Rtf => letter_rtf::write(doc).into_bytes(),

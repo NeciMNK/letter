@@ -15,6 +15,7 @@
 //! Ctrl+[ — шрифт больше и меньше; Ctrl+L, Ctrl+E, Ctrl+R, Ctrl+J —
 //! выравнивание абзаца.
 
+use crate::i18n::{tr, tr_args};
 use std::path::{Path, PathBuf};
 
 use std::sync::Arc;
@@ -65,7 +66,7 @@ fn paint_font_sample(
         .ascii
         .clone()
         .filter(|f| !f.is_empty())
-        .unwrap_or_else(|| "Образец".to_owned());
+        .unwrap_or_else(|| tr("preview").to_owned());
     let mut doc = Document::new();
     // Размер листа — как у прямоугольника при масштабе 100 %.
     let twips = |points: f32| Twips((points / SCREEN_PIXELS_PER_POINT * 20.0) as i32);
@@ -113,7 +114,7 @@ const SAVE_AS_CTRL: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
 
 /// Имя ещё не сохранённого документа.
-const UNTITLED: &str = "Новый документ";
+const UNTITLED: &str = "new-document";
 const ZOOM_IN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Equals);
 const ZOOM_IN_PLUS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Plus);
 const ZOOM_OUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Minus);
@@ -238,10 +239,10 @@ impl OpenDocument {
 
     /// Имя для заголовка окна и вопросов.
     fn name(&self) -> String {
-        self.path
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map_or_else(|| UNTITLED.to_owned(), |n| n.to_string_lossy().into_owned())
+        self.path.as_ref().and_then(|p| p.file_name()).map_or_else(
+            || tr(UNTITLED).to_owned(),
+            |n| n.to_string_lossy().into_owned(),
+        )
     }
 
     /// Выделение от якоря до курсора.
@@ -306,10 +307,10 @@ fn ago(time: Option<SystemTime>) -> String {
         .and_then(|t| t.elapsed().ok())
         .map_or(0, |d| d.as_secs() / 60);
     match minutes {
-        0 => "только что".to_owned(),
-        m if m < 60 => format!("{m} мин назад"),
-        m if m < 60 * 24 => format!("{} ч назад", m / 60),
-        m => format!("{} дн назад", m / (60 * 24)),
+        0 => tr("time-just-now").to_owned(),
+        m if m < 60 => tr_args("time-minutes-ago", &[("n", m.into())]),
+        m if m < 60 * 24 => tr_args("time-hours-ago", &[("n", (m / 60).into())]),
+        m => tr_args("time-days-ago", &[("n", (m / (60 * 24)).into())]),
     }
 }
 
@@ -463,6 +464,7 @@ impl Viewer {
     pub fn with_storage(library: FontLibrary, dir: Option<PathBuf>) -> Viewer {
         let autosave_dir = dir.as_ref().map(|d| d.join("autosave"));
         let settings = Settings::load(dir.as_deref());
+        crate::i18n::set_language(settings.language);
         Viewer {
             error_title: "",
             ask: None,
@@ -521,7 +523,7 @@ impl Viewer {
             if !path.exists() {
                 self.recent.remove(path);
             }
-            self.report("Не удалось открыть файл", e);
+            self.report(tr("error-open"), e);
         }
     }
 
@@ -558,10 +560,11 @@ impl Viewer {
             self.show_ruler = settings.show_ruler;
         }
         self.settings = settings;
+        crate::i18n::set_language(settings.language);
         if let Some(dir) = &self.dir
             && let Err(e) = settings.save(dir)
         {
-            self.report("Не удалось сохранить параметры", e);
+            self.report(tr("error-save-settings"), e);
         }
     }
 
@@ -652,16 +655,19 @@ impl Viewer {
             .path
             .as_ref()
             .and_then(|p| p.file_stem())
-            .map_or_else(|| UNTITLED.to_owned(), |s| s.to_string_lossy().into_owned());
+            .map_or_else(
+                || tr(UNTITLED).to_owned(),
+                |s| s.to_string_lossy().into_owned(),
+            );
         let mut dialog = rfd::FileDialog::new()
-            .set_title("Сохранить как")
+            .set_title(tr("save-as"))
             .set_file_name(format!("{stem}.{extension}"));
         // Выбранный формат — первым в списке.
         let (chosen, others): (Vec<_>, Vec<_>) = SAVE_FILTERS
             .iter()
             .partition(|(_, extensions)| extensions.contains(&extension));
         for &(name, extensions) in chosen.into_iter().chain(others) {
-            dialog = dialog.add_filter(name, extensions);
+            dialog = dialog.add_filter(tr(name), extensions);
         }
         if let Some(dir) = self.dialog_dir() {
             dialog = dialog.set_directory(dir);
@@ -682,7 +688,7 @@ impl Viewer {
             return false;
         };
         if let Err(e) = files::write(&document.doc, path) {
-            self.report("Не удалось сохранить файл", e);
+            self.report(tr("error-save"), e);
             return false;
         }
         document.path = Some(path.to_owned());
@@ -714,7 +720,7 @@ impl Viewer {
                 self.autosave_now();
                 Autosave::discard(&item);
             }
-            Err(e) => self.report("Не удалось восстановить документ", e),
+            Err(e) => self.report(tr("error-recover"), e),
         }
     }
 
@@ -769,6 +775,7 @@ impl Viewer {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             self.ask = Some(Intent::Close);
         }
+        crate::i18n::set_language(self.settings.language);
         self.handle_input(&ctx);
         if self.applied_theme != Some(self.settings.theme) {
             ctx.set_theme(self.settings.theme.preference());
@@ -1086,11 +1093,11 @@ impl Viewer {
 
     /// Системное окно выбора файла.
     fn pick_file(&mut self) {
-        let mut dialog = rfd::FileDialog::new().set_title("Открыть документ");
+        let mut dialog = rfd::FileDialog::new().set_title(tr("open-document"));
         for (name, extensions) in OPEN_FILTERS {
-            dialog = dialog.add_filter(*name, extensions);
+            dialog = dialog.add_filter(tr(name), extensions);
         }
-        dialog = dialog.add_filter("Все файлы", &["*"]);
+        dialog = dialog.add_filter(tr("filter-all-files"), &["*"]);
         if let Some(dir) = self.dialog_dir() {
             dialog = dialog.set_directory(dir);
         }
@@ -1113,9 +1120,9 @@ impl Viewer {
         match action {
             FindAction::ReplaceAll => {
                 find.message = Some(if found.is_empty() {
-                    "Ничего не найдено.".to_owned()
+                    tr("find-nothing").to_owned()
                 } else {
-                    format!("Выполнено замен: {}.", found.len())
+                    tr_args("replaced-count", &[("n", found.len().into())])
                 });
                 if !found.is_empty() {
                     document.history.seal();
@@ -1153,7 +1160,7 @@ impl Viewer {
                 self.find.message = None;
                 self.reveal_cursor = true;
             }
-            None => self.find.message = Some("Ничего не найдено.".to_owned()),
+            None => self.find.message = Some(tr("find-nothing").to_owned()),
         }
     }
 
@@ -1354,54 +1361,64 @@ impl Viewer {
             let current_page = self.current_page;
             let pages = self.page_count();
             if let Some(document) = &mut self.document {
-                ui.label(format!("Страница {} из {}", current_page + 1, pages));
+                ui.label(tr_args(
+                    "status-page",
+                    &[("page", (current_page + 1).into()), ("pages", pages.into())],
+                ));
                 let counts = document.counts();
                 let words = match counts.selected {
-                    Some(selected) => {
-                        format!("Число слов: {} из {}", selected.words, counts.total.words)
-                    }
-                    None => format!("Число слов: {}", counts.total.words),
+                    Some(selected) => tr_args(
+                        "status-words-selected",
+                        &[
+                            ("selected", selected.words.into()),
+                            ("words", counts.total.words.into()),
+                        ],
+                    ),
+                    None => tr_args("status-words", &[("words", counts.total.words.into())]),
                 };
                 if ui
                     .add(egui::Button::new(words).frame(false))
-                    .on_hover_text("Статистика")
+                    .on_hover_text(tr("word-count"))
                     .clicked()
                 {
                     self.statistics_open = true;
                 }
                 if let Some(code) = language_at(&document.doc, document.cursor) {
                     ui.label(crate::language::display_name(&code))
-                        .on_hover_text(format!("Язык текста: {code}"));
+                        .on_hover_text(tr_args(
+                            "status-language",
+                            &[("code", code.as_str().into())],
+                        ));
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let zoom = self.zoom();
                 if ui
                     .button(format!("{:.0} %", zoom * 100.0))
-                    .on_hover_text("Масштаб 100 %")
+                    .on_hover_text(tr("zoom-100"))
                     .clicked()
                 {
                     self.set_zoom(Zoom::Fixed(1.0), None);
                 }
-                if ui.small_button("+").on_hover_text("Увеличить").clicked() {
+                if ui.small_button("+").on_hover_text(tr("zoom-in")).clicked() {
                     self.zoom_step(true);
                 }
                 let mut percent = zoom * 100.0;
                 let slider = egui::Slider::new(&mut percent, MIN_ZOOM * 100.0..=MAX_ZOOM * 100.0)
                     .logarithmic(true)
                     .show_value(false);
-                let slider = ui.add(slider).on_hover_text("Масштаб");
+                let slider = ui.add(slider).on_hover_text(tr("zoom"));
                 slider
-                    .widget_info(|| egui::WidgetInfo::slider(true, f64::from(percent), "Масштаб"));
+                    .widget_info(|| egui::WidgetInfo::slider(true, f64::from(percent), tr("zoom")));
                 if slider.changed() {
                     self.set_zoom(Zoom::Fixed(percent / 100.0), None);
                 }
-                if ui.small_button("−").on_hover_text("Уменьшить").clicked() {
+                if ui.small_button("−").on_hover_text(tr("zoom-out")).clicked() {
                     self.zoom_step(false);
                 }
                 if ui
-                    .selectable_label(self.zoom == Zoom::PageWidth, "По ширине")
-                    .on_hover_text("По ширине страницы")
+                    .selectable_label(self.zoom == Zoom::PageWidth, tr("zoom-fit"))
+                    .on_hover_text(tr("zoom-page-width"))
                     .clicked()
                 {
                     self.set_zoom(Zoom::PageWidth, None);
@@ -1410,23 +1427,9 @@ impl Viewer {
                 // Режимы просмотра справа налево; пока есть только
                 // разметка страницы, остальные появятся в фазе 6.
                 let size = egui::vec2(22.0, 18.0);
-                icons::icon_button(
-                    ui,
-                    Icon::WebLayout,
-                    "Веб-документ (скоро)",
-                    size,
-                    false,
-                    false,
-                );
-                icons::icon_button(ui, Icon::PrintLayout, "Разметка страницы", size, true, true);
-                icons::icon_button(
-                    ui,
-                    Icon::ReadMode,
-                    "Режим чтения (скоро)",
-                    size,
-                    false,
-                    false,
-                );
+                icons::icon_button(ui, Icon::WebLayout, tr("view-web-soon"), size, false, false);
+                icons::icon_button(ui, Icon::PrintLayout, tr("view-print"), size, true, true);
+                icons::icon_button(ui, Icon::ReadMode, tr("view-read-soon"), size, false, false);
             });
         });
     }
@@ -1446,14 +1449,14 @@ impl Viewer {
         let stats = counts.selected.unwrap_or(counts.total);
         let mut open = true;
         let mut close = false;
-        egui::Window::new("Статистика")
+        egui::Window::new(tr("word-count"))
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
                 if counts.selected.is_some() {
-                    ui.label("Выделенный фрагмент");
+                    ui.label(tr("stats-selection"));
                 }
                 egui::Grid::new("statistics")
                     .num_columns(2)
@@ -1465,18 +1468,18 @@ impl Viewer {
                             ui.end_row();
                         };
                         if counts.selected.is_none() {
-                            row("Страниц", pages.to_string());
+                            row(tr("stats-pages"), pages.to_string());
                         }
-                        row("Слов", stats.words.to_string());
-                        row("Знаков (без пробелов)", stats.characters.to_string());
+                        row(tr("stats-words"), stats.words.to_string());
+                        row(tr("stats-characters"), stats.characters.to_string());
                         row(
-                            "Знаков (с пробелами)",
+                            tr("stats-characters-spaces"),
                             stats.characters_with_spaces.to_string(),
                         );
-                        row("Абзацев", stats.paragraphs.to_string());
+                        row(tr("stats-paragraphs"), stats.paragraphs.to_string());
                     });
                 ui.separator();
-                if ui.button("Закрыть").clicked() {
+                if ui.button(tr("close")).clicked() {
                     close = true;
                 }
             });
@@ -1489,7 +1492,7 @@ impl Viewer {
     fn pages(&mut self, ui: &mut egui::Ui) {
         if self.document.is_none() {
             ui.centered_and_justified(|ui| {
-                ui.label("Откройте документ: Файл → Открыть (Ctrl+O) или перетащите файл в окно");
+                ui.label(tr("empty-hint"));
             });
             return;
         }
@@ -1711,7 +1714,7 @@ impl Viewer {
             .show(ctx, |ui| {
                 ui.label(message.as_str());
                 ui.add_space(8.0);
-                if ui.button("ОК").clicked() {
+                if ui.button(tr("ok")).clicked() {
                     close = true;
                 }
             });
@@ -1736,16 +1739,19 @@ impl Viewer {
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label(format!("Сохранить изменения в документе «{name}»?"));
+                ui.label(tr_args(
+                    "save-changes-question",
+                    &[("name", name.as_str().into())],
+                ));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Сохранить").clicked() {
+                    if ui.button(tr("save")).clicked() {
                         answer = Some(Answer::Save);
                     }
-                    if ui.button("Не сохранять").clicked() {
+                    if ui.button(tr("dont-save")).clicked() {
                         answer = Some(Answer::Discard);
                     }
-                    if ui.button("Отмена").clicked() {
+                    if ui.button(tr("cancel")).clicked() {
                         answer = Some(Answer::Cancel);
                     }
                 });
@@ -1779,12 +1785,12 @@ impl Viewer {
         }
         let mut open = None;
         let mut discard = None;
-        egui::Window::new("Восстановление документов")
+        egui::Window::new(tr("recovery-title"))
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label("Программа закрылась неожиданно. Эти документы не были сохранены:");
+                ui.label(tr("recovery-text"));
                 ui.add_space(8.0);
                 for (i, item) in self.recovered.iter().enumerate() {
                     ui.horizontal(|ui| {
@@ -1793,14 +1799,14 @@ impl Viewer {
                             .as_ref()
                             .and_then(|p| p.file_name())
                             .map_or_else(
-                                || UNTITLED.to_owned(),
+                                || tr(UNTITLED).to_owned(),
                                 |n| n.to_string_lossy().into_owned(),
                             );
                         ui.label(format!("{name} ({})", ago(item.saved)));
-                        if ui.button("Открыть").clicked() {
+                        if ui.button(tr("backstage-open")).clicked() {
                             open = Some(i);
                         }
-                        if ui.button("Удалить").clicked() {
+                        if ui.button(tr("delete")).clicked() {
                             discard = Some(i);
                         }
                     });
@@ -2682,7 +2688,7 @@ mod tests {
         let ctx = Context::default();
         let mut viewer = Viewer::with_storage(FontLibrary::embedded_only(), Some(dir.join("app")));
         viewer.new_document();
-        assert_eq!(viewer.title(), format!("{UNTITLED} — {APP_NAME}"));
+        assert_eq!(viewer.title(), format!("{} — {APP_NAME}", tr(UNTITLED)));
         assert!(!viewer.modified());
         frame(
             &ctx,
@@ -2832,11 +2838,15 @@ mod tests {
             autosave_minutes: 7,
             show_ruler: false,
             theme: ThemeChoice::Dark,
+            language: crate::i18n::Language::English,
         };
         viewer.run_ribbon(&ctx, vec![RibbonCommand::ChangeSettings(settings)]);
         assert!(!viewer.show_ruler);
         frame(&ctx, &mut viewer, screen());
         assert_eq!(ctx.theme(), egui::Theme::Dark);
+        assert_eq!(crate::i18n::language(), crate::i18n::Language::English);
+        assert_eq!(viewer.title(), "New document — letter");
+        crate::i18n::set_language(crate::i18n::Language::Russian);
         assert_eq!(Settings::load(Some(&dir)), settings);
         viewer.run_ribbon(&ctx, vec![RibbonCommand::CloseDocument]);
         assert!(viewer.document.is_none());
