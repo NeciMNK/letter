@@ -2,6 +2,7 @@
 //! Лист документа остаётся белым в любой теме, как в Word по умолчанию;
 //! меняются лента, линейки, представление «Файл» и окна.
 
+use crate::i18n::tr;
 use eframe::egui::{Color32, Context, ThemePreference};
 
 /// Выбор темы в «Параметрах».
@@ -23,9 +24,9 @@ impl ThemeChoice {
     /// Название для пользователя.
     pub fn name(self) -> &'static str {
         match self {
-            ThemeChoice::Light => "Светлая",
-            ThemeChoice::Dark => "Тёмная",
-            ThemeChoice::System => "Как в системе",
+            ThemeChoice::Light => tr("theme-light"),
+            ThemeChoice::Dark => tr("theme-dark"),
+            ThemeChoice::System => tr("theme-system"),
         }
     }
 

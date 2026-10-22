@@ -2,6 +2,7 @@
 //! Списки (F5.1), заливка и границы (F5.11) добавятся вместе с этими
 //! возможностями документа.
 
+use crate::i18n::tr;
 use eframe::egui::{self, Color32, Key, RichText, TextEdit, Ui, vec2};
 use letter_editor::{ParagraphFormat, RunFormat};
 use letter_model::{Alignment, Color, HalfPoints, Highlight, LineSpacing, Twips};
@@ -18,35 +19,35 @@ pub const FONT_SIZES: [f32; 17] = [
 
 /// Стандартные цвета палитры Word: название и цвет.
 pub const STANDARD_COLORS: [(&str, (u8, u8, u8)); 10] = [
-    ("Тёмно-красный", (0xC0, 0x00, 0x00)),
-    ("Красный", (0xFF, 0x00, 0x00)),
-    ("Оранжевый", (0xFF, 0xC0, 0x00)),
-    ("Жёлтый", (0xFF, 0xFF, 0x00)),
-    ("Светло-зелёный", (0x92, 0xD0, 0x50)),
-    ("Зелёный", (0x00, 0xB0, 0x50)),
-    ("Голубой", (0x00, 0xB0, 0xF0)),
-    ("Синий", (0x00, 0x70, 0xC0)),
-    ("Тёмно-синий", (0x00, 0x20, 0x60)),
-    ("Фиолетовый", (0x70, 0x30, 0xA0)),
+    ("color-dark-red", (0xC0, 0x00, 0x00)),
+    ("color-red", (0xFF, 0x00, 0x00)),
+    ("color-orange", (0xFF, 0xC0, 0x00)),
+    ("color-yellow", (0xFF, 0xFF, 0x00)),
+    ("color-light-green", (0x92, 0xD0, 0x50)),
+    ("color-green", (0x00, 0xB0, 0x50)),
+    ("color-light-blue", (0x00, 0xB0, 0xF0)),
+    ("color-blue", (0x00, 0x70, 0xC0)),
+    ("color-dark-blue", (0x00, 0x20, 0x60)),
+    ("color-purple", (0x70, 0x30, 0xA0)),
 ];
 
 /// Цвета маркера в порядке палитры Word (пять в ряд) и их названия.
 pub const HIGHLIGHTS: [(Highlight, &str); 15] = [
-    (Highlight::Yellow, "Жёлтый"),
-    (Highlight::Green, "Ярко-зелёный"),
-    (Highlight::Cyan, "Бирюзовый"),
-    (Highlight::Magenta, "Розовый"),
-    (Highlight::Blue, "Синий"),
-    (Highlight::Red, "Красный"),
-    (Highlight::DarkBlue, "Тёмно-синий"),
-    (Highlight::DarkCyan, "Сине-зелёный"),
-    (Highlight::DarkGreen, "Зелёный"),
-    (Highlight::DarkMagenta, "Фиолетовый"),
-    (Highlight::DarkRed, "Тёмно-красный"),
-    (Highlight::DarkYellow, "Коричнево-жёлтый"),
-    (Highlight::DarkGray, "Серый 50 %"),
-    (Highlight::LightGray, "Серый 25 %"),
-    (Highlight::Black, "Чёрный"),
+    (Highlight::Yellow, "color-yellow"),
+    (Highlight::Green, "color-bright-green"),
+    (Highlight::Cyan, "color-turquoise"),
+    (Highlight::Magenta, "color-pink"),
+    (Highlight::Blue, "color-blue"),
+    (Highlight::Red, "color-red"),
+    (Highlight::DarkBlue, "color-dark-blue"),
+    (Highlight::DarkCyan, "color-teal"),
+    (Highlight::DarkGreen, "color-green"),
+    (Highlight::DarkMagenta, "color-purple"),
+    (Highlight::DarkRed, "color-dark-red"),
+    (Highlight::DarkYellow, "color-dark-yellow"),
+    (Highlight::DarkGray, "color-gray-50"),
+    (Highlight::LightGray, "color-gray-25"),
+    (Highlight::Black, "color-black"),
 ];
 
 /// Что помнит вкладка «Главная» между кадрами.
@@ -112,32 +113,22 @@ fn font_color32(color: Color) -> Color32 {
 /// Вкладка «Главная».
 pub fn home(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     let doc = info.has_document;
-    group(ui, "Буфер обмена", |ui| {
+    group(ui, tr("group-clipboard"), |ui| {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                if icon_button(ui, Icon::Paste, "Вставить", vec2(44.0, 34.0), doc, false)
-                    .on_hover_text("Вставить (Ctrl+V)")
+                if icon_button(ui, Icon::Paste, tr("paste"), vec2(44.0, 34.0), doc, false)
+                    .on_hover_text(tr("paste-hint"))
                     .clicked()
                 {
                     out.push(RibbonCommand::Paste);
                 }
-                ui.label("Вставить");
+                ui.label(tr("paste"));
             });
             ui.vertical(|ui| {
                 let selected = doc && info.has_selection;
                 for (icon, name, tip, command) in [
-                    (
-                        Icon::Cut,
-                        "Вырезать",
-                        "Вырезать (Ctrl+X)",
-                        RibbonCommand::Cut,
-                    ),
-                    (
-                        Icon::Copy,
-                        "Копировать",
-                        "Копировать (Ctrl+C)",
-                        RibbonCommand::Copy,
-                    ),
+                    (Icon::Cut, tr("cut"), tr("cut-hint"), RibbonCommand::Cut),
+                    (Icon::Copy, tr("copy"), tr("copy-hint"), RibbonCommand::Copy),
                 ] {
                     if icon_text_button(ui, icon, name, selected)
                         .on_hover_text(tip)
@@ -150,43 +141,38 @@ pub fn home(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Vec
         });
     });
     let mut font = Vec::new();
-    if group_with_launcher(
-        ui,
-        "Шрифт",
-        Some("Параметры шрифта"),
-        |ui| {
-            font_group(ui, state, info, &mut font);
-        },
-    ) {
+    if group_with_launcher(ui, tr("font"), Some(tr("font-settings")), |ui| {
+        font_group(ui, state, info, &mut font);
+    }) {
         font.push(RibbonCommand::FontDialog);
     }
     out.extend(font);
     let mut paragraph = Vec::new();
-    if group_with_launcher(
-        ui,
-        "Абзац",
-        Some("Параметры абзаца"),
-        |ui| {
-            paragraph_group(ui, info, &mut paragraph);
-        },
-    ) {
+    if group_with_launcher(ui, tr("paragraph"), Some(tr("paragraph-settings")), |ui| {
+        paragraph_group(ui, info, &mut paragraph);
+    }) {
         paragraph.push(RibbonCommand::ParagraphDialog);
     }
     out.extend(paragraph);
-    group(ui, "Стили", |ui| styles_group(ui, info, out));
-    group(ui, "Редактирование", |ui| {
+    group(ui, tr("group-styles"), |ui| styles_group(ui, info, out));
+    group(ui, tr("group-editing"), |ui| {
         for (icon, name, tip, command) in [
-            (Icon::Search, "Найти", "Найти (Ctrl+F)", RibbonCommand::Find),
+            (
+                Icon::Search,
+                tr("find"),
+                tr("find-hint"),
+                RibbonCommand::Find,
+            ),
             (
                 Icon::Replace,
-                "Заменить",
-                "Заменить (Ctrl+H)",
+                tr("replace"),
+                tr("replace-hint"),
                 RibbonCommand::Replace,
             ),
             (
                 Icon::SelectAll,
-                "Выделить все",
-                "Выделить все (Ctrl+A)",
+                tr("select-all"),
+                tr("select-all-hint"),
                 RibbonCommand::SelectAll,
             ),
         ] {
@@ -222,7 +208,7 @@ fn styles_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 }
             }
         });
-        drop_down(ui, info.has_document, "Все стили", |ui| {
+        drop_down(ui, info.has_document, tr("all-styles"), |ui| {
             egui::ScrollArea::vertical()
                 .max_height(320.0)
                 .show(ui, |ui| {
@@ -269,7 +255,7 @@ fn style_tile(ui: &mut Ui, style: &crate::styles::GalleryStyle, on: bool) -> egu
             ui.set_width(66.0);
             ui.add_sized(
                 vec2(66.0, 30.0),
-                egui::Button::selectable(on, sample_text(ui, style, "АаБбВв"))
+                egui::Button::selectable(on, sample_text(ui, style, tr("style-sample")))
                     .wrap_mode(egui::TextWrapMode::Truncate),
             )
         })
@@ -315,12 +301,12 @@ fn paragraph_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>)
         for (icon, name, format) in [
             (
                 Icon::IndentLess,
-                "Уменьшить отступ",
+                tr("indent-decrease"),
                 ParagraphFormat::IndentLess,
             ),
             (
                 Icon::IndentMore,
-                "Увеличить отступ",
+                tr("indent-increase"),
                 ParagraphFormat::IndentMore,
             ),
         ] {
@@ -332,9 +318,9 @@ fn paragraph_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>)
             }
         }
         ui.separator();
-        let name = "Отобразить все знаки";
+        let name = tr("show-marks");
         if icon_button(ui, Icon::Pilcrow, name, button, doc, info.marks)
-            .on_hover_text("Отобразить все знаки (Ctrl+Shift+8)")
+            .on_hover_text(tr("show-marks-hint"))
             .clicked()
         {
             out.push(RibbonCommand::ToggleMarks);
@@ -342,10 +328,10 @@ fn paragraph_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>)
     });
     ui.horizontal(|ui| {
         for (alignment, tip) in [
-            (Alignment::Left, "Выровнять по левому краю (Ctrl+L)"),
-            (Alignment::Center, "По центру (Ctrl+E)"),
-            (Alignment::Right, "Выровнять по правому краю (Ctrl+R)"),
-            (Alignment::Justify, "По ширине (Ctrl+J)"),
+            (Alignment::Left, tr("align-left-hint")),
+            (Alignment::Center, tr("align-center-hint")),
+            (Alignment::Right, tr("align-right-hint")),
+            (Alignment::Justify, tr("align-justify-hint")),
         ] {
             let on = info.alignment == Some(alignment);
             let name = tip.split(" (").next().unwrap_or(tip);
@@ -363,7 +349,7 @@ fn paragraph_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>)
         ui.add_enabled_ui(doc, |ui| {
             let (response, _) = egui::containers::menu::MenuButton::from_button(spacing)
                 .ui(ui, |ui| spacing_menu(ui, info, out));
-            response.on_hover_text("Интервал между строками и абзацами");
+            response.on_hover_text(tr("line-spacing"));
         });
     });
 }
@@ -381,9 +367,9 @@ fn spacing_menu(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     }
     ui.separator();
     let (before, format) = if info.space_before > 0 {
-        ("Удалить интервал перед абзацем", Twips(0))
+        (tr("space-before-remove"), Twips(0))
     } else {
-        ("Добавить интервал перед абзацем", ADDED_SPACE)
+        (tr("space-before-add"), ADDED_SPACE)
     };
     if ui.button(before).clicked() {
         out.push(RibbonCommand::Paragraph(ParagraphFormat::SpaceBefore(
@@ -392,9 +378,9 @@ fn spacing_menu(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
         ui.close();
     }
     let (after, format) = if info.space_after > 0 {
-        ("Удалить интервал после абзаца", Twips(0))
+        (tr("space-after-remove"), Twips(0))
     } else {
-        ("Добавить интервал после абзаца", ADDED_SPACE)
+        (tr("space-after-add"), ADDED_SPACE)
     };
     if ui.button(after).clicked() {
         out.push(RibbonCommand::Paragraph(ParagraphFormat::SpaceAfter(
@@ -417,20 +403,20 @@ fn font_group(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut V
         for (icon, name, tip, format) in [
             (
                 Icon::Grow,
-                "Увеличить размер шрифта",
-                "Увеличить размер шрифта (Ctrl+])",
+                tr("font-grow"),
+                tr("font-grow-hint"),
                 RunFormat::Grow,
             ),
             (
                 Icon::Shrink,
-                "Уменьшить размер шрифта",
-                "Уменьшить размер шрифта (Ctrl+[)",
+                tr("font-shrink"),
+                tr("font-shrink-hint"),
                 RunFormat::Shrink,
             ),
             (
                 Icon::ClearFormat,
-                "Очистить оформление",
-                "Очистить оформление (Ctrl+Пробел)",
+                tr("clear-formatting"),
+                tr("clear-formatting-hint"),
                 RunFormat::Clear,
             ),
         ] {
@@ -446,20 +432,20 @@ fn font_group(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut V
         for (on, text, tip, format) in [
             (
                 info.bold,
-                RichText::new("Ж").strong(),
-                "Полужирный (Ctrl+B)",
+                RichText::new(tr("bold-letter")).strong(),
+                tr("bold-hint"),
                 RunFormat::Bold,
             ),
             (
                 info.italic,
-                RichText::new("К").italics(),
-                "Курсив (Ctrl+I)",
+                RichText::new(tr("italic-letter")).italics(),
+                tr("italic-hint"),
                 RunFormat::Italic,
             ),
             (
                 info.underline,
-                RichText::new("Ч").underline(),
-                "Подчёркнутый (Ctrl+U)",
+                RichText::new(tr("underline-letter")).underline(),
+                tr("underline-hint"),
                 RunFormat::Underline,
             ),
         ] {
@@ -469,17 +455,22 @@ fn font_group(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut V
             }
         }
         for (icon, on, name, format) in [
-            (Icon::Strike, info.strike, "Зачёркнутый", RunFormat::Strike),
+            (
+                Icon::Strike,
+                info.strike,
+                tr("strikethrough"),
+                RunFormat::Strike,
+            ),
             (
                 Icon::Subscript,
                 info.subscript,
-                "Подстрочный знак",
+                tr("subscript"),
                 RunFormat::Subscript,
             ),
             (
                 Icon::Superscript,
                 info.superscript,
-                "Надстрочный знак",
+                tr("superscript"),
                 RunFormat::Superscript,
             ),
         ] {
@@ -492,23 +483,23 @@ fn font_group(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut V
         }
         ui.separator();
         let marker = state.highlight.rgb().map_or(Color32::TRANSPARENT, color32);
-        if color_button(ui, Icon::Highlight, "Цвет выделения текста", marker, doc)
-            .on_hover_text("Цвет выделения текста")
+        if color_button(ui, Icon::Highlight, tr("highlight-color"), marker, doc)
+            .on_hover_text(tr("highlight-color"))
             .clicked()
         {
             out.push(RibbonCommand::Format(RunFormat::Highlight(state.highlight)));
         }
-        drop_down(ui, doc, "Цвета выделения", |ui| {
+        drop_down(ui, doc, tr("highlight-colors"), |ui| {
             highlight_menu(ui, state, out);
         });
         let color = font_color32(state.font_color);
-        if color_button(ui, Icon::FontColor, "Цвет текста", color, doc)
-            .on_hover_text("Цвет текста")
+        if color_button(ui, Icon::FontColor, tr("font-color"), color, doc)
+            .on_hover_text(tr("font-color"))
             .clicked()
         {
             out.push(RibbonCommand::Format(RunFormat::Color(state.font_color)));
         }
-        drop_down(ui, doc, "Цвета текста", |ui| {
+        drop_down(ui, doc, tr("font-colors"), |ui| {
             color_menu(ui, state, out);
         });
     });
@@ -534,7 +525,7 @@ fn font_list(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Ve
         .show_ui(ui, |ui| {
             ui.add(
                 TextEdit::singleline(&mut state.font_filter)
-                    .hint_text("Найти шрифт")
+                    .hint_text(tr("font-search"))
                     .desired_width(160.0),
             );
             let filter = state.font_filter.to_lowercase();
@@ -550,7 +541,7 @@ fn font_list(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Ve
             }
         })
         .response
-        .on_hover_text("Шрифт");
+        .on_hover_text(tr("font"));
 }
 
 /// Поле «Размер шрифта» со списком: размер можно набрать (Enter —
@@ -560,7 +551,7 @@ fn size_box(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Vec
     let text = state.size_text.get_or_insert_with(|| shown.clone());
     let response = ui
         .add(TextEdit::singleline(text).desired_width(30.0))
-        .on_hover_text("Размер шрифта");
+        .on_hover_text(tr("font-size-box"));
     if response.lost_focus() {
         let cancelled = ui.input(|i| i.key_pressed(Key::Escape));
         if !cancelled
@@ -573,7 +564,7 @@ fn size_box(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Vec
     } else if !response.has_focus() {
         state.size_text = None;
     }
-    drop_down(ui, true, "Размеры шрифта", |ui| {
+    drop_down(ui, true, tr("font-sizes"), |ui| {
         for size in FONT_SIZES {
             let half = (size * 2.0) as u32;
             if ui
@@ -594,7 +585,7 @@ fn highlight_menu(ui: &mut Ui, state: &mut HomeState, out: &mut Vec<RibbonComman
         .show(ui, |ui| {
             for (i, (highlight, name)) in HIGHLIGHTS.into_iter().enumerate() {
                 let fill = highlight.rgb().map_or(Color32::TRANSPARENT, color32);
-                if swatch(ui, fill, name).clicked() {
+                if swatch(ui, fill, tr(name)).clicked() {
                     state.highlight = highlight;
                     out.push(RibbonCommand::Format(RunFormat::Highlight(highlight)));
                     ui.close();
@@ -604,7 +595,7 @@ fn highlight_menu(ui: &mut Ui, state: &mut HomeState, out: &mut Vec<RibbonComman
                 }
             }
         });
-    if ui.button("Нет цвета").clicked() {
+    if ui.button(tr("color-none")).clicked() {
         out.push(RibbonCommand::Format(RunFormat::Highlight(Highlight::None)));
         ui.close();
     }
@@ -616,27 +607,27 @@ fn color_menu(ui: &mut Ui, state: &mut HomeState, out: &mut Vec<RibbonCommand>) 
         state.font_color = color;
         out.push(RibbonCommand::Format(RunFormat::Color(color)));
     };
-    if ui.button("Авто").clicked() {
+    if ui.button(tr("color-auto")).clicked() {
         pick(Color::Auto, out);
         ui.close();
     }
-    ui.label(RichText::new("Стандартные цвета").small());
+    ui.label(RichText::new(tr("color-standard")).small());
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         for (name, rgb) in STANDARD_COLORS {
-            if swatch(ui, color32(rgb), name).clicked() {
+            if swatch(ui, color32(rgb), tr(name)).clicked() {
                 pick(Color::Rgb(rgb.0, rgb.1, rgb.2), out);
                 ui.close();
             }
         }
     });
-    ui.menu_button("Другие цвета…", |ui| {
+    ui.menu_button(tr("color-more"), |ui| {
         egui::color_picker::color_picker_color32(
             ui,
             &mut state.custom,
             egui::color_picker::Alpha::Opaque,
         );
-        if ui.button("Применить").clicked() {
+        if ui.button(tr("apply")).clicked() {
             let [r, g, b, _] = state.custom.to_array();
             state.font_color = Color::Rgb(r, g, b);
             out.push(RibbonCommand::Format(RunFormat::Color(state.font_color)));

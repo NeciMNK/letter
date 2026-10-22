@@ -6,6 +6,7 @@
 //! стащенная с линейки позиция убирается. Вид новой позиции выбирается
 //! кнопкой в углу между линейками.
 
+use crate::i18n::tr;
 use eframe::egui::{
     Align2, Color32, CursorIcon, FontId, Painter, Pos2, Rect, Role, Sense, Shape, Stroke, Ui,
     WidgetInfo, pos2, vec2,
@@ -218,11 +219,11 @@ impl Marker {
     /// Название для подсказки.
     pub fn name(self) -> &'static str {
         match self {
-            Marker::FirstLine => "Отступ первой строки",
-            Marker::Hanging => "Выступ",
-            Marker::Left => "Отступ слева",
-            Marker::Right => "Отступ справа",
-            Marker::Tab(_) => "Позиция табуляции",
+            Marker::FirstLine => tr("ruler-first-line"),
+            Marker::Hanging => tr("ruler-hanging"),
+            Marker::Left => tr("ruler-left"),
+            Marker::Right => tr("ruler-right"),
+            Marker::Tab(_) => tr("ruler-tab"),
         }
     }
 }
@@ -239,12 +240,12 @@ pub const TAB_KINDS: [TabStopKind; 5] = [
 /// Название вида табуляции.
 pub fn tab_kind_name(kind: TabStopKind) -> &'static str {
     match kind {
-        TabStopKind::Left => "Табуляция по левому краю",
-        TabStopKind::Center => "Табуляция по центру",
-        TabStopKind::Right => "Табуляция по правому краю",
-        TabStopKind::Decimal => "Табуляция по разделителю",
-        TabStopKind::Bar => "Табуляция с чертой",
-        TabStopKind::Clear => "Убрать табуляцию",
+        TabStopKind::Left => tr("tab-stop-left"),
+        TabStopKind::Center => tr("tab-stop-center"),
+        TabStopKind::Right => tr("tab-stop-right"),
+        TabStopKind::Decimal => tr("tab-stop-decimal"),
+        TabStopKind::Bar => tr("tab-stop-bar"),
+        TabStopKind::Clear => tr("tab-stop-clear"),
     }
 }
 
@@ -372,7 +373,7 @@ pub fn horizontal_ui(
         ui.scope_id().with("ruler-horizontal"),
         Sense::click_and_drag(),
     );
-    response.widget_info(|| WidgetInfo::labeled(Role::Group, true, "Линейка"));
+    response.widget_info(|| WidgetInfo::labeled(Role::Group, true, tr("ruler")));
     let hovered = response
         .hover_pos()
         .and_then(|p| marker_at(para, text_width, to_points(p.x), depth(p), tolerance));

@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::files::write_atomic;
+use crate::i18n::Language;
 use crate::theme::ThemeChoice;
 
 /// Параметры программы.
@@ -17,6 +18,8 @@ pub struct Settings {
     pub show_ruler: bool,
     /// Тема оформления.
     pub theme: ThemeChoice,
+    /// Язык интерфейса.
+    pub language: Language,
 }
 
 impl Default for Settings {
@@ -25,6 +28,7 @@ impl Default for Settings {
             autosave_minutes: 2,
             show_ruler: true,
             theme: ThemeChoice::default(),
+            language: Language::default(),
         }
     }
 }
@@ -58,6 +62,11 @@ impl Settings {
                         settings.theme = theme;
                     }
                 }
+                "language" => {
+                    if let Some(language) = Language::from_key(value) {
+                        settings.language = language;
+                    }
+                }
                 _ => {}
             }
         }
@@ -67,10 +76,11 @@ impl Settings {
     /// Текст файла параметров.
     pub fn to_text(self) -> String {
         format!(
-            "autosave_minutes = {}\nshow_ruler = {}\ntheme = {}\n",
+            "autosave_minutes = {}\nshow_ruler = {}\ntheme = {}\nlanguage = {}\n",
             self.autosave_minutes,
             self.show_ruler,
-            self.theme.key()
+            self.theme.key(),
+            self.language.key()
         )
     }
 
@@ -102,6 +112,7 @@ mod tests {
             autosave_minutes: 10,
             show_ruler: false,
             theme: ThemeChoice::Dark,
+            language: Language::English,
         };
         assert_eq!(Settings::parse(&settings.to_text()), settings);
         let odd = "мусор\nautosave_minutes = 9999\nshow_ruler = может быть\n";
@@ -122,6 +133,7 @@ mod tests {
             autosave_minutes: 5,
             show_ruler: false,
             theme: ThemeChoice::Light,
+            language: Language::Russian,
         };
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(Some(&dir)), settings);

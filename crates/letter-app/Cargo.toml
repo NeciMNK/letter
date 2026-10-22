@@ -19,6 +19,8 @@ path = "src/main.rs"
 # Системный буфер обмена с HTML (уже приходит вместе с eframe).
 arboard = { version = "3.7", default-features = false }
 eframe.workspace = true
+# Переводы интерфейса (Project Fluent, файлы assets/i18n/*.ftl).
+fluent-bundle = "0.16"
 letter-docx.workspace = true
 letter-editor.workspace = true
 letter-layout.workspace = true
@@ -29,6 +31,8 @@ letter-rtf.workspace = true
 letter-text.workspace = true
 # Системное окно выбора файла (Windows, macOS, Linux через XDG-портал).
 rfd = "0.17"
+# Коды языков для fluent-bundle.
+unic-langid = "0.9"
 
 [dev-dependencies]
 # Тесты интерфейса: найти кнопку по надписи и нажать (от авторов egui).

@@ -2,6 +2,7 @@
 //! странице», образец. Окно собирает только то, что поменяли: у
 //! нескольких выделенных абзацев остальные значения остаются своими.
 
+use crate::i18n::tr;
 use eframe::egui::{self, Color32, ComboBox, Context, Key, Rect, Sense, Stroke, Ui, pos2, vec2};
 use letter_editor::ParagraphChanges;
 use letter_model::{Alignment, FirstLineIndent, LineSpacing, ResolvedParagraphProps, Twips};
@@ -48,22 +49,22 @@ impl LineKind {
 
     fn name(self) -> &'static str {
         match self {
-            LineKind::Single => "Одинарный",
-            LineKind::OneAndHalf => "1,5 строки",
-            LineKind::Double => "Двойной",
-            LineKind::AtLeast => "Минимум",
-            LineKind::Exact => "Точно",
-            LineKind::Multiple => "Множитель",
+            LineKind::Single => tr("line-single"),
+            LineKind::OneAndHalf => tr("line-one-half"),
+            LineKind::Double => tr("line-double"),
+            LineKind::AtLeast => tr("line-at-least"),
+            LineKind::Exact => tr("line-exactly"),
+            LineKind::Multiple => tr("line-multiple"),
         }
     }
 }
 
 const ALIGNMENTS: [(Alignment, &str); 5] = [
-    (Alignment::Left, "По левому краю"),
-    (Alignment::Center, "По центру"),
-    (Alignment::Right, "По правому краю"),
-    (Alignment::Justify, "По ширине"),
-    (Alignment::Distribute, "Распределённое"),
+    (Alignment::Left, "align-left"),
+    (Alignment::Center, "align-center"),
+    (Alignment::Right, "align-right"),
+    (Alignment::Justify, "align-justify"),
+    (Alignment::Distribute, "align-distribute"),
 ];
 
 /// Значения полей окна.
@@ -212,15 +213,15 @@ impl ParagraphDialog {
         let mut open = true;
         let mut result = None;
         let mut close = false;
-        egui::Window::new("Абзац")
+        egui::Window::new(tr("paragraph"))
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.tab, 0, "Отступы и интервалы");
-                    ui.selectable_value(&mut self.tab, 1, "Положение на странице");
+                    ui.selectable_value(&mut self.tab, 0, tr("paragraph-indents-tab"));
+                    ui.selectable_value(&mut self.tab, 1, tr("paragraph-breaks-tab"));
                 });
                 ui.separator();
                 if self.tab == 0 {
@@ -229,16 +230,16 @@ impl ParagraphDialog {
                     pagination_tab(ui, &mut values);
                 }
                 ui.separator();
-                ui.label("Образец");
+                ui.label(tr("preview"));
                 paint_sample(ui, &values);
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("ОК").clicked() {
+                    if ui.button(tr("ok")).clicked() {
                         let changes = values.changes(&initial);
                         result = (!changes.is_empty()).then_some(changes);
                         close = true;
                     }
-                    if ui.button("Отмена").clicked() {
+                    if ui.button(tr("cancel")).clicked() {
                         close = true;
                     }
                 });
@@ -253,22 +254,22 @@ impl ParagraphDialog {
 
 /// Вкладка «Отступы и интервалы».
 fn indents_tab(ui: &mut Ui, v: &mut ParagraphValues) {
-    ui.strong("Общие");
+    ui.strong(tr("paragraph-general"));
     egui::Grid::new("paragraph-general")
         .num_columns(2)
         .spacing(vec2(8.0, 6.0))
         .show(ui, |ui| {
-            let label = ui.label("Выравнивание:");
+            let label = ui.label(tr("paragraph-alignment"));
             let name = ALIGNMENTS
                 .iter()
                 .find(|(a, _)| *a == v.alignment)
-                .map_or("", |(_, n)| n);
+                .map_or("", |(_, n)| tr(n));
             ComboBox::from_id_salt("paragraph-alignment")
                 .selected_text(name)
                 .width(160.0)
                 .show_ui(ui, |ui| {
                     for (alignment, name) in ALIGNMENTS {
-                        ui.selectable_value(&mut v.alignment, alignment, name);
+                        ui.selectable_value(&mut v.alignment, alignment, tr(name));
                     }
                 })
                 .response
@@ -276,18 +277,18 @@ fn indents_tab(ui: &mut Ui, v: &mut ParagraphValues) {
             ui.end_row();
         });
     ui.add_space(4.0);
-    ui.strong("Отступ");
+    ui.strong(tr("paragraph-indentation"));
     egui::Grid::new("paragraph-indents")
         .num_columns(4)
         .spacing(vec2(8.0, 6.0))
         .show(ui, |ui| {
-            let label = ui.label("Слева:");
+            let label = ui.label(tr("paragraph-left"));
             cm_field(ui, label.id, &mut v.left, -55.87, 55.87);
-            let label = ui.label("Первая строка:");
+            let label = ui.label(tr("paragraph-special"));
             let name = |f| match f {
-                FirstLine::None => "(нет)",
-                FirstLine::Indent => "Отступ",
-                FirstLine::Hanging => "Выступ",
+                FirstLine::None => tr("none-in-parens"),
+                FirstLine::Indent => tr("paragraph-first-line"),
+                FirstLine::Hanging => tr("paragraph-hanging"),
             };
             let before = v.first_line;
             ComboBox::from_id_salt("paragraph-first-line")
@@ -309,23 +310,23 @@ fn indents_tab(ui: &mut Ui, v: &mut ParagraphValues) {
                 };
             }
             ui.end_row();
-            let label = ui.label("Справа:");
+            let label = ui.label(tr("paragraph-right"));
             cm_field(ui, label.id, &mut v.right, -55.87, 55.87);
-            let label = ui.label("на:");
+            let label = ui.label(tr("by"));
             ui.add_enabled_ui(v.first_line != FirstLine::None, |ui| {
                 cm_field(ui, label.id, &mut v.first_by, 0.0, 55.87);
             });
             ui.end_row();
         });
     ui.add_space(4.0);
-    ui.strong("Интервал");
+    ui.strong(tr("paragraph-spacing"));
     egui::Grid::new("paragraph-spacing")
         .num_columns(4)
         .spacing(vec2(8.0, 6.0))
         .show(ui, |ui| {
-            let label = ui.label("Перед:");
+            let label = ui.label(tr("paragraph-before"));
             pt_field(ui, label.id, &mut v.before, 0.0, 1584.0, 1.0);
-            let label = ui.label("Междустрочный:");
+            let label = ui.label(tr("paragraph-line-spacing"));
             let before = v.line;
             ComboBox::from_id_salt("paragraph-line")
                 .selected_text(v.line.name())
@@ -347,9 +348,9 @@ fn indents_tab(ui: &mut Ui, v: &mut ParagraphValues) {
                 };
             }
             ui.end_row();
-            let label = ui.label("После:");
+            let label = ui.label(tr("paragraph-after"));
             pt_field(ui, label.id, &mut v.after, 0.0, 1584.0, 1.0);
-            let label = ui.label("значение:");
+            let label = ui.label(tr("paragraph-at"));
             match v.line {
                 LineKind::Multiple => {
                     ui.add_sized(
@@ -381,19 +382,16 @@ fn indents_tab(ui: &mut Ui, v: &mut ParagraphValues) {
             }
             ui.end_row();
         });
-    ui.checkbox(
-        &mut v.contextual_spacing,
-        "Не добавлять интервал между абзацами одного стиля",
-    );
+    ui.checkbox(&mut v.contextual_spacing, tr("paragraph-contextual"));
 }
 
 /// Вкладка «Положение на странице».
 fn pagination_tab(ui: &mut Ui, v: &mut ParagraphValues) {
-    ui.strong("Разбивка на страницы");
-    ui.checkbox(&mut v.widow_control, "Запрет висячих строк");
-    ui.checkbox(&mut v.keep_next, "Не отрывать от следующего");
-    ui.checkbox(&mut v.keep_lines, "Не разрывать абзац");
-    ui.checkbox(&mut v.page_break_before, "С новой страницы");
+    ui.strong(tr("paragraph-pagination"));
+    ui.checkbox(&mut v.widow_control, tr("paragraph-widow"));
+    ui.checkbox(&mut v.keep_next, tr("paragraph-keep-next"));
+    ui.checkbox(&mut v.keep_lines, tr("paragraph-keep-lines"));
+    ui.checkbox(&mut v.page_break_before, tr("paragraph-page-break"));
 }
 
 /// Образец: соседние абзацы серыми полосками, этот — тёмными, с его

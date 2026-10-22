@@ -3,6 +3,7 @@
 //! смещение, кернинг), образец. Как и окно «Абзац», собирает только то,
 //! что поменяли.
 
+use crate::i18n::tr;
 use eframe::egui::{
     self, Color32, ComboBox, Context, Key, Painter, Rect, ScrollArea, Sense, TextEdit, Ui, vec2,
 };
@@ -15,35 +16,32 @@ use crate::units::{FIELD_SIZE, pt_field};
 
 /// Виды подчёркивания в списке, как в Word.
 const UNDERLINES: [(Underline, &str); 18] = [
-    (Underline::None, "(нет)"),
-    (Underline::Single, "Одинарное"),
-    (Underline::Words, "Только слова"),
-    (Underline::Double, "Двойное"),
-    (Underline::Thick, "Толстое"),
-    (Underline::Dotted, "Точками"),
-    (Underline::DottedHeavy, "Толстое точками"),
-    (Underline::Dash, "Штрихами"),
-    (Underline::DashedHeavy, "Толстое штрихами"),
-    (Underline::DashLong, "Длинными штрихами"),
-    (Underline::DashLongHeavy, "Толстое длинными штрихами"),
-    (Underline::DotDash, "Штрихпунктир"),
-    (Underline::DashDotHeavy, "Толстый штрихпунктир"),
-    (Underline::DotDotDash, "Штрихпунктир с двумя точками"),
-    (
-        Underline::DashDotDotHeavy,
-        "Толстый штрихпунктир с двумя точками",
-    ),
-    (Underline::Wave, "Волнистое"),
-    (Underline::WavyHeavy, "Толстое волнистое"),
-    (Underline::WavyDouble, "Двойное волнистое"),
+    (Underline::None, "none-in-parens"),
+    (Underline::Single, "underline-single"),
+    (Underline::Words, "underline-words"),
+    (Underline::Double, "underline-double"),
+    (Underline::Thick, "underline-thick"),
+    (Underline::Dotted, "underline-dotted"),
+    (Underline::DottedHeavy, "underline-dotted-heavy"),
+    (Underline::Dash, "underline-dash"),
+    (Underline::DashedHeavy, "underline-dash-heavy"),
+    (Underline::DashLong, "underline-dash-long"),
+    (Underline::DashLongHeavy, "underline-dash-long-heavy"),
+    (Underline::DotDash, "underline-dot-dash"),
+    (Underline::DashDotHeavy, "underline-dot-dash-heavy"),
+    (Underline::DotDotDash, "underline-dot-dot-dash"),
+    (Underline::DashDotDotHeavy, "underline-dot-dot-dash-heavy"),
+    (Underline::Wave, "underline-wave"),
+    (Underline::WavyHeavy, "underline-wave-heavy"),
+    (Underline::WavyDouble, "underline-wave-double"),
 ];
 
 /// Начертания в списке.
 const STYLES: [(bool, bool, &str); 4] = [
-    (false, false, "Обычный"),
-    (false, true, "Курсив"),
-    (true, false, "Полужирный"),
-    (true, true, "Полужирный курсив"),
+    (false, false, "font-style-regular"),
+    (false, true, "font-style-italic"),
+    (true, false, "font-style-bold"),
+    (true, true, "font-style-bold-italic"),
 ];
 
 /// Масштабы в списке, проценты.
@@ -218,15 +216,15 @@ impl FontDialog {
         let mut open = true;
         let mut result = None;
         let mut close = false;
-        egui::Window::new("Шрифт")
+        egui::Window::new(tr("font"))
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.tab, 0, "Шрифт");
-                    ui.selectable_value(&mut self.tab, 1, "Дополнительно");
+                    ui.selectable_value(&mut self.tab, 0, tr("font"));
+                    ui.selectable_value(&mut self.tab, 1, tr("font-advanced"));
                 });
                 ui.separator();
                 if self.tab == 0 {
@@ -235,7 +233,7 @@ impl FontDialog {
                     advanced_tab(ui, &mut values);
                 }
                 ui.separator();
-                ui.label("Образец");
+                ui.label(tr("preview"));
                 let (rect, _) = ui.allocate_exact_size(vec2(420.0, 64.0), Sense::hover());
                 let painter = ui.painter_at(rect);
                 painter.rect_filled(rect, 0.0, Color32::WHITE);
@@ -248,12 +246,12 @@ impl FontDialog {
                 );
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("ОК").clicked() {
+                    if ui.button(tr("ok")).clicked() {
                         let changes = values.changes(&initial);
                         result = (!changes.is_empty()).then_some(changes);
                         close = true;
                     }
-                    if ui.button("Отмена").clicked() {
+                    if ui.button(tr("cancel")).clicked() {
                         close = true;
                     }
                 });
@@ -270,7 +268,7 @@ impl FontDialog {
 fn font_tab(ui: &mut Ui, v: &mut FontValues, fonts: &[String], size_text: &mut Option<String>) {
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
-            let label = ui.label("Шрифт:");
+            let label = ui.label(tr("font-name"));
             ui.add(TextEdit::singleline(&mut v.font).desired_width(190.0))
                 .labelled_by(label.id);
             list(ui, "font-list", 190.0, |ui| {
@@ -287,11 +285,11 @@ fn font_tab(ui: &mut Ui, v: &mut FontValues, fonts: &[String], size_text: &mut O
             });
         });
         ui.vertical(|ui| {
-            ui.label("Начертание:");
+            ui.label(tr("font-style"));
             list(ui, "style-list", 140.0, |ui| {
                 for (bold, italic, name) in STYLES {
                     let selected = v.bold == bold && v.italic == italic;
-                    if ui.selectable_label(selected, name).clicked() {
+                    if ui.selectable_label(selected, tr(name)).clicked() {
                         v.bold = bold;
                         v.italic = italic;
                     }
@@ -299,7 +297,7 @@ fn font_tab(ui: &mut Ui, v: &mut FontValues, fonts: &[String], size_text: &mut O
             });
         });
         ui.vertical(|ui| {
-            let label = ui.label("Размер:");
+            let label = ui.label(tr("font-size"));
             let text = size_text.get_or_insert_with(|| size_label(v.size.0));
             let field = ui
                 .add(TextEdit::singleline(text).desired_width(60.0))
@@ -331,67 +329,81 @@ fn font_tab(ui: &mut Ui, v: &mut FontValues, fonts: &[String], size_text: &mut O
         .num_columns(3)
         .spacing(vec2(12.0, 4.0))
         .show(ui, |ui| {
-            ui.label("Цвет текста:");
-            let underline_label = ui.label("Подчёркивание:");
-            ui.label("Цвет подчёркивания:");
+            ui.label(tr("font-color-label"));
+            let underline_label = ui.label(tr("font-underline"));
+            ui.label(tr("font-underline-color-label"));
             ui.end_row();
-            color_combo(ui, "font-color", &mut v.color, "Цвет текста");
+            color_combo(ui, "font-color", &mut v.color, tr("font-color"));
             let name = UNDERLINES
                 .iter()
                 .find(|(u, _)| *u == v.underline)
-                .map_or("", |(_, n)| n);
+                .map_or("", |(_, n)| tr(n));
             ComboBox::from_id_salt("font-underline")
                 .selected_text(name)
                 .width(150.0)
                 .show_ui(ui, |ui| {
                     for (underline, name) in UNDERLINES {
-                        ui.selectable_value(&mut v.underline, underline, name);
+                        ui.selectable_value(&mut v.underline, underline, tr(name));
                     }
                 })
                 .response
                 .labelled_by(underline_label.id);
             ui.add_enabled_ui(v.underline != Underline::None, |ui| {
                 let mut color = v.underline_color.unwrap_or(Color::Auto);
-                if color_combo(ui, "font-underline-color", &mut color, "Цвет подчёркивания")
-                {
+                if color_combo(
+                    ui,
+                    "font-underline-color",
+                    &mut color,
+                    tr("font-underline-color"),
+                ) {
                     v.underline_color = (color != Color::Auto).then_some(color);
                 }
             });
             ui.end_row();
         });
     ui.add_space(6.0);
-    ui.strong("Видоизменение");
+    ui.strong(tr("font-effects"));
     egui::Grid::new("font-effects")
         .num_columns(2)
         .spacing(vec2(24.0, 2.0))
         .show(ui, |ui| {
             // Взаимоисключающие пары, как в Word.
-            if ui.checkbox(&mut v.strike, "Зачёркнутый").changed() && v.strike {
+            if ui.checkbox(&mut v.strike, tr("strikethrough")).changed() && v.strike {
                 v.double_strike = false;
             }
-            if ui.checkbox(&mut v.small_caps, "Малые прописные").changed() && v.small_caps
+            if ui
+                .checkbox(&mut v.small_caps, tr("font-small-caps"))
+                .changed()
+                && v.small_caps
             {
                 v.caps = false;
             }
             ui.end_row();
             if ui
-                .checkbox(&mut v.double_strike, "Двойное зачёркивание")
+                .checkbox(&mut v.double_strike, tr("font-double-strike"))
                 .changed()
                 && v.double_strike
             {
                 v.strike = false;
             }
-            if ui.checkbox(&mut v.caps, "Все прописные").changed() && v.caps {
+            if ui.checkbox(&mut v.caps, tr("font-all-caps")).changed() && v.caps {
                 v.small_caps = false;
             }
             ui.end_row();
-            if ui.checkbox(&mut v.superscript, "Надстрочный").changed() && v.superscript
+            if ui
+                .checkbox(&mut v.superscript, tr("font-superscript"))
+                .changed()
+                && v.superscript
             {
                 v.subscript = false;
             }
-            ui.checkbox(&mut v.hidden, "Скрытый");
+            ui.checkbox(&mut v.hidden, tr("font-hidden"));
             ui.end_row();
-            if ui.checkbox(&mut v.subscript, "Подстрочный").changed() && v.subscript {
+            if ui
+                .checkbox(&mut v.subscript, tr("font-subscript"))
+                .changed()
+                && v.subscript
+            {
                 v.superscript = false;
             }
             ui.end_row();
@@ -422,13 +434,13 @@ fn list(ui: &mut Ui, id: &str, width: f32, content: impl FnOnce(&mut Ui)) {
 /// цвет.
 fn color_combo(ui: &mut Ui, id: &str, color: &mut Color, name: &str) -> bool {
     let label = |c: Color| match c {
-        Color::Auto => "Авто".to_owned(),
+        Color::Auto => tr("color-auto").to_owned(),
         Color::Rgb(r, g, b) => STANDARD_COLORS
             .iter()
             .find(|(_, rgb)| *rgb == (r, g, b))
             .map_or_else(
                 || format!("#{r:02X}{g:02X}{b:02X}"),
-                |(n, _)| (*n).to_owned(),
+                |(n, _)| tr(n).to_owned(),
             ),
     };
     let before = *color;
@@ -436,14 +448,14 @@ fn color_combo(ui: &mut Ui, id: &str, color: &mut Color, name: &str) -> bool {
         .selected_text(label(*color))
         .width(130.0)
         .show_ui(ui, |ui| {
-            ui.selectable_value(color, Color::Auto, "Авто");
+            ui.selectable_value(color, Color::Auto, tr("color-auto"));
             for (name, (r, g, b)) in STANDARD_COLORS {
                 let value = Color::Rgb(r, g, b);
                 ui.horizontal(|ui| {
                     let (swatch, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
                     ui.painter()
                         .rect_filled(swatch, 0.0, Color32::from_rgb(r, g, b));
-                    ui.selectable_value(color, value, name);
+                    ui.selectable_value(color, value, tr(name));
                 });
             }
         })
@@ -454,12 +466,12 @@ fn color_combo(ui: &mut Ui, id: &str, color: &mut Color, name: &str) -> bool {
 
 /// Вкладка «Дополнительно».
 fn advanced_tab(ui: &mut Ui, v: &mut FontValues) {
-    ui.strong("Межзнаковый интервал");
+    ui.strong(tr("font-character-spacing"));
     egui::Grid::new("font-advanced")
         .num_columns(4)
         .spacing(vec2(8.0, 6.0))
         .show(ui, |ui| {
-            let label = ui.label("Масштаб:");
+            let label = ui.label(tr("font-scale"));
             let mut scale = f64::from(v.scale);
             let field = ui
                 .add_sized(
@@ -482,11 +494,17 @@ fn advanced_tab(ui: &mut Ui, v: &mut FontValues) {
                     }
                 })
                 .response
-                .widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "Масштабы"));
+                .widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::Role::ComboBox, true, tr("font-scales"))
+                });
             ui.end_row();
 
-            let label = ui.label("Интервал:");
-            let names = ["Обычный", "Разреженный", "Уплотнённый"];
+            let label = ui.label(tr("font-spacing"));
+            let names = [
+                tr("font-spacing-normal"),
+                tr("font-spacing-expanded"),
+                tr("font-spacing-condensed"),
+            ];
             let mut kind = match v.spacing {
                 0 => 0,
                 s if s > 0 => 1,
@@ -511,7 +529,7 @@ fn advanced_tab(ui: &mut Ui, v: &mut FontValues) {
                     _ => -v.spacing.abs().max(20),
                 };
             }
-            let label = ui.label("на:");
+            let label = ui.label(tr("by"));
             let mut amount = v.spacing.abs();
             ui.add_enabled_ui(kind != 0, |ui| {
                 if pt_field(ui, label.id, &mut amount, 0.0, 1584.0, 0.1).changed() {
@@ -520,8 +538,12 @@ fn advanced_tab(ui: &mut Ui, v: &mut FontValues) {
             });
             ui.end_row();
 
-            let label = ui.label("Смещение:");
-            let names = ["Нет", "Вверх", "Вниз"];
+            let label = ui.label(tr("font-position"));
+            let names = [
+                tr("font-position-normal"),
+                tr("font-position-raised"),
+                tr("font-position-lowered"),
+            ];
             let mut kind = match v.position {
                 0 => 0,
                 p if p > 0 => 1,
@@ -546,7 +568,7 @@ fn advanced_tab(ui: &mut Ui, v: &mut FontValues) {
                     _ => -v.position.abs().max(6),
                 };
             }
-            let label = ui.label("на:");
+            let label = ui.label(tr("by"));
             // Полупункты ↔ твипы для поля в пунктах.
             let mut amount = v.position.abs() * 10;
             ui.add_enabled_ui(kind != 0, |ui| {
@@ -559,15 +581,12 @@ fn advanced_tab(ui: &mut Ui, v: &mut FontValues) {
         });
     ui.horizontal(|ui| {
         let mut kerned = v.kerning > 0;
-        if ui
-            .checkbox(&mut kerned, "Кернинг для знаков размером")
-            .changed()
-        {
+        if ui.checkbox(&mut kerned, tr("font-kerning")).changed() {
             // Word предлагает размер текста.
             v.kerning = if kerned { v.size.0.max(2) } else { 0 };
         }
         ui.add_enabled_ui(kerned, |ui| {
-            let label = ui.label("от (пт):");
+            let label = ui.label(tr("font-kerning-from"));
             // Выключенный кернинг показывает размер текста.
             let shown = if kerned { v.kerning } else { v.size.0 };
             let mut twips = (shown * 10) as i32;

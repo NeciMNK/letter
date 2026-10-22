@@ -1,6 +1,7 @@
 //! Галерея «Стили» на вкладке «Главная»: какие стили показать, в каком
 //! порядке и под какими названиями.
 
+use crate::i18n::{tr, tr_args};
 use eframe::egui::Color32;
 use letter_model::{Color, Document, ParagraphProps, RunProps, Style, StyleKind};
 
@@ -25,22 +26,22 @@ pub struct GalleryStyle {
 /// признака `w:qFormat` (например, в документах из TXT и HTML), в порядке
 /// галереи Word, и их русские названия.
 const BUILT_IN: [(&str, &str); 16] = [
-    ("normal", "Обычный"),
-    ("no spacing", "Без интервала"),
-    ("heading 1", "Заголовок 1"),
-    ("heading 2", "Заголовок 2"),
-    ("title", "Заголовок"),
-    ("subtitle", "Подзаголовок"),
-    ("subtle emphasis", "Слабое выделение"),
-    ("emphasis", "Выделение"),
-    ("intense emphasis", "Сильное выделение"),
-    ("strong", "Строгий"),
-    ("quote", "Цитата"),
-    ("intense quote", "Выделенная цитата"),
-    ("subtle reference", "Слабая ссылка"),
-    ("intense reference", "Сильная ссылка"),
-    ("book title", "Название книги"),
-    ("list paragraph", "Абзац списка"),
+    ("normal", "style-normal"),
+    ("no spacing", "style-no-spacing"),
+    ("heading 1", "style-heading-1"),
+    ("heading 2", "style-heading-2"),
+    ("title", "style-title"),
+    ("subtitle", "style-subtitle"),
+    ("subtle emphasis", "style-subtle-emphasis"),
+    ("emphasis", "style-emphasis"),
+    ("intense emphasis", "style-intense-emphasis"),
+    ("strong", "style-strong"),
+    ("quote", "style-quote"),
+    ("intense quote", "style-intense-quote"),
+    ("subtle reference", "style-subtle-reference"),
+    ("intense reference", "style-intense-reference"),
+    ("book title", "style-book-title"),
+    ("list paragraph", "style-list-paragraph"),
 ];
 
 /// Имя стиля из файла (`heading 1`), а если его нет — идентификатор.
@@ -54,10 +55,12 @@ pub fn display_name(style: &Style) -> String {
     let name = file_name(style);
     let lower = name.to_lowercase();
     if let Some((_, russian)) = BUILT_IN.iter().find(|(english, _)| *english == lower) {
-        return (*russian).to_owned();
+        return tr(russian).to_owned();
     }
     match lower.strip_prefix("heading ") {
-        Some(level) if level.parse::<u8>().is_ok() => format!("Заголовок {level}"),
+        Some(level) if level.parse::<u8>().is_ok() => {
+            tr_args("style-heading-n", &[("level", level.into())])
+        }
         _ => name.to_owned(),
     }
 }

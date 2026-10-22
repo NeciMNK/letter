@@ -13,6 +13,7 @@ mod files;
 mod find;
 mod font_dialog;
 mod home;
+mod i18n;
 mod icons;
 mod language;
 mod paragraph_dialog;
