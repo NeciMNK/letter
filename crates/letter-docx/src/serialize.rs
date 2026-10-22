@@ -166,7 +166,7 @@ const STYLE_ORDER: &[&str] = &[
 /// Атрибуты корневого элемента: объявления пространств имён и
 /// `mc:Ignorable`. Префикс `w` всегда указывает на обычный WordprocessingML,
 /// потому что именно его пишет запись.
-fn root_attributes(original: Option<&[(String, String)]>) -> Vec<(String, String)> {
+pub(crate) fn root_attributes(original: Option<&[(String, String)]>) -> Vec<(String, String)> {
     let mut attrs: Vec<(String, String)> = match original {
         Some(attrs) => attrs.to_vec(),
         None => vec![("xmlns:r".into(), R_NS.into())],
@@ -263,10 +263,20 @@ fn table(table: &Table) -> String {
 }
 
 /// `w:pPr`; пустая строка, если записывать нечего.
-fn paragraph_props(props: &ParagraphProps, section: Option<&SectionProps>) -> String {
+pub(crate) fn paragraph_props(props: &ParagraphProps, section: Option<&SectionProps>) -> String {
     let mut children = Children::new(PPR_ORDER);
     if let Some(style) = &props.style {
         children.push("pStyle", val("w:pStyle", style));
+    }
+    if let Some(numbering) = props.numbering {
+        let mut inner = String::new();
+        if let Some(level) = numbering.level {
+            inner.push_str(&val("w:ilvl", &level.to_string()));
+        }
+        if let Some(id) = numbering.id {
+            inner.push_str(&val("w:numId", &id.to_string()));
+        }
+        children.push("numPr", element("w:numPr", &inner));
     }
     let toggles = [
         ("keepNext", props.keep_next),
@@ -378,7 +388,7 @@ fn text_element(text: &str) -> String {
 }
 
 /// `w:rPr`; пустая строка, если записывать нечего.
-fn run_props(props: &RunProps) -> String {
+pub(crate) fn run_props(props: &RunProps) -> String {
     let mut children = Children::new(RPR_ORDER);
     if let Some(style) = &props.style {
         children.push("rStyle", val("w:rStyle", style));
@@ -582,13 +592,13 @@ fn style_xml(style: &Style) -> String {
 }
 
 /// Дочерние элементы, которые нужно записать в порядке схемы.
-struct Children {
+pub(crate) struct Children {
     order: &'static [&'static str],
     items: Vec<(usize, String)>,
 }
 
 impl Children {
-    fn new(order: &'static [&'static str]) -> Children {
+    pub(crate) fn new(order: &'static [&'static str]) -> Children {
         Children {
             order,
             items: Vec::new(),
@@ -603,14 +613,14 @@ impl Children {
             .unwrap_or(self.order.len())
     }
 
-    fn push(&mut self, local: &str, xml: String) {
+    pub(crate) fn push(&mut self, local: &str, xml: String) {
         self.items.push((self.rank(local), xml));
     }
 
     /// Добавляет сохранённые элементы. Их место определяется по имени,
     /// если они из пространства имён WordprocessingML; элементы из других
     /// пространств (расширения новых версий Word) идут в конец.
-    fn raw(&mut self, raws: &[RawXml]) {
+    pub(crate) fn raw(&mut self, raws: &[RawXml]) {
         for raw in raws {
             let rank = match xml::parse(raw.as_str().as_bytes()) {
                 Ok(e) if is_w_ns(e.ns.as_deref()) => self.rank(&e.local),
@@ -620,7 +630,7 @@ impl Children {
         }
     }
 
-    fn finish(mut self) -> String {
+    pub(crate) fn finish(mut self) -> String {
         // Сортировка устойчивая: одинаковые по месту элементы
         // сохраняют исходный порядок.
         self.items.sort_by_key(|(rank, _)| *rank);
@@ -637,7 +647,7 @@ pub(crate) fn xml_part(root: &str) -> String {
     format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n{root}")
 }
 
-fn element(name: &str, content: &str) -> String {
+pub(crate) fn element(name: &str, content: &str) -> String {
     if content.is_empty() {
         format!("<{name}/>")
     } else {
@@ -654,7 +664,7 @@ fn optional_element(name: &str, content: &str) -> String {
     }
 }
 
-fn element_with(name: &str, attrs: &[(String, String)], content: &str) -> String {
+pub(crate) fn element_with(name: &str, attrs: &[(String, String)], content: &str) -> String {
     let mut out = format!("<{name}");
     for (attr, value) in attrs {
         out.push_str(&format!(" {attr}=\"{}\"", escape_attr(value)));
@@ -667,7 +677,7 @@ fn element_with(name: &str, attrs: &[(String, String)], content: &str) -> String
     out
 }
 
-fn empty(name: &str, attrs: &[(&str, String)]) -> String {
+pub(crate) fn empty(name: &str, attrs: &[(&str, String)]) -> String {
     let mut out = format!("<{name}");
     for (attr, value) in attrs {
         out.push_str(&format!(" {attr}=\"{}\"", escape_attr(value)));
@@ -676,12 +686,12 @@ fn empty(name: &str, attrs: &[(&str, String)]) -> String {
     out
 }
 
-fn val(name: &str, value: &str) -> String {
+pub(crate) fn val(name: &str, value: &str) -> String {
     empty(name, &[("w:val", value.to_string())])
 }
 
 /// Переключатель: `<w:b/>` или `<w:b w:val="0"/>`.
-fn toggle(name: &str, on: bool) -> String {
+pub(crate) fn toggle(name: &str, on: bool) -> String {
     if on {
         format!("<{name}/>")
     } else {

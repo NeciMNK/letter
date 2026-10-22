@@ -297,6 +297,7 @@ impl Writer {
         }
         let explicit = ParagraphProps {
             style: None,
+            numbering: None,
             alignment: Some(resolved.alignment),
             indentation: letter_model::Indentation {
                 left: Some(resolved.indent_left),

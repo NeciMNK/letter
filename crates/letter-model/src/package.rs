@@ -15,6 +15,11 @@ pub struct SourcePackage {
     /// Имя части стилей, если стили были прочитаны из неё. Если часть
     /// стилей есть, но испорчена, её байты лежат в [`SourcePackage::parts`].
     pub styles_part: Option<String>,
+    /// Имя части списков (`word/numbering.xml`), если списки были
+    /// прочитаны из неё.
+    pub numbering_part: Option<String>,
+    /// Атрибуты корневого элемента части списков.
+    pub numbering_root_attributes: Vec<(String, String)>,
     /// Имя части основных свойств (`docProps/core.xml`), если они были
     /// прочитаны из неё.
     pub core_part: Option<String>,

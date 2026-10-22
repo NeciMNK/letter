@@ -1,6 +1,8 @@
 //! Документ целиком.
 
-use crate::{Block, Paragraph, Properties, RawXml, Section, SourcePackage, Styles, Theme, Twips};
+use crate::{
+    Block, Numbering, Paragraph, Properties, RawXml, Section, SourcePackage, Styles, Theme, Twips,
+};
 
 /// Документ: разделы с содержимым, стили, нумерация списков и настройки.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,12 +66,6 @@ impl Default for Document {
         Document::new()
     }
 }
-
-/// Определения нумерованных и маркированных списков (`word/numbering.xml`).
-/// Пока пусто: списки появятся в задаче F5.1.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub struct Numbering {}
 
 /// Настройки документа (`word/settings.xml`).
 #[derive(Debug, Clone, PartialEq, Eq)]

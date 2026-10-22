@@ -1,6 +1,6 @@
 //! Сборка пакета .docx при сохранении.
 //!
-//! Главная часть и стили строятся заново из модели. Все остальные части
+//! Главная часть, стили и списки строятся заново из модели. Все остальные части
 //! исходного файла ([`SourcePackage`]) записываются байт в байт, вместе
 //! со своими связями, поэтому картинки, колонтитулы, сноски и прочее,
 //! что программа пока не понимает, не теряются.
@@ -21,6 +21,10 @@ use crate::xml;
 const CT_MAIN: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
 const CT_STYLES: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml";
+const CT_NUMBERING: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml";
+const REL_NUMBERING: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
 const CT_RELS: &str = "application/vnd.openxmlformats-package.relationships+xml";
 const CT_XML: &str = "application/xml";
 const REL_OFFICE_DOCUMENT: &str =
@@ -84,6 +88,26 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
         let xml = serialize::styles_xml(&doc.styles, root);
         parts.push((name.clone(), xml.into_bytes().into()));
         ensure_override(&mut overrides, name, CT_STYLES);
+        replaced.push(name.clone());
+    }
+
+    let numbering_part = match &source.numbering_part {
+        Some(name) => Some(name.clone()),
+        None if !doc.numbering.is_empty() => Some(links.find_or_add(
+            &main,
+            REL_NUMBERING,
+            &["/numbering"],
+            &join(base_dir, "numbering.xml"),
+            false,
+        )),
+        None => None,
+    };
+    if let Some(name) = &numbering_part {
+        let root = (!source.numbering_root_attributes.is_empty())
+            .then_some(source.numbering_root_attributes.as_slice());
+        let xml = crate::numbering::numbering_xml(&doc.numbering, root);
+        parts.push((name.clone(), xml.into_bytes().into()));
+        ensure_override(&mut overrides, name, CT_NUMBERING);
         replaced.push(name.clone());
     }
 

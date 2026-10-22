@@ -14,7 +14,7 @@
 //! значение окончательно.
 
 use crate::{
-    Alignment, Color, Document, FirstLineIndent, HalfPoints, Highlight, LineSpacing,
+    Alignment, Color, Document, FirstLineIndent, HalfPoints, Highlight, LineSpacing, NumberingRef,
     ParagraphProps, RunFonts, RunProps, Style, StyleKind, Styles, TabStop, TabStopKind, ThemeFont,
     Twips, Underline, VerticalAlign,
 };
@@ -59,6 +59,8 @@ pub struct ResolvedParagraphProps {
     /// Позиции табуляции из всех слоёв по возрастанию, без
     /// [`TabStopKind::Clear`].
     pub tabs: Vec<TabStop>,
+    /// Список и уровень (`numId`, `ilvl`), если абзац в списке.
+    pub numbering: Option<(u32, u8)>,
 }
 
 /// Итоговые шрифты фрагмента: ссылки на тему заменены именами.
@@ -157,8 +159,27 @@ impl Document {
         let chain = self
             .styles
             .chain(direct.style.as_deref(), StyleKind::Paragraph);
+        // Список: номер и уровень могут прийти из разных слоёв.
+        let mut list = NumberingRef::default();
+        for layer in std::iter::once(&self.styles.defaults.paragraph)
+            .chain(chain.iter().map(|s| &s.paragraph))
+            .chain(std::iter::once(direct))
+        {
+            if let Some(numbering) = layer.numbering {
+                overlay(&mut list.id, &numbering.id);
+                overlay(&mut list.level, &numbering.level);
+            }
+        }
+        let numbering = match list.id {
+            Some(id) if id != 0 => Some((id, list.level.unwrap_or(0).min(8))),
+            _ => None,
+        };
+        // Оформление уровня списка (отступы) — после стиля, но до
+        // оформления самого абзаца, как в Word.
+        let level = numbering.and_then(|(id, level)| self.numbering.level(id, level));
         let layers = std::iter::once(&self.styles.defaults.paragraph)
             .chain(chain.iter().map(|s| &s.paragraph))
+            .chain(level.as_ref().map(|l| &l.paragraph))
             .chain(std::iter::once(direct));
 
         let mut acc = ParagraphProps::default();
@@ -202,6 +223,7 @@ impl Document {
             page_break_before: acc.page_break_before.unwrap_or(false),
             widow_control: acc.widow_control.unwrap_or(true),
             tabs,
+            numbering,
         }
     }
 

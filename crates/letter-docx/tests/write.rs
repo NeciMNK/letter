@@ -75,6 +75,7 @@ fn untouched_parts_are_copied_byte_for_byte() {
             "[Content_Types].xml",
             "word/document.xml",
             "word/styles.xml",
+            "word/numbering.xml",
             "docProps/core.xml",
             "docProps/app.xml",
         ];
@@ -197,6 +198,10 @@ fn everything() -> Document {
     };
     let paragraph_props = ParagraphProps {
         style: Some("Heading1".into()),
+        numbering: Some(letter_model::NumberingRef {
+            id: Some(3),
+            level: Some(1),
+        }),
         alignment: Some(Alignment::Justify),
         indentation: Indentation {
             left: Some(Twips(720)),

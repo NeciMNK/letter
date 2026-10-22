@@ -18,6 +18,7 @@
 //! сохранении записывается обратно без изменений.
 
 mod document;
+mod numbering;
 mod package;
 mod paragraph;
 mod properties;
@@ -30,7 +31,11 @@ mod table;
 mod theme;
 mod units;
 
-pub use document::{Document, Numbering, Settings};
+pub use document::{Document, Settings};
+pub use numbering::{
+    AbstractNumbering, LevelOverride, LevelSuffix, ListLevel, NumberFormat, Numbering,
+    NumberingInstance, NumberingRef,
+};
 pub use package::{SourcePackage, SourcePart};
 pub use paragraph::{
     Alignment, FirstLineIndent, Indentation, Inline, LineSpacing, Paragraph, ParagraphProps,

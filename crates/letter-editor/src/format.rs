@@ -467,11 +467,13 @@ pub fn format_paragraphs(
                 props.spacing.before = Some(Twips(if had_space_before { 0 } else { 240 }));
             }
             ParagraphFormat::Reset => {
-                // Непонятые нами свойства (списки, границы) не трогаем.
+                // Список и непонятые нами свойства (границы) не трогаем.
                 let style = props.style.take();
+                let numbering = props.numbering.take();
                 let unknown = std::mem::take(&mut props.unknown);
                 *props = letter_model::ParagraphProps {
                     style,
+                    numbering,
                     unknown,
                     ..Default::default()
                 };
