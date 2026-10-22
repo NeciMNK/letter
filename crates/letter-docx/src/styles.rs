@@ -109,6 +109,10 @@ fn read_style(element: &Element) -> Option<Style> {
                     style.run = read_run_props(child);
                     true
                 }
+                "tblPr" if child.attrs.is_empty() => {
+                    style.table = crate::table::read_table_props(child);
+                    true
+                }
                 _ => false,
             };
         if !understood {

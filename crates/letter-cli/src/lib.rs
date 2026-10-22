@@ -218,8 +218,10 @@ pub fn pages(doc: &Document, library: &FontLibrary) -> String {
                 .unwrap_or_default();
             let _ = writeln!(
                 out,
-                "  {:7.2} пт  абзац {:<3} {label}{:?}",
+                "  {:7.2} пт  h {:5.2}  x {:6.2}  абзац {:<3} {label}{:?}",
                 line.top,
+                line.height,
+                line.x + line.line.x,
                 line.paragraph + 1,
                 text.trim_end()
             );

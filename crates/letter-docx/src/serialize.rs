@@ -567,6 +567,10 @@ fn style_xml(style: &Style) -> String {
     if !run.is_empty() {
         children.push("rPr", run);
     }
+    let table = crate::table::table_props(&style.table);
+    if !table.is_empty() {
+        children.push("tblPr", element("w:tblPr", &table));
+    }
     children.raw(&style.unknown);
     let attrs: Vec<(String, String)> = attrs
         .into_iter()

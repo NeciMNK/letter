@@ -77,6 +77,11 @@ pub struct Settings {
     /// Если нет — между абзацами берётся больший из двух, как в HTML;
     /// так Word делает по умолчанию.
     pub add_paragraph_spacing: bool,
+    /// Режим совместимости с версией Word (`compatibilityMode`): 15 —
+    /// Word 2013 и новее, 14 — Word 2010, 12 — Word 2007 (так считается,
+    /// если режим не указан). От него зависит, например, где стоит левая
+    /// граница таблицы.
+    pub compatibility_mode: u32,
 }
 
 impl Default for Settings {
@@ -85,6 +90,7 @@ impl Default for Settings {
         Settings {
             default_tab_stop: Twips(708),
             add_paragraph_spacing: false,
+            compatibility_mode: 12,
         }
     }
 }

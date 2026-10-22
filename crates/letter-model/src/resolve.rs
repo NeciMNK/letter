@@ -14,9 +14,9 @@
 //! значение окончательно.
 
 use crate::{
-    Alignment, Color, Document, FirstLineIndent, HalfPoints, Highlight, LineSpacing, NumberingRef,
-    ParagraphProps, RunFonts, RunProps, Style, StyleKind, Styles, TabStop, TabStopKind, ThemeFont,
-    Twips, Underline, VerticalAlign,
+    Alignment, Borders, Color, Document, FirstLineIndent, HalfPoints, Highlight, LineSpacing,
+    NumberingRef, ParagraphProps, RunFonts, RunProps, Style, StyleKind, Styles, TabStop,
+    TabStopKind, TableProps, ThemeFont, Twips, Underline, VerticalAlign,
 };
 
 /// Шрифт, который используется, если ни один слой его не задал.
@@ -156,6 +156,18 @@ impl Styles {
 impl Document {
     /// Итоговое оформление абзаца с учётом стилей.
     pub fn resolve_paragraph(&self, direct: &ParagraphProps) -> ResolvedParagraphProps {
+        self.resolve_paragraph_in(direct, None)
+    }
+
+    /// Итоговое оформление абзаца в ячейке таблицы со стилем `table`:
+    /// оформление абзаца из стиля таблицы ложится сразу после значений
+    /// по умолчанию, под стилем абзаца. `None` — абзац вне таблицы.
+    pub fn resolve_paragraph_in(
+        &self,
+        direct: &ParagraphProps,
+        table: Option<&str>,
+    ) -> ResolvedParagraphProps {
+        let table_chain = self.table_chain(table);
         let chain = self
             .styles
             .chain(direct.style.as_deref(), StyleKind::Paragraph);
@@ -178,6 +190,7 @@ impl Document {
         // оформления самого абзаца, как в Word.
         let level = numbering.and_then(|(id, level)| self.numbering.level(id, level));
         let layers = std::iter::once(&self.styles.defaults.paragraph)
+            .chain(table_chain.iter().map(|s| &s.paragraph))
             .chain(chain.iter().map(|s| &s.paragraph))
             .chain(level.as_ref().map(|l| &l.paragraph))
             .chain(std::iter::once(direct));
@@ -229,6 +242,18 @@ impl Document {
 
     /// Итоговое оформление фрагмента `run` в абзаце с оформлением `paragraph`.
     pub fn resolve_run(&self, paragraph: &ParagraphProps, run: &RunProps) -> ResolvedRunProps {
+        self.resolve_run_in(paragraph, run, None)
+    }
+
+    /// Итоговое оформление фрагмента в ячейке таблицы со стилем `table`
+    /// (см. [`Document::resolve_paragraph_in`]).
+    pub fn resolve_run_in(
+        &self,
+        paragraph: &ParagraphProps,
+        run: &RunProps,
+        table: Option<&str>,
+    ) -> ResolvedRunProps {
+        let table_chain = self.table_chain(table);
         let defaults = &self.styles.defaults.run;
         let para_chain = self
             .styles
@@ -236,7 +261,11 @@ impl Document {
         let char_chain = self
             .styles
             .chain(run.style.as_deref(), StyleKind::Character);
-        let para_layers: Vec<&RunProps> = para_chain.iter().map(|s| &s.run).collect();
+        let para_layers: Vec<&RunProps> = table_chain
+            .iter()
+            .chain(para_chain.iter())
+            .map(|s| &s.run)
+            .collect();
         let char_layers: Vec<&RunProps> = char_chain.iter().map(|s| &s.run).collect();
         let layers: Vec<&RunProps> = std::iter::once(defaults)
             .chain(para_layers.iter().copied())
@@ -284,6 +313,62 @@ impl Document {
             kerning: acc.kerning.unwrap_or_default(),
         }
     }
+}
+
+impl Document {
+    /// Стиль таблицы и его родители; `None` — не в таблице. Если стиль
+    /// таблицы не задан или не найден — стиль таблиц по умолчанию.
+    fn table_chain(&self, table: Option<&str>) -> Vec<&Style> {
+        match table {
+            Some(id) => self.styles.chain(Some(id), StyleKind::Table),
+            None => Vec::new(),
+        }
+    }
+
+    /// Итоговые свойства таблицы: стиль таблицы (или стиль таблиц по
+    /// умолчанию) с родителями, поверх — прямое оформление. Границы
+    /// и поля ячеек перекрываются по сторонам. В `style` — стиль, который
+    /// на самом деле применён.
+    pub fn resolve_table(&self, direct: &TableProps) -> TableProps {
+        let chain = self.table_chain(Some(direct.style.as_deref().unwrap_or("")));
+        let mut acc = TableProps::default();
+        for layer in chain
+            .iter()
+            .map(|s| &s.table)
+            .chain(std::iter::once(direct))
+        {
+            overlay(&mut acc.width, &layer.width);
+            overlay(&mut acc.alignment, &layer.alignment);
+            overlay(&mut acc.indent, &layer.indent);
+            overlay(&mut acc.shading, &layer.shading);
+            overlay(&mut acc.layout, &layer.layout);
+            if let Some(borders) = &layer.borders {
+                acc.borders = Some(overlay_borders(acc.borders.take(), borders));
+            }
+            if let Some(margins) = &layer.cell_margins {
+                let mut m = acc.cell_margins.unwrap_or_default();
+                overlay(&mut m.top, &margins.top);
+                overlay(&mut m.left, &margins.left);
+                overlay(&mut m.bottom, &margins.bottom);
+                overlay(&mut m.right, &margins.right);
+                acc.cell_margins = Some(m);
+            }
+        }
+        acc.style = chain.last().map(|s| s.id.clone());
+        acc
+    }
+}
+
+/// Границы `layer` поверх `acc` по сторонам.
+pub fn overlay_borders(acc: Option<Borders>, layer: &Borders) -> Borders {
+    let mut acc = acc.unwrap_or_default();
+    overlay(&mut acc.top, &layer.top);
+    overlay(&mut acc.left, &layer.left);
+    overlay(&mut acc.bottom, &layer.bottom);
+    overlay(&mut acc.right, &layer.right);
+    overlay(&mut acc.inside_h, &layer.inside_h);
+    overlay(&mut acc.inside_v, &layer.inside_v);
+    acc
 }
 
 impl Document {
