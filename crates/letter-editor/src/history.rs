@@ -166,7 +166,7 @@ impl History {
         };
         let after = match &command {
             Command::Format(format) => {
-                format_runs(doc, start, end, *format);
+                format_runs(doc, start, end, format.clone());
                 Some(selection)
             }
             Command::Align(alignment) => {

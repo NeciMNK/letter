@@ -1,10 +1,12 @@
-//! Оформление выделенного: полужирный, курсив, подчёркивание, размер
-//! шрифта (Ctrl+B, Ctrl+I, Ctrl+U, Ctrl+] и Ctrl+[) и выравнивание
-//! абзацев (Ctrl+L, Ctrl+E, Ctrl+R, Ctrl+J).
+//! Оформление выделенного: шрифт и размер, полужирный, курсив,
+//! подчёркивание, зачёркивание, индексы, цвет, выделение цветом,
+//! очистка оформления (Ctrl+B, Ctrl+I, Ctrl+U, Ctrl+], Ctrl+[, Ctrl+=,
+//! Ctrl+Shift+=, Ctrl+Пробел) и выравнивание абзацев (Ctrl+L, Ctrl+E,
+//! Ctrl+R, Ctrl+J).
 
 use letter_model::{
-    Alignment, Document, HalfPoints, Inline, Paragraph, ResolvedParagraphProps, ResolvedRunProps,
-    Run, RunProps, Underline,
+    Alignment, Color, Document, HalfPoints, Highlight, Inline, Paragraph, ResolvedParagraphProps,
+    ResolvedRunProps, Run, RunProps, Underline, VerticalAlign,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -12,7 +14,7 @@ use crate::edit::{paragraph_mut, paragraph_ref, split_content, text_len, tidy};
 use crate::position::Position;
 
 /// Что поменять в оформлении символов.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunFormat {
     /// Ctrl+B: полужирный — включить или выключить.
     Bold,
@@ -24,6 +26,23 @@ pub enum RunFormat {
     Grow,
     /// Ctrl+[: шрифт на 1 пт меньше.
     Shrink,
+    /// Зачёркнутый — включить или выключить.
+    Strike,
+    /// Ctrl+=: подстрочный знак — включить или выключить.
+    Subscript,
+    /// Ctrl+Shift+=: надстрочный знак — включить или выключить.
+    Superscript,
+    /// Шрифт с этим именем (для латиницы, кириллицы и сложных письменностей,
+    /// как список «Шрифт» на ленте Word).
+    Font(String),
+    /// Размер шрифта.
+    Size(HalfPoints),
+    /// Цвет текста; [`Color::Auto`] — «Авто».
+    Color(Color),
+    /// Выделение цветом (маркер); [`Highlight::None`] — «Нет цвета».
+    Highlight(Highlight),
+    /// Ctrl+Пробел: убрать оформление символов, оставив оформление стиля.
+    Clear,
 }
 
 /// Самый маленький и самый большой размер шрифта Word, полупункты.
@@ -61,7 +80,10 @@ pub fn format_runs(doc: &mut Document, start: Position, end: Position, format: R
                 RunFormat::Bold => resolved.bold,
                 RunFormat::Italic => resolved.italic,
                 RunFormat::Underline => resolved.underline != Underline::None,
-                RunFormat::Grow | RunFormat::Shrink => true,
+                RunFormat::Strike => resolved.strike,
+                RunFormat::Subscript => resolved.vertical_align == VerticalAlign::Subscript,
+                RunFormat::Superscript => resolved.vertical_align == VerticalAlign::Superscript,
+                _ => true,
             };
         }
     }
@@ -78,7 +100,7 @@ pub fn format_runs(doc: &mut Document, start: Position, end: Position, format: R
             continue;
         };
         let mut sizes = sizes.into_iter();
-        apply(paragraph, from, to, |props| match format {
+        apply(paragraph, from, to, |props| match &format {
             RunFormat::Bold => props.bold = Some(!all_on),
             RunFormat::Italic => props.italic = Some(!all_on),
             RunFormat::Underline => {
@@ -96,6 +118,45 @@ pub fn format_runs(doc: &mut Document, start: Position, end: Position, format: R
                     size.saturating_sub(2)
                 };
                 props.size = Some(HalfPoints(size.clamp(MIN_SIZE, MAX_SIZE)));
+            }
+            RunFormat::Strike => {
+                props.strike = Some(!all_on);
+                if !all_on {
+                    props.double_strike = Some(false);
+                }
+            }
+            RunFormat::Subscript | RunFormat::Superscript => {
+                props.vertical_align = Some(if all_on {
+                    VerticalAlign::Baseline
+                } else if format == RunFormat::Subscript {
+                    VerticalAlign::Subscript
+                } else {
+                    VerticalAlign::Superscript
+                });
+            }
+            RunFormat::Font(name) => {
+                let fonts = &mut props.fonts;
+                fonts.ascii = Some(name.clone());
+                fonts.h_ansi = Some(name.clone());
+                fonts.complex_script = Some(name.clone());
+                fonts.ascii_theme = None;
+                fonts.h_ansi_theme = None;
+                fonts.complex_script_theme = None;
+            }
+            RunFormat::Size(size) => {
+                props.size = Some(HalfPoints(size.0.clamp(MIN_SIZE, MAX_SIZE)));
+            }
+            RunFormat::Color(color) => {
+                props.color = Some(*color);
+                props.theme_color = None;
+            }
+            RunFormat::Highlight(highlight) => props.highlight = Some(*highlight),
+            // Неизвестные свойства (их нам не показать) остаются.
+            RunFormat::Clear => {
+                *props = RunProps {
+                    unknown: std::mem::take(&mut props.unknown),
+                    ..RunProps::default()
+                };
             }
         });
     }
@@ -465,6 +526,42 @@ mod tests {
         )])]);
         let (_, run) = formatting_at(&d, Position::new(0, 0)).unwrap();
         assert!(run.italic);
+    }
+
+    #[test]
+    fn strike_indexes_and_values() {
+        let mut d = doc(vec![Paragraph::text("abcd")]);
+        let all = |d: &mut Document, f: RunFormat| {
+            format_runs(d, Position::new(0, 0), Position::new(0, 4), f);
+        };
+        let props = |d: &Document| para(d, 0).runs().next().unwrap().props.clone();
+        all(&mut d, RunFormat::Strike);
+        assert_eq!(props(&d).strike, Some(true));
+        all(&mut d, RunFormat::Strike);
+        assert_eq!(props(&d).strike, Some(false));
+        // Подстрочный сменяется надстрочным, повтор возвращает обычный.
+        all(&mut d, RunFormat::Subscript);
+        assert_eq!(props(&d).vertical_align, Some(VerticalAlign::Subscript));
+        all(&mut d, RunFormat::Superscript);
+        assert_eq!(props(&d).vertical_align, Some(VerticalAlign::Superscript));
+        all(&mut d, RunFormat::Superscript);
+        assert_eq!(props(&d).vertical_align, Some(VerticalAlign::Baseline));
+        all(&mut d, RunFormat::Font("Arial".into()));
+        all(&mut d, RunFormat::Size(HalfPoints(28)));
+        all(&mut d, RunFormat::Color(Color::Rgb(255, 0, 0)));
+        all(&mut d, RunFormat::Highlight(Highlight::Yellow));
+        let p = props(&d);
+        assert_eq!(p.fonts.ascii.as_deref(), Some("Arial"));
+        assert_eq!(p.fonts.h_ansi.as_deref(), Some("Arial"));
+        assert_eq!(p.size, Some(HalfPoints(28)));
+        assert_eq!(p.color, Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(p.highlight, Some(Highlight::Yellow));
+        let resolved = d.resolve_run(&ParagraphProps::default(), &p);
+        assert_eq!(resolved.fonts.ascii, "Arial");
+        // Очистка возвращает оформление по умолчанию.
+        all(&mut d, RunFormat::Bold);
+        all(&mut d, RunFormat::Clear);
+        assert_eq!(props(&d), RunProps::default());
     }
 
     #[test]

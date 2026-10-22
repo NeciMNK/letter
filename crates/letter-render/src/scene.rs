@@ -2,7 +2,9 @@
 //! (подчёркивания, выделение маркером, заполнители табуляции)
 //! в пикселях. Список одинаков для экрана и для картинки.
 
-use letter_layout::{FontLibrary, LineItem, Page, PageLine, TabItem, TabLeader, TextItem};
+use letter_layout::{
+    FontLibrary, LineItem, Page, PageLine, TabItem, TabLeader, TextItem, baseline_rise,
+};
 use letter_model::{Color, ResolvedRunProps, Underline};
 
 use crate::glyphs::{GlyphCache, GlyphKey, SUBPIXEL_STEPS};
@@ -75,7 +77,7 @@ pub fn page_scene(
                         ));
                     }
                     let color = text_color(props);
-                    push_glyphs(&mut glyphs, line, text, scale, color);
+                    push_glyphs(&mut glyphs, line, text, baseline_rise(props), scale, color);
                     decorate(
                         &mut lines, library, cache, line, text, props, x, width, scale, color,
                     );
@@ -111,13 +113,21 @@ pub fn text_color(props: &ResolvedRunProps) -> Rgba {
     }
 }
 
-fn push_glyphs(out: &mut Vec<DrawItem>, line: &PageLine, text: &TextItem, scale: f32, color: Rgba) {
+/// Глифы куска; `rise` — подъём над базовой линией (индексы), пт.
+fn push_glyphs(
+    out: &mut Vec<DrawItem>,
+    line: &PageLine,
+    text: &TextItem,
+    rise: f32,
+    scale: f32,
+    color: Rgba,
+) {
     let run = &text.run;
     let size_64 = (run.size * scale * 64.0).round().max(1.0) as u32;
     let mut pen = line.x + text.x;
     for glyph in &run.glyphs {
         let x = (pen + glyph.x_offset) * scale;
-        let y = (line.baseline - glyph.y_offset) * scale;
+        let y = (line.baseline - rise - glyph.y_offset) * scale;
         let whole = x.floor();
         let subpixel =
             (((x - whole) * f32::from(SUBPIXEL_STEPS)).floor() as u8).min(SUBPIXEL_STEPS - 1);

@@ -4,7 +4,7 @@
 
 use eframe::egui::{
     Align2, Color32, Context, CornerRadius, FontData, FontFamily, FontId, Painter, Rect, Response,
-    Sense, Ui, Vec2, WidgetInfo,
+    RichText, Sense, Ui, Vec2, WidgetInfo,
     epaint::text::{FontInsert, FontPriority, InsertFontFamily},
     pos2, vec2,
 };
@@ -31,6 +31,20 @@ pub enum Icon {
     Grow,
     /// Уменьшить размер шрифта.
     Shrink,
+    /// Зачёркнутый.
+    Strike,
+    /// Подстрочный знак.
+    Subscript,
+    /// Надстрочный знак.
+    Superscript,
+    /// Цвет выделения текста: маркер.
+    Highlight,
+    /// Цвет текста: буква над полоской.
+    FontColor,
+    /// Очистить оформление.
+    ClearFormat,
+    /// Стрелка вниз: открыть список.
+    ChevronDown,
 }
 
 /// Шрифт со значками.
@@ -62,6 +76,13 @@ impl Icon {
             }
             Icon::Grow => ("a-arrow-up", '\u{E586}'),
             Icon::Shrink => ("a-arrow-down", '\u{E585}'),
+            Icon::Strike => ("strikethrough", '\u{E177}'),
+            Icon::Subscript => ("subscript", '\u{E25C}'),
+            Icon::Superscript => ("superscript", '\u{E25E}'),
+            Icon::Highlight => ("highlighter", '\u{E0F4}'),
+            Icon::FontColor => ("baseline", '\u{E285}'),
+            Icon::ClearFormat => ("remove-formatting", '\u{E3B3}'),
+            Icon::ChevronDown => ("chevron-down", '\u{E06D}'),
         }
     }
 }
@@ -75,6 +96,19 @@ pub fn icon_button(
     size: Vec2,
     enabled: bool,
     selected: bool,
+) -> Response {
+    icon_button_at(ui, icon, name, size, enabled, selected, 0.0)
+}
+
+/// Как [`icon_button`], но значок сдвинут по вертикали на `dy`.
+fn icon_button_at(
+    ui: &mut Ui,
+    icon: Icon,
+    name: &str,
+    size: Vec2,
+    enabled: bool,
+    selected: bool,
+    dy: f32,
 ) -> Response {
     let sense = if enabled {
         Sense::click()
@@ -95,9 +129,39 @@ pub fn icon_button(
         Color32::from_gray(170)
     };
     let side = rect.height().min(rect.width()).min(32.0) * 0.7;
-    let area = Rect::from_center_size(rect.center(), Vec2::splat(side));
+    let area = Rect::from_center_size(rect.center() + vec2(0.0, dy), Vec2::splat(side));
     paint(ui.painter(), area, icon, color);
     response
+}
+
+/// Кнопка-значок с цветной полоской снизу (цвет текста, маркер): значок
+/// чуть выше середины, под ним полоска цвета `bar`.
+pub fn color_button(ui: &mut Ui, icon: Icon, name: &str, bar: Color32, enabled: bool) -> Response {
+    let size = vec2(24.0, 24.0);
+    let response = icon_button_at(ui, icon, name, size, enabled, false, -2.5);
+    let r = response.rect;
+    let strip = Rect::from_min_max(
+        pos2(r.left() + 5.0, r.bottom() - 6.0),
+        pos2(r.right() - 5.0, r.bottom() - 3.0),
+    );
+    let bar = if enabled {
+        bar
+    } else {
+        Color32::from_gray(200)
+    };
+    ui.painter().rect_filled(strip, 0.0, bar);
+    response
+}
+
+/// Символ значка как текст для обычных кнопок egui (например, стрелка
+/// у списка). Пока шрифт не готов — пустая строка.
+pub fn text(ui: &Ui, icon: Icon, size: f32) -> RichText {
+    install(ui.ctx());
+    if ready(ui.ctx()) {
+        RichText::new(icon.glyph().to_string()).font(FontId::new(size, family()))
+    } else {
+        RichText::new("")
+    }
 }
 
 /// Кнопка «значок и надпись» в одну строку.
@@ -188,7 +252,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 13] = [
+    const ALL: [Icon; 20] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -202,6 +266,13 @@ mod tests {
         Icon::Align(Alignment::Distribute),
         Icon::Grow,
         Icon::Shrink,
+        Icon::Strike,
+        Icon::Subscript,
+        Icon::Superscript,
+        Icon::Highlight,
+        Icon::FontColor,
+        Icon::ClearFormat,
+        Icon::ChevronDown,
     ];
 
     #[test]
