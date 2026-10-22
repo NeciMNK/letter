@@ -9,7 +9,7 @@ use letter_model::{
     FirstLineIndent, HalfPoints, HeaderFooter, HeaderFooterKind, HeaderFooters, Hyperlink,
     Indentation, Inline, LineSpacing, Note, NoteKind, NoteReference, NumberingRef, Orientation,
     PageBorderDisplay, PageBorders, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run,
-    RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Spacing, TabStop,
+    RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Spacing, Symbol, TabStop,
     ThemeColor, Twips, Underline, VerticalAlign,
 };
 
@@ -407,6 +407,10 @@ fn read_run(r: &Element) -> Run {
                 "tab" if child.attrs.is_empty() => RunContent::Tab,
                 "noBreakHyphen" if child.attrs.is_empty() => RunContent::Text("\u{2011}".into()),
                 "softHyphen" if child.attrs.is_empty() => RunContent::Text("\u{ad}".into()),
+                "sym" => match read_symbol(child) {
+                    Some(s) => RunContent::Symbol(s),
+                    None => RunContent::Unknown(child.raw()),
+                },
                 "cr" if child.attrs.is_empty() => RunContent::Break(BreakKind::Line),
                 "drawing" => match crate::picture::read_picture(child) {
                     Some(picture) => RunContent::Picture(picture),
@@ -445,6 +449,18 @@ fn read_run(r: &Element) -> Run {
         run.content.push(item);
     }
     run
+}
+
+/// Знак из шрифта `w:sym`, если у него понятные шрифт и номер и нет
+/// ничего лишнего.
+fn read_symbol(element: &Element) -> Option<Symbol> {
+    if !element.only_attrs(&["font", "char"]) || element.elements().next().is_some() {
+        return None;
+    }
+    let font = element.w_attr("font")?.to_string();
+    let code = u32::from_str_radix(element.w_attr("char")?, 16).ok()?;
+    char::from_u32(code)?;
+    Some(Symbol { font, code })
 }
 
 /// Ссылка на сноску или концевую сноску.

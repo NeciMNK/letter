@@ -53,6 +53,7 @@ use crate::picture::{Handle, PictureDrag};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
 use crate::ruler::{self, RULER_SIZE, RulerParagraph, RulerState};
 use crate::settings::Settings;
+use crate::symbols::SymbolDialog;
 use crate::theme::{Palette, ThemeChoice};
 use crate::view::{
     MAX_ZOOM, MIN_ZOOM, PAGE_GAP, Zoom, anchored_offset, clamp_zoom, current_page, page_width_zoom,
@@ -658,6 +659,8 @@ pub struct Viewer {
     link_dialog: LinkDialog,
     /// Окно «Закладка».
     bookmark_dialog: BookmarkDialog,
+    /// Окно «Символ».
+    symbol_dialog: SymbolDialog,
     /// Окно «Шрифт».
     font_dialog: FontDialog,
     /// Тема, уже переданная egui.
@@ -839,6 +842,7 @@ impl Viewer {
             paragraph_dialog: ParagraphDialog::default(),
             link_dialog: LinkDialog::default(),
             bookmark_dialog: BookmarkDialog::default(),
+            symbol_dialog: SymbolDialog::default(),
             font_dialog: FontDialog::default(),
             applied_theme: None,
         }
@@ -1122,6 +1126,7 @@ impl Viewer {
             && !self.paragraph_dialog.open
             && !self.link_dialog.open
             && !self.bookmark_dialog.open
+            && !self.symbol_dialog.open
             && (self.ribbon.keytips.active() || !ctx.egui_wants_keyboard_input())
         {
             let commands = self.ribbon.handle_keys(&ctx);
@@ -1178,6 +1183,10 @@ impl Viewer {
             }
             if let Some(action) = self.bookmark_dialog.ui(&ctx) {
                 self.bookmark_action(&ctx, action);
+            }
+            if let Some(c) = self.symbol_dialog.ui(&ctx) {
+                crate::symbols::remember(&ctx, c);
+                self.run_ribbon(&ctx, vec![RibbonCommand::InsertSymbol(c)]);
             }
             egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
             egui::CentralPanel::no_frame()
@@ -1907,6 +1916,14 @@ impl Viewer {
                 }
                 RibbonCommand::Insert(text) => {
                     actions.push(Action::Edit(Command::Type(text.to_owned())));
+                }
+                RibbonCommand::InsertSymbol(c) => {
+                    actions.push(Action::Edit(Command::Type(c.to_string())));
+                }
+                RibbonCommand::SymbolDialog => {
+                    if self.document.is_some() {
+                        self.symbol_dialog.show();
+                    }
                 }
                 RibbonCommand::DeleteWord { forward } => {
                     // С выделением удаляется только оно, как в Word.
@@ -3653,6 +3670,33 @@ mod tests {
         let document = viewer.document.as_ref().unwrap();
         assert!(link_at(&document.doc, Position::new(0, 21)).is_none());
         assert!(link_at(&document.doc, Position::new(0, 9)).is_some());
+    }
+
+    #[test]
+    fn symbols_are_inserted() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("links.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        {
+            let document = viewer.document.as_mut().unwrap();
+            document.anchor = Position::new(0, 0);
+            document.cursor = Position::new(0, 0);
+        }
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::InsertSymbol('©')]);
+        let document = viewer.document.as_ref().unwrap();
+        assert!(
+            document.doc.sections[0].blocks[0]
+                .plain_text()
+                .starts_with("©Site")
+        );
+        assert_eq!(document.cursor, Position::new(0, '©'.len_utf8()));
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::SymbolDialog]);
+        assert!(viewer.symbol_dialog.open);
+        // Окно рисуется без ошибок на обеих страницах.
+        frame(&ctx, &mut viewer, screen());
+        viewer.symbol_dialog.special = true;
+        frame(&ctx, &mut viewer, screen());
     }
 
     #[test]

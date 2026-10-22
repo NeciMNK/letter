@@ -127,6 +127,8 @@ pub enum Icon {
     Watermark,
     /// Цвет страницы: палитра.
     PageColor,
+    /// Символ: омега.
+    Symbol,
     /// Границы страниц: уголки рамки.
     PageBorders,
     /// Удалить строки, столбцы или таблицу.
@@ -236,6 +238,7 @@ impl Icon {
             Icon::Refresh => ("refresh-cw", '\u{E145}'),
             Icon::Watermark => ("stamp", '\u{E3BB}'),
             Icon::PageColor => ("palette", '\u{E1DD}'),
+            Icon::Symbol => ("omega", '\u{E619}'),
             Icon::PageBorders => ("scan", '\u{E257}'),
             Icon::DeleteTable => ("grid-2x2-x", '\u{E5E5}'),
             Icon::InsertAbove => ("between-horizontal-start", '\u{E592}'),
@@ -420,7 +423,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 58] = [
+    const ALL: [Icon; 59] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -479,6 +482,7 @@ mod tests {
         Icon::Watermark,
         Icon::PageColor,
         Icon::PageBorders,
+        Icon::Symbol,
     ];
 
     #[test]

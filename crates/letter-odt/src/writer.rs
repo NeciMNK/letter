@@ -427,6 +427,7 @@ impl<'a> Writer<'a> {
         for item in &run.content {
             match item {
                 RunContent::Text(s) => text.push(s),
+                RunContent::Symbol(s) => text.push(&s.unicode().to_string()),
                 RunContent::Tab => text.element("<text:tab/>"),
                 RunContent::Break(_) => text.element("<text:line-break/>"),
                 // Рисунки в ODT пока не записываются.

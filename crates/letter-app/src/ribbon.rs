@@ -211,6 +211,10 @@ pub enum RibbonCommand {
     LinkDialog,
     /// Окно «Закладка».
     BookmarkDialog,
+    /// Вставить знак из меню или окна «Символ».
+    InsertSymbol(char),
+    /// Окно «Символ».
+    SymbolDialog,
     /// Перейти по ссылке у курсора.
     OpenLink,
     /// Удалить ссылку у курсора (или в выделенном).

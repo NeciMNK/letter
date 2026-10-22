@@ -357,6 +357,7 @@ impl Writer {
             for item in &run.content {
                 match item {
                     RunContent::Text(t) => escape(out, t),
+                    RunContent::Symbol(s) => escape(out, &s.unicode().to_string()),
                     RunContent::Tab => out.push_str("\\tab "),
                     RunContent::Break(BreakKind::Line) => out.push_str("\\line "),
                     RunContent::Break(BreakKind::Page) => out.push_str("\\page "),

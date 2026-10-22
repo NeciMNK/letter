@@ -528,6 +528,31 @@ fn special_hyphens_survive() {
 }
 
 #[test]
+fn symbols_from_fonts_survive() {
+    let symbol = letter_model::Symbol {
+        font: "Wingdings".into(),
+        code: 0xF0E0,
+    };
+    let mut doc = Document::new();
+    doc.sections[0].blocks = vec![
+        Paragraph::from_runs([Run {
+            props: RunProps::default(),
+            content: vec![RunContent::Symbol(symbol.clone())],
+        }])
+        .into(),
+    ];
+    let parts = zip_parts(&write_bytes(&doc).unwrap());
+    let xml = String::from_utf8_lossy(&parts["word/document.xml"]).into_owned();
+    assert!(xml.contains(r#"<w:sym w:font="Wingdings" w:char="F0E0"/>"#));
+    let reopened = round_trip(&doc);
+    let Some(Block::Paragraph(p)) = reopened.sections[0].blocks.first() else {
+        panic!("нет абзаца");
+    };
+    let content: Vec<_> = p.runs().flat_map(|r| r.content.clone()).collect();
+    assert_eq!(content, [RunContent::Symbol(symbol)]);
+}
+
+#[test]
 fn styles_are_added_to_a_file_without_them() {
     // empty.docx от python-docx содержит стили; убираем их из пакета,
     // как будто файл пришёл из программы, которая стилей не пишет.

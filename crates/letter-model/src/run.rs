@@ -66,6 +66,8 @@ pub enum RunContent {
     /// Номер сноски в начале её текста (`w:footnoteRef`, `w:endnoteRef`).
     /// В тексте абзаца — знак [`OBJECT_CHAR`].
     NoteMark(crate::NoteKind),
+    /// Знак из шрифта (`w:sym`). В тексте абзаца — знак [`OBJECT_CHAR`].
+    Symbol(crate::Symbol),
     /// Непонятый элемент (рисунок, поле, символ и т. п.), сохранённый как есть.
     Unknown(RawXml),
 }
@@ -82,7 +84,9 @@ impl RunContent {
         match self {
             RunContent::Text(text) => text.len(),
             RunContent::Tab | RunContent::Break(_) => 1,
-            RunContent::Picture(_) | RunContent::NoteMark(_) => OBJECT_CHAR.len_utf8(),
+            RunContent::Picture(_) | RunContent::NoteMark(_) | RunContent::Symbol(_) => {
+                OBJECT_CHAR.len_utf8()
+            }
             RunContent::NoteReference(r) if !r.custom_mark => OBJECT_CHAR.len_utf8(),
             RunContent::NoteReference(_)
             | RunContent::Unknown(_)
@@ -97,7 +101,9 @@ impl RunContent {
             RunContent::Tab => out.push('\t'),
             RunContent::Break(BreakKind::Line) => out.push('\n'),
             RunContent::Break(BreakKind::Page | BreakKind::Column) => out.push('\u{c}'),
-            RunContent::Picture(_) | RunContent::NoteMark(_) => out.push(OBJECT_CHAR),
+            RunContent::Picture(_) | RunContent::NoteMark(_) | RunContent::Symbol(_) => {
+                out.push(OBJECT_CHAR)
+            }
             RunContent::NoteReference(r) if !r.custom_mark => out.push(OBJECT_CHAR),
             RunContent::NoteReference(_)
             | RunContent::Unknown(_)
