@@ -116,6 +116,8 @@ pub enum RibbonCommand {
     Replace,
     /// «Выделить все».
     SelectAll,
+    /// Вставить способом из «Параметров вставки».
+    PasteSpecial(crate::clipboard::PasteMode),
     /// Окно «Шрифт».
     FontDialog,
     /// Окно «Абзац».

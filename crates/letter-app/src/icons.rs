@@ -73,6 +73,12 @@ pub enum Icon {
     WebLayout,
     /// Открыть окно группы ленты: стрелка в угол.
     Launcher,
+    /// Вставить с исходным оформлением.
+    PasteKeep,
+    /// Вставить, объединив оформление.
+    PasteMerge,
+    /// Вставить только текст.
+    PasteText,
 }
 
 /// Шрифт со значками.
@@ -125,6 +131,9 @@ impl Icon {
             Icon::PrintLayout => ("file-text", '\u{E0CC}'),
             Icon::WebLayout => ("globe", '\u{E0E8}'),
             Icon::Launcher => ("arrow-down-right", '\u{E045}'),
+            Icon::PasteKeep => ("clipboard-pen-line", '\u{E308}'),
+            Icon::PasteMerge => ("clipboard-list", '\u{E086}'),
+            Icon::PasteText => ("clipboard-type", '\u{E309}'),
         }
     }
 }
@@ -294,7 +303,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 34] = [
+    const ALL: [Icon; 37] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -329,6 +338,9 @@ mod tests {
         Icon::PrintLayout,
         Icon::WebLayout,
         Icon::Launcher,
+        Icon::PasteKeep,
+        Icon::PasteMerge,
+        Icon::PasteText,
     ];
 
     #[test]
