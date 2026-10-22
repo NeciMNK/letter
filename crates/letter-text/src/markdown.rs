@@ -409,6 +409,8 @@ fn inline(doc: &Document, p: &Paragraph, skip: usize, cell: bool) -> String {
                 | RunContent::Picture(_)
                 | RunContent::FieldChar(_)
                 | RunContent::FieldCode(_)
+                | RunContent::NoteReference(_)
+                | RunContent::NoteMark(_)
                 | RunContent::Unknown(_) => continue,
             };
             let piece: String = if skip > 0 {

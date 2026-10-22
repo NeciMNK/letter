@@ -7,9 +7,10 @@
 use letter_model::{
     Block, Bookmark, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind,
     FirstLineIndent, HalfPoints, HeaderFooter, HeaderFooterKind, HeaderFooters, Hyperlink,
-    Indentation, Inline, LineSpacing, NumberingRef, Orientation, PageMargins, PageSize, Paragraph,
-    ParagraphProps, RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps,
-    SectionStart, Spacing, TabStop, ThemeColor, Twips, Underline, VerticalAlign,
+    Indentation, Inline, LineSpacing, Note, NoteKind, NoteReference, NumberingRef, Orientation,
+    PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run, RunContent, RunFonts, RunProps,
+    Section, SectionProps, SectionStart, Spacing, TabStop, ThemeColor, Twips, Underline,
+    VerticalAlign,
 };
 
 use crate::ReadError;
@@ -405,6 +406,17 @@ fn read_run(r: &Element) -> Run {
                     Some("column") => RunContent::Break(BreakKind::Column),
                     Some(_) => RunContent::Unknown(child.raw()),
                 },
+                "footnoteReference" | "endnoteReference"
+                    if child.only_attrs(&["id", "customMarkFollows"])
+                        && child.elements().next().is_none() =>
+                {
+                    match read_note_reference(child) {
+                        Some(r) => RunContent::NoteReference(r),
+                        None => RunContent::Unknown(child.raw()),
+                    }
+                }
+                "footnoteRef" if child.attrs.is_empty() => RunContent::NoteMark(NoteKind::Footnote),
+                "endnoteRef" if child.attrs.is_empty() => RunContent::NoteMark(NoteKind::Endnote),
                 "fldChar" => match read_field_char(child) {
                     Some(c) => RunContent::FieldChar(c),
                     None => RunContent::Unknown(child.raw()),
@@ -421,6 +433,49 @@ fn read_run(r: &Element) -> Run {
         run.content.push(item);
     }
     run
+}
+
+/// Ссылка на сноску или концевую сноску.
+fn read_note_reference(element: &Element) -> Option<NoteReference> {
+    let kind = if element.local == "footnoteReference" {
+        NoteKind::Footnote
+    } else {
+        NoteKind::Endnote
+    };
+    let custom_mark = match element.w_attr("customMarkFollows") {
+        None | Some("0" | "false" | "off") => false,
+        Some("1" | "true" | "on") => true,
+        Some(_) => return None,
+    };
+    Some(NoteReference {
+        kind,
+        id: element.w_attr("id")?.to_string(),
+        custom_mark,
+    })
+}
+
+/// Сноски из части `w:footnotes` или `w:endnotes`; `None`, если в части
+/// есть что-то непонятное (тогда часть сохраняется как есть).
+pub(crate) fn read_notes(root: &Element, kind: NoteKind) -> Option<Vec<Note>> {
+    let (part, item) = match kind {
+        NoteKind::Footnote => ("footnotes", "footnote"),
+        NoteKind::Endnote => ("endnotes", "endnote"),
+    };
+    if !root.is_w(part) {
+        return None;
+    }
+    let mut notes = Vec::new();
+    for child in root.elements() {
+        if !child.is_w(item) || !child.only_attrs(&["id", "type"]) {
+            return None;
+        }
+        notes.push(Note {
+            id: child.w_attr("id")?.to_string(),
+            special: child.w_attr("type").map(str::to_string),
+            blocks: child.elements().map(read_block).collect(),
+        });
+    }
+    Some(notes)
 }
 
 /// Знак поля `w:fldChar`; с данными поля формы (`w:ffData`) и другими

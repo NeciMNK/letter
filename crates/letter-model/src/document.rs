@@ -1,7 +1,7 @@
 //! Документ целиком.
 
 use crate::{
-    Block, Inline, Numbering, Paragraph, Picture, Properties, RawXml, RunContent, Section,
+    Block, Inline, Note, Numbering, Paragraph, Picture, Properties, RawXml, RunContent, Section,
     SourcePackage, Styles, Theme, Twips,
 };
 
@@ -22,6 +22,11 @@ pub struct Document {
     pub settings: Settings,
     /// Свойства документа: название, автор, даты, статистика.
     pub properties: Properties,
+    /// Сноски (с служебными: чертой над сносками и т. п.) в порядке из
+    /// файла.
+    pub footnotes: Vec<Note>,
+    /// Концевые сноски.
+    pub endnotes: Vec<Note>,
     /// Непонятые элементы уровня документа (например, фон страницы `w:background`).
     pub unknown: Vec<RawXml>,
     /// Части исходного файла, которые программа не разбирает и при
@@ -43,6 +48,8 @@ impl Document {
             theme: Theme::default(),
             settings: Settings::default(),
             properties: Properties::default(),
+            footnotes: Vec::new(),
+            endnotes: Vec::new(),
             unknown: Vec::new(),
             source: None,
         }

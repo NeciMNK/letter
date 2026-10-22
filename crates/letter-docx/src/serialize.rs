@@ -7,9 +7,9 @@
 
 use letter_model::{
     Block, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind, FirstLineIndent,
-    HeaderFooterKind, Hyperlink, Inline, LineSpacing, Orientation, Paragraph, ParagraphProps,
-    RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Style,
-    StyleKind, Styles, VerticalAlign,
+    HeaderFooterKind, Hyperlink, Inline, LineSpacing, Note, NoteKind, Orientation, Paragraph,
+    ParagraphProps, RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps,
+    SectionStart, Style, StyleKind, Styles, VerticalAlign,
 };
 
 use crate::document::{W_NS, is_w_ns};
@@ -212,6 +212,38 @@ pub(crate) fn header_footer_xml(
     }
     let name = if header { "w:hdr" } else { "w:ftr" };
     xml_part(&element_with(name, &attrs, &content))
+}
+
+/// Часть сносок (`w:footnotes`) или концевых сносок (`w:endnotes`);
+/// `root` — атрибуты корня из исходного файла.
+pub(crate) fn notes_xml(
+    notes: &[Note],
+    kind: NoteKind,
+    root: Option<&[(String, String)]>,
+) -> String {
+    let attrs = root_attributes(root);
+    let (part, item) = match kind {
+        NoteKind::Footnote => ("w:footnotes", "w:footnote"),
+        NoteKind::Endnote => ("w:endnotes", "w:endnote"),
+    };
+    let mut content = String::new();
+    for note in notes {
+        let special = note
+            .special
+            .as_ref()
+            .map(|s| format!(r#" w:type="{}""#, escape_attr(s)))
+            .unwrap_or_default();
+        let mut inner: String = note.blocks.iter().map(block_xml).collect();
+        // Сноска обязана содержать хотя бы один абзац.
+        if note.blocks.is_empty() {
+            inner = paragraph(&Paragraph::default(), None);
+        }
+        content.push_str(&format!(
+            r#"<{item}{special} w:id="{}">{inner}</{item}>"#,
+            escape_attr(&note.id)
+        ));
+    }
+    xml_part(&element_with(part, &attrs, &content))
 }
 
 /// Тело документа. Параметры каждого раздела, кроме последнего, пишутся
@@ -447,6 +479,23 @@ fn run_xml(run: &Run) -> String {
                 });
                 out.push_str(&crate::picture::picture_xml(picture, 10_000 + id));
             }
+            RunContent::NoteReference(r) => {
+                let name = match r.kind {
+                    NoteKind::Footnote => "w:footnoteReference",
+                    NoteKind::Endnote => "w:endnoteReference",
+                };
+                let custom = if r.custom_mark {
+                    r#" w:customMarkFollows="1""#
+                } else {
+                    ""
+                };
+                out.push_str(&format!(
+                    r#"<{name}{custom} w:id="{}"/>"#,
+                    escape_attr(&r.id)
+                ));
+            }
+            RunContent::NoteMark(NoteKind::Footnote) => out.push_str("<w:footnoteRef/>"),
+            RunContent::NoteMark(NoteKind::Endnote) => out.push_str("<w:endnoteRef/>"),
             RunContent::FieldChar(c) => out.push_str(&field_char(c)),
             RunContent::FieldCode(code) => out.push_str(&format!(
                 r#"<w:instrText xml:space="preserve">{}</w:instrText>"#,

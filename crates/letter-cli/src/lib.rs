@@ -24,7 +24,7 @@ use letter_render::{GlyphCache, RgbaImage, SCREEN_PIXELS_PER_POINT, render_page}
 
 use letter_model::{
     Alignment, Block, BreakKind, Document, FieldCharKind, FirstLineIndent, Inline, LineSpacing,
-    Paragraph, ParagraphProps, Run, RunContent, RunProps, Section, Table,
+    NoteKind, Paragraph, ParagraphProps, Run, RunContent, RunProps, Section, Table,
 };
 
 /// Справка по командам.
@@ -280,6 +280,17 @@ pub fn dump(doc: &Document) -> String {
     for (i, section) in doc.sections.iter().enumerate() {
         dump_section(&mut out, i + 1, section);
     }
+    for (title, notes) in [
+        ("Сноска", &doc.footnotes),
+        ("Концевая сноска", &doc.endnotes),
+    ] {
+        for note in notes.iter().filter(|n| n.is_regular()) {
+            let _ = writeln!(out, "{title} {}", note.id);
+            for block in &note.blocks {
+                dump_block(&mut out, 1, block);
+            }
+        }
+    }
     out
 }
 
@@ -363,6 +374,14 @@ fn dump_run(out: &mut String, depth: usize, run: &Run) {
             RunContent::FieldCode(code) => {
                 let _ = write!(content, "<код {code:?}>");
             }
+            RunContent::NoteReference(r) => {
+                let kind = match r.kind {
+                    NoteKind::Footnote => "сноска",
+                    NoteKind::Endnote => "концевая сноска",
+                };
+                let _ = write!(content, "<{kind} {}>", r.id);
+            }
+            RunContent::NoteMark(_) => content.push_str("<номер сноски>"),
             RunContent::Tab => content.push('\t'),
             RunContent::Break(BreakKind::Line) => content.push('\n'),
             RunContent::Break(BreakKind::Page) => content.push_str("<разрыв страницы>"),

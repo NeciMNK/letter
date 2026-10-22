@@ -319,6 +319,79 @@ def links() -> Document:
     return doc
 
 
+def add_notes_part(doc, kind: str, notes: list[tuple[int, str]]) -> None:
+    """Часть сносок (`footnotes`) или концевых сносок (`endnotes`) со
+    служебными сносками-чертами и текстами `notes`."""
+    from docx.opc.constants import RELATIONSHIP_TYPE
+    from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
+
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    tag = kind[:-1]
+    mark = "footnoteRef" if kind == "footnotes" else "endnoteRef"
+    text_style = "FootnoteText" if kind == "footnotes" else "EndnoteText"
+    ref_style = "FootnoteReference" if kind == "footnotes" else "EndnoteReference"
+    r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    xml = f'<w:{kind} xmlns:w="{w}" xmlns:r="{r}">'
+    for special, number in (("separator", -1), ("continuationSeparator", 0)):
+        xml += (
+            f'<w:{tag} w:type="{special}" w:id="{number}"><w:p><w:pPr>'
+            '<w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>'
+            f"<w:r><w:{special}/></w:r></w:p></w:{tag}>"
+        )
+    for number, text in notes:
+        xml += (
+            f'<w:{tag} w:id="{number}"><w:p><w:pPr><w:pStyle w:val="{text_style}"/></w:pPr>'
+            f'<w:r><w:rPr><w:rStyle w:val="{ref_style}"/></w:rPr><w:{mark}/></w:r>'
+            f'<w:r><w:t xml:space="preserve"> {text}</w:t></w:r></w:p></w:{tag}>'
+        )
+    xml += f"</w:{kind}>"
+    content_type = (
+        f"application/vnd.openxmlformats-officedocument.wordprocessingml.{kind}+xml"
+    )
+    part = Part(PackURI(f"/word/{kind}.xml"), content_type, xml.encode(), doc.part.package)
+    relationship = (
+        RELATIONSHIP_TYPE.FOOTNOTES if kind == "footnotes" else RELATIONSHIP_TYPE.ENDNOTES
+    )
+    doc.part.relate_to(part, relationship)
+
+
+def add_note_reference(paragraph, kind: str, number: int) -> None:
+    """Ссылка на сноску (`kind` — `footnote` или `endnote`) со стилем
+    «Знак сноски»."""
+    from docx.oxml import OxmlElement
+
+    run = paragraph.add_run()
+    run.style = "Footnote Reference" if kind == "footnote" else "Endnote Reference"
+    reference = OxmlElement(f"w:{kind}Reference")
+    reference.set(qn("w:id"), str(number))
+    run._r.append(reference)
+
+
+def notes() -> Document:
+    """Две сноски и концевая сноска."""
+    from docx.enum.style import WD_STYLE_TYPE
+
+    doc = new_document("Сноски")
+    for name in ("Footnote Reference", "Endnote Reference"):
+        style = doc.styles.add_style(name, WD_STYLE_TYPE.CHARACTER)
+        style.font.superscript = True
+    for name in ("Footnote Text", "Endnote Text"):
+        style = doc.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+        style.font.size = Pt(10)
+    p = doc.add_paragraph("First claim")
+    add_note_reference(p, "footnote", 1)
+    p.add_run(" and second claim")
+    add_note_reference(p, "footnote", 2)
+    p.add_run(".")
+    p = doc.add_paragraph("A remark at the end")
+    add_note_reference(p, "endnote", 1)
+    p.add_run(".")
+    add_notes_part(doc, "footnotes", [(1, "First footnote."), (2, "Second footnote.")])
+    add_notes_part(doc, "endnotes", [(1, "The endnote.")])
+    return doc
+
+
 def headers() -> Document:
     """Колонтитулы: особый для первой страницы, разные для чётных
     и нечётных; второй раздел берёт верхний колонтитул первого, а нижний
@@ -402,6 +475,7 @@ FIXTURES = {
     "pages.docx": pages,
     "headers.docx": headers,
     "links.docx": links,
+    "notes.docx": notes,
 }
 
 

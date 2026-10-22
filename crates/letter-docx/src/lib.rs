@@ -37,8 +37,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use letter_model::{
-    Block, Document, HeaderFooterKind, ImageData, Inline, Picture, SourcePackage, SourcePart,
-    for_each_picture_in,
+    Block, Document, HeaderFooterKind, ImageData, Inline, NoteKind, Picture, SourcePackage,
+    SourcePart, for_each_picture_in,
 };
 
 pub use error::{ReadError, WriteError};
@@ -99,6 +99,22 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
 
     let images = package.relationships(&main);
     let stories = read_headers_footers(&mut package, &mut doc, &images);
+    // Сноски: часть, которую не удалось понять, сохранится как есть.
+    let mut note_parts = Vec::new();
+    for (kind, name) in [
+        (NoteKind::Footnote, "footnotes"),
+        (NoteKind::Endnote, "endnotes"),
+    ] {
+        if let Some((part, root)) = read_related_xml(&mut package, &main, name)
+            && let Some(notes) = document::read_notes(&root, kind)
+        {
+            match kind {
+                NoteKind::Footnote => doc.footnotes = notes,
+                NoteKind::Endnote => doc.endnotes = notes,
+            }
+            note_parts.push((kind, part, root.root_attributes()));
+        }
+    }
     let mut rebuilt = vec![
         Some(main.clone()),
         styles_part.clone(),
@@ -107,6 +123,7 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
         app_part.clone(),
     ];
     rebuilt.extend(stories.iter().map(|(name, _)| Some(name.clone())));
+    rebuilt.extend(note_parts.iter().map(|(_, name, _)| Some(name.clone())));
     let mut source = read_source(&mut package, &rebuilt)?;
     attach_images(|f| doc.for_each_picture_mut(f), &images, &source);
     let addresses = package.external_links(&main);
@@ -138,6 +155,28 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
                     }
                 }
             }
+        }
+    }
+    // Картинки и ссылки сносок — по связям своих частей.
+    for (kind, name, attributes) in note_parts {
+        let relationships = package.relationships(&name);
+        let addresses = package.external_links(&name);
+        let notes = match kind {
+            NoteKind::Footnote => &mut doc.footnotes,
+            NoteKind::Endnote => &mut doc.endnotes,
+        };
+        for note in notes.iter_mut() {
+            attach_links(&mut note.blocks, &addresses);
+            attach_images(
+                |f| for_each_picture_in(&mut note.blocks, f),
+                &relationships,
+                &source,
+            );
+        }
+        let entry = Some((name, attributes));
+        match kind {
+            NoteKind::Footnote => source.footnotes_part = entry,
+            NoteKind::Endnote => source.endnotes_part = entry,
         }
     }
     source.header_footer_parts = stories;

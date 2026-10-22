@@ -18,6 +18,7 @@
 mod fields;
 pub mod fonts;
 pub mod lines;
+mod notes;
 pub mod pages;
 pub mod shaping;
 pub mod spacing;

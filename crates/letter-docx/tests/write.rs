@@ -31,6 +31,7 @@ const FIXTURES: &[&str] = &[
     "sections.docx",
     "headers.docx",
     "links.docx",
+    "notes.docx",
     "header-footer.docx",
     "ru-en.docx",
 ];
@@ -89,8 +90,15 @@ fn untouched_parts_are_copied_byte_for_byte() {
             let copy = after
                 .get(part)
                 .unwrap_or_else(|| panic!("{name}: part {part} lost"));
-            // Колонтитулы тоже строятся заново из модели.
-            let story = part.starts_with("word/header") || part.starts_with("word/footer");
+            // Колонтитулы и сноски тоже строятся заново из модели.
+            let story = [
+                "word/header",
+                "word/footer",
+                "word/footnotes",
+                "word/endnotes",
+            ]
+            .iter()
+            .any(|prefix| part.starts_with(prefix));
             if !rebuilt.contains(&part.as_str()) && !story {
                 assert_eq!(data, copy, "{name}: part {part} changed");
             }
@@ -682,4 +690,26 @@ fn hyperlinks_get_their_relationships() {
         write_bytes(&reopened).unwrap(),
         write_bytes(&round_trip(&reopened)).unwrap()
     );
+}
+
+#[test]
+fn notes_get_their_part() {
+    let source = read_bytes(&fixture_bytes("notes.docx")).unwrap();
+    // Новый документ со сносками из другого: части сносок появляются.
+    let mut doc = Document::new();
+    doc.sections = source.sections.clone();
+    doc.styles = source.styles.clone();
+    doc.footnotes = source.footnotes.clone();
+    doc.endnotes = source.endnotes.clone();
+    doc.footnotes[2].blocks = vec![Paragraph::text("Changed").into()];
+    let bytes = write_bytes(&doc).unwrap();
+    let parts = zip_parts(&bytes);
+    assert!(parts.contains_key("word/footnotes.xml"));
+    assert!(parts.contains_key("word/endnotes.xml"));
+    let types = String::from_utf8(parts["[Content_Types].xml"].clone()).unwrap();
+    assert!(types.contains("footnotes+xml"));
+    let reopened = read_bytes(&bytes).unwrap();
+    assert_eq!(reopened.footnotes, doc.footnotes);
+    assert_eq!(reopened.endnotes, doc.endnotes);
+    assert_eq!(reopened.sections, doc.sections);
 }
