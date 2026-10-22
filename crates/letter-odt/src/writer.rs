@@ -814,6 +814,8 @@ fn grid_span(cell: &TableCell) -> usize {
 /// отступы слева, справа и первой строки — другим. Если в файле задана
 /// только часть такого свойства, остальное он берёт не от родительского
 /// стиля, а нулевым. Поэтому недостающее дописывается итоговым значением.
+/// У пунктов списка отступы приходят из уровня списка, которого в ODT
+/// пока нет, — их тоже пишем итоговыми.
 fn complete(props: &mut ParagraphProps, resolved: &ResolvedParagraphProps) {
     let spacing = &mut props.spacing;
     if spacing.before.is_some() || spacing.after.is_some() {
@@ -821,7 +823,11 @@ fn complete(props: &mut ParagraphProps, resolved: &ResolvedParagraphProps) {
         spacing.after.get_or_insert(resolved.space_after);
     }
     let indent = &mut props.indentation;
-    if indent.left.is_some() || indent.right.is_some() || indent.first_line.is_some() {
+    if indent.left.is_some()
+        || indent.right.is_some()
+        || indent.first_line.is_some()
+        || resolved.numbering.is_some()
+    {
         indent.left.get_or_insert(resolved.indent_left);
         indent.right.get_or_insert(resolved.indent_right);
         indent.first_line.get_or_insert(

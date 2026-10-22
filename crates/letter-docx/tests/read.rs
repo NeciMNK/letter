@@ -269,3 +269,71 @@ fn styles_and_theme_resolve_like_word() {
         letter_model::LineSpacing::Multiple(276)
     );
 }
+
+#[test]
+fn list_definitions() {
+    let doc = fixture("lists.docx");
+    assert!(!doc.numbering.abstracts.is_empty());
+    assert!(!doc.numbering.instances.is_empty());
+    let items = paragraphs(&doc);
+    // «Apples» — маркированный список из стиля ListBullet.
+    let apples = doc.resolve_paragraph(&items[1].props);
+    let (id, level) = apples.numbering.expect("в списке");
+    assert_eq!(level, 0);
+    let lvl = doc.numbering.level(id, level).unwrap();
+    assert_eq!(lvl.format, Some(letter_model::NumberFormat::Bullet));
+    // Отступ — из уровня списка.
+    assert!(apples.indent_left.0 > 0);
+    // «First» — нумерованный.
+    let first = doc.resolve_paragraph(&items[5].props);
+    let (id, level) = first.numbering.expect("в списке");
+    let lvl = doc.numbering.level(id, level).unwrap();
+    assert_eq!(lvl.format, Some(letter_model::NumberFormat::Decimal));
+    assert_eq!(doc.resolve_paragraph(&items[0].props).numbering, None);
+
+    // Открыть → сохранить → открыть: списки те же.
+    let again = read_bytes(&letter_docx::write_bytes(&doc).unwrap()).unwrap();
+    assert_eq!(again.numbering, doc.numbering);
+    assert_eq!(
+        again.source.as_ref().and_then(|s| s.numbering_part.clone()),
+        Some("word/numbering.xml".to_owned())
+    );
+}
+
+#[test]
+fn new_document_with_a_list_gets_a_numbering_part() {
+    use letter_model::{
+        AbstractNumbering, ListLevel, NumberFormat, NumberingInstance, NumberingRef,
+    };
+    let mut doc = Document::new();
+    doc.numbering.abstracts.push(AbstractNumbering {
+        id: 0,
+        levels: vec![ListLevel {
+            level: 0,
+            format: Some(NumberFormat::Decimal),
+            text: Some("%1.".into()),
+            start: Some(1),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    doc.numbering.instances.push(NumberingInstance {
+        id: 1,
+        abstract_id: 0,
+        ..Default::default()
+    });
+    let mut item = Paragraph::text("пункт");
+    item.props.numbering = Some(NumberingRef {
+        id: Some(1),
+        level: Some(0),
+    });
+    doc.sections[0].blocks = vec![item.into()];
+    let again = read_bytes(&letter_docx::write_bytes(&doc).unwrap()).unwrap();
+    assert_eq!(again.numbering, doc.numbering);
+    assert_eq!(
+        again
+            .resolve_paragraph(&paragraphs(&again)[0].props)
+            .numbering,
+        Some((1, 0))
+    );
+}

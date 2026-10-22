@@ -2,7 +2,8 @@
 //!
 //! Сейчас умеет читать главную часть документа (`word/document.xml`):
 //! абзацы, фрагменты текста, свойства символов и абзацев, таблицы,
-//! разделы; стили (`word/styles.xml`) и шрифты темы. Всё непонятое
+//! разделы; стили (`word/styles.xml`), списки (`word/numbering.xml`)
+//! и шрифты темы. Всё непонятое
 //! сохраняется в модели как [`RawXml`](letter_model::RawXml), а остальные
 //! части файла — в [`SourcePackage`], и при
 //! записи возвращается на место.
@@ -17,6 +18,7 @@
 mod document;
 mod error;
 mod names;
+mod numbering;
 mod package;
 mod properties;
 mod serialize;
@@ -58,6 +60,13 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
         styles_part = Some(name);
         styles_root_attributes = styles_root.root_attributes();
     }
+    let mut numbering_part = None;
+    let mut numbering_root_attributes = Vec::new();
+    if let Some((name, root)) = read_related_xml(&mut package, &main, "numbering") {
+        doc.numbering = numbering::read_numbering(&root);
+        numbering_part = Some(name);
+        numbering_root_attributes = root.root_attributes();
+    }
     if let Some((_, root)) = read_related_xml(&mut package, &main, "theme") {
         doc.theme = theme::read_theme(&root);
     }
@@ -84,12 +93,15 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
     let rebuilt = [
         Some(main.clone()),
         styles_part.clone(),
+        numbering_part.clone(),
         core_part.clone(),
         app_part.clone(),
     ];
     let mut source = read_source(&mut package, &rebuilt)?;
     source.main_part = main;
     source.styles_part = styles_part;
+    source.numbering_part = numbering_part;
+    source.numbering_root_attributes = numbering_root_attributes;
     source.core_part = core_part;
     source.app_part = app_part;
     source.main_root_attributes = root.root_attributes();

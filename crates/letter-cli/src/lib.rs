@@ -233,6 +233,14 @@ pub fn dump(doc: &Document) -> String {
         doc.sections.len(),
         doc.styles.styles.len()
     );
+    if !doc.numbering.is_empty() {
+        let _ = writeln!(
+            out,
+            "Списков: {} (определений {})",
+            doc.numbering.instances.len(),
+            doc.numbering.abstracts.len()
+        );
+    }
     if let Some(title) = &core.title {
         let _ = writeln!(out, "Название: {title:?}");
     }
@@ -346,6 +354,11 @@ fn paragraph_props(props: &ParagraphProps) -> String {
     let mut parts = Vec::new();
     if let Some(style) = &props.style {
         parts.push(format!("стиль {style}"));
+    }
+    if let Some(numbering) = props.numbering {
+        let id = numbering.id.map_or("?".to_owned(), |i| i.to_string());
+        let level = numbering.level.unwrap_or(0);
+        parts.push(format!("список {id}, уровень {level}"));
     }
     if let Some(alignment) = props.alignment {
         parts.push(

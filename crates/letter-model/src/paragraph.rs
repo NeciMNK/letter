@@ -1,5 +1,6 @@
 //! Абзацы ([`Paragraph`]) и оформление абзаца ([`ParagraphProps`]).
 
+use crate::NumberingRef;
 use crate::{RawXml, Run, Twips};
 
 /// Абзац: последовательность фрагментов текста с общим оформлением абзаца.
@@ -68,6 +69,8 @@ impl Paragraph {
 pub struct ParagraphProps {
     /// Идентификатор стиля абзаца (например, `"Heading1"`).
     pub style: Option<String>,
+    /// Список, к которому относится абзац.
+    pub numbering: Option<NumberingRef>,
     /// Выравнивание.
     pub alignment: Option<Alignment>,
     /// Отступы слева, справа и первой строки.

@@ -6,9 +6,9 @@
 
 use letter_model::{
     Block, BreakKind, Color, Document, FirstLineIndent, HalfPoints, Indentation, Inline,
-    LineSpacing, Orientation, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run,
-    RunContent, RunFonts, RunProps, Section, SectionProps, Spacing, TabStop, Table, TableCell,
-    TableRow, ThemeColor, Twips, Underline, VerticalAlign,
+    LineSpacing, NumberingRef, Orientation, PageMargins, PageSize, Paragraph, ParagraphProps,
+    RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps, Spacing, TabStop, Table,
+    TableCell, TableRow, ThemeColor, Twips, Underline, VerticalAlign,
 };
 
 use crate::ReadError;
@@ -143,6 +143,7 @@ pub(crate) fn read_paragraph_props(
         let understood = is_w_ns(child.ns.as_deref())
             && match child.local.as_str() {
                 "pStyle" => set(&mut props.style, string_val(child)),
+                "numPr" => set(&mut props.numbering, read_numbering_ref(child)),
                 "jc" => set(&mut props.alignment, enum_val(child, ALIGNMENTS)),
                 "ind" => read_indentation(child)
                     .map(|i| props.indentation = i)
@@ -167,6 +168,32 @@ pub(crate) fn read_paragraph_props(
         }
     }
     (props, section)
+}
+
+/// `w:numPr`: номер списка и уровень. Если внутри есть что-то ещё
+/// (например, правка `w:ins`), элемент сохраняется как есть.
+fn read_numbering_ref(element: &Element) -> Option<NumberingRef> {
+    if !element.attrs.is_empty() {
+        return None;
+    }
+    let mut numbering = NumberingRef::default();
+    for child in element.elements() {
+        let number = || {
+            child
+                .only_attrs(&["val"])
+                .then(|| child.w_attr("val"))
+                .flatten()
+                .and_then(|v| v.trim().parse::<u32>().ok())
+        };
+        if child.is_w("numId") && numbering.id.is_none() {
+            numbering.id = Some(number()?);
+        } else if child.is_w("ilvl") && numbering.level.is_none() {
+            numbering.level = Some(u8::try_from(number()?).ok()?);
+        } else {
+            return None;
+        }
+    }
+    Some(numbering)
 }
 
 fn read_indentation(ind: &Element) -> Option<Indentation> {
