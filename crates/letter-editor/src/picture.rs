@@ -5,7 +5,10 @@
 //! рисунку выделяет его, а за маркеры на рамке можно менять размер.
 
 use letter_layout::{DocumentLayout, Float, LineItem};
-use letter_model::{Document, Inline, OBJECT_CHAR, Picture, RunContent};
+use letter_model::{
+    Anchor, AnchorPosition, Distance, Document, EMU_PER_POINT, HorizontalFrom, Inline, OBJECT_CHAR,
+    Picture, Placement, RunContent, VerticalFrom, Wrap,
+};
 
 use crate::edit::{clamp_offset, insert_items, paragraph_mut, paragraph_ref, plain_text};
 use crate::position::Position;
@@ -31,6 +34,8 @@ pub struct PictureBox {
     pub width: f32,
     /// Высота, пт.
     pub height: f32,
+    /// У плавающего рисунка — верх абзаца привязки на странице, пт.
+    pub paragraph_top: Option<f32>,
 }
 
 impl PictureBox {
@@ -61,6 +66,7 @@ pub fn pictures_on_page(layout: &DocumentLayout, page: usize) -> Vec<PictureBox>
         top: f.y,
         width: f.width,
         height: f.height,
+        paragraph_top: Some(f.paragraph_top),
     };
     let mut out: Vec<PictureBox> = sheet
         .floats
@@ -80,6 +86,7 @@ pub fn pictures_on_page(layout: &DocumentLayout, page: usize) -> Vec<PictureBox>
                     top: line.baseline - object.height,
                     width: object.width,
                     height: object.height,
+                    paragraph_top: None,
                 });
             }
         }
@@ -174,6 +181,164 @@ pub fn resize_picture(doc: &mut Document, at: Position, width: i64, height: i64)
     picture.width = width.max(MIN_PICTURE_SIZE);
     picture.height = height.max(MIN_PICTURE_SIZE);
     true
+}
+
+/// Ставит рисунку в позиции `at` привязку (`None` — рисунок в тексте).
+/// `false`, если там нет рисунка.
+pub fn set_picture_anchor(doc: &mut Document, at: Position, anchor: Option<Box<Anchor>>) -> bool {
+    let Some(picture) = picture_mut(doc, at) else {
+        return false;
+    };
+    picture.anchor = anchor;
+    true
+}
+
+/// Как рисунок стоит относительно текста (меню «Обтекание текстом»).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PictureWrap {
+    /// В тексте (как буква).
+    InLine,
+    /// Вокруг рамки.
+    Square,
+    /// По контуру.
+    Tight,
+    /// Сквозное.
+    Through,
+    /// Сверху и снизу.
+    TopAndBottom,
+    /// За текстом.
+    Behind,
+    /// Перед текстом.
+    InFront,
+}
+
+impl PictureWrap {
+    /// Все варианты в порядке меню Word.
+    pub const ALL: [PictureWrap; 7] = [
+        PictureWrap::InLine,
+        PictureWrap::Square,
+        PictureWrap::Tight,
+        PictureWrap::Through,
+        PictureWrap::TopAndBottom,
+        PictureWrap::Behind,
+        PictureWrap::InFront,
+    ];
+
+    /// Обтекание рисунка.
+    pub fn of(picture: &Picture) -> PictureWrap {
+        let Some(anchor) = &picture.anchor else {
+            return PictureWrap::InLine;
+        };
+        match anchor.wrap {
+            Wrap::Square => PictureWrap::Square,
+            Wrap::Tight => PictureWrap::Tight,
+            Wrap::Through => PictureWrap::Through,
+            Wrap::TopAndBottom => PictureWrap::TopAndBottom,
+            Wrap::None if anchor.behind_text => PictureWrap::Behind,
+            Wrap::None => PictureWrap::InFront,
+        }
+    }
+}
+
+/// Привязка рисунка `picture`, стоящего на странице в `placed`, после
+/// выбора обтекания `wrap`; `None` — рисунок в тексте. Рисунок, который
+/// был в тексте, остаётся на том же месте страницы; у плавающего
+/// меняется только обтекание.
+pub fn anchor_with_wrap(
+    layout: &DocumentLayout,
+    placed: &PictureBox,
+    picture: &Picture,
+    wrap: PictureWrap,
+) -> Option<Box<Anchor>> {
+    let (wrap, behind_text) = match wrap {
+        PictureWrap::InLine => return None,
+        PictureWrap::Square => (Wrap::Square, false),
+        PictureWrap::Tight => (Wrap::Tight, false),
+        PictureWrap::Through => (Wrap::Through, false),
+        PictureWrap::TopAndBottom => (Wrap::TopAndBottom, false),
+        PictureWrap::Behind => (Wrap::None, true),
+        PictureWrap::InFront => (Wrap::None, false),
+    };
+    let mut anchor = match &picture.anchor {
+        Some(anchor) => (**anchor).clone(),
+        None => {
+            let (horizontal, vertical) = position_at(layout, placed, placed.left, placed.top);
+            Anchor {
+                horizontal,
+                vertical,
+                wrap,
+                behind_text,
+                // Как у нового плавающего рисунка в Word: 0,125 дюйма
+                // слева и справа.
+                distance: Distance {
+                    left: DEFAULT_SIDE_DISTANCE,
+                    right: DEFAULT_SIDE_DISTANCE,
+                    ..Distance::default()
+                },
+            }
+        }
+    };
+    anchor.wrap = wrap;
+    anchor.behind_text = behind_text;
+    Some(Box::new(anchor))
+}
+
+/// Привязка плавающего рисунка `placed`, перенесённого мышью так, что
+/// его левый верхний угол встал в точку `left`, `top` (пт от угла листа).
+/// Положение считается от поля по горизонтали и от абзаца привязки по
+/// вертикали, как у рисунка, перенесённого в Word.
+pub fn moved_anchor(
+    layout: &DocumentLayout,
+    placed: &PictureBox,
+    anchor: &Anchor,
+    left: f32,
+    top: f32,
+) -> Anchor {
+    let (horizontal, vertical) = position_at(layout, placed, left, top);
+    Anchor {
+        horizontal,
+        vertical,
+        ..anchor.clone()
+    }
+}
+
+/// Расстояние до текста слева и справа у нового плавающего рисунка, EMU.
+const DEFAULT_SIDE_DISTANCE: i64 = 114_300;
+
+/// Положение точки `left`, `top` страницы рисунка `placed`: от левого
+/// поля и от верха абзаца привязки (если абзаца на странице нет — от
+/// верха листа).
+fn position_at(
+    layout: &DocumentLayout,
+    placed: &PictureBox,
+    left: f32,
+    top: f32,
+) -> (AnchorPosition<HorizontalFrom>, AnchorPosition<VerticalFrom>) {
+    let emu = |points: f32| (points * EMU_PER_POINT as f32).round() as i64;
+    let page = layout.pages.get(placed.page);
+    let margin = page.map_or(0.0, |p| p.margins.left);
+    let paragraph_top = placed.paragraph_top.or_else(|| {
+        page?
+            .lines
+            .iter()
+            .find(|l| l.paragraph == placed.at.paragraph && l.cell.is_none())
+            .map(|l| l.top)
+    });
+    let horizontal = AnchorPosition {
+        relative: HorizontalFrom::Column,
+        placement: Placement::Offset(emu(left - margin)),
+    };
+    let vertical = match paragraph_top {
+        Some(paragraph_top) => AnchorPosition {
+            relative: VerticalFrom::Paragraph,
+            placement: Placement::Offset(emu(top - paragraph_top)),
+        },
+        None => AnchorPosition {
+            relative: VerticalFrom::Page,
+            placement: Placement::Offset(emu(top)),
+        },
+    };
+    (horizontal, vertical)
 }
 
 /// Есть ли в абзаце `paragraph` рисунок в позиции `offset`.
@@ -276,5 +441,53 @@ mod tests {
         assert!((found.left - 300.0).abs() < 0.01 && (found.top - 400.0).abs() < 0.01);
         assert_eq!(picture_at_point(&layout, 0, 310.0, 410.0), Some(found));
         assert_eq!(selected_picture(&layout, found.selection()), Some(found));
+    }
+
+    #[test]
+    fn wrap_choices_keep_the_picture_in_place() {
+        let mut doc = Document::new();
+        doc.sections[0].blocks = vec![Block::from(Paragraph::from_runs([Run::text("ab")]))];
+        insert_picture(&mut doc, Position::new(0, 1), picture(914_400, 457_200));
+        let library = letter_layout::FontLibrary::embedded_only();
+        let lay = |doc: &Document| {
+            letter_layout::layout_document(doc, &mut letter_layout::Shaper::new(), &library)
+        };
+        let layout = lay(&doc);
+        let [inline] = pictures_on_page(&layout, 0)[..] else {
+            panic!();
+        };
+        let at = Position::new(0, 1);
+        for wrap in PictureWrap::ALL {
+            let mut copy = doc.clone();
+            let picture = picture_ref(&copy, at).unwrap().clone();
+            let anchor = anchor_with_wrap(&layout, &inline, &picture, wrap);
+            assert!(set_picture_anchor(&mut copy, at, anchor));
+            let picture = picture_ref(&copy, at).unwrap();
+            assert_eq!(PictureWrap::of(picture), wrap);
+            if wrap == PictureWrap::InLine {
+                continue;
+            }
+            let [placed] = pictures_on_page(&lay(&copy), 0)[..] else {
+                panic!("{wrap:?}");
+            };
+            assert!((placed.left - inline.left).abs() < 0.01, "{wrap:?}");
+            assert!((placed.top - inline.top).abs() < 0.01, "{wrap:?}");
+            // Перенос на 10 пт вправо и вниз.
+            let anchor = picture.anchor.as_deref().unwrap();
+            let moved = moved_anchor(
+                &layout,
+                &placed,
+                anchor,
+                placed.left + 10.0,
+                placed.top + 10.0,
+            );
+            assert_eq!(moved.wrap, anchor.wrap);
+            set_picture_anchor(&mut copy, at, Some(Box::new(moved)));
+            let [after] = pictures_on_page(&lay(&copy), 0)[..] else {
+                panic!("{wrap:?}");
+            };
+            assert!((after.left - placed.left - 10.0).abs() < 0.01, "{wrap:?}");
+        }
+        assert!(!set_picture_anchor(&mut doc, Position::new(0, 0), None));
     }
 }

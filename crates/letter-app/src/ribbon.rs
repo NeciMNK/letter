@@ -46,6 +46,8 @@ pub enum Tab {
     TableDesign,
     /// «Макет таблицы»: видна, только когда курсор в таблице.
     TableLayout,
+    /// «Формат рисунка»: видна, только когда выделен рисунок.
+    PictureFormat,
 }
 
 impl Tab {
@@ -70,6 +72,7 @@ impl Tab {
             Tab::View => "keytip-tab-view",
             Tab::TableDesign => "keytip-tab-table-design",
             Tab::TableLayout => "keytip-tab-table-layout",
+            Tab::PictureFormat => "keytip-tab-picture-format",
         }
     }
 
@@ -84,6 +87,7 @@ impl Tab {
             Tab::View => tr("tab-view"),
             Tab::TableDesign => tr("tab-table-design"),
             Tab::TableLayout => tr("tab-table-layout"),
+            Tab::PictureFormat => tr("tab-picture-format"),
         }
     }
 }
@@ -173,6 +177,8 @@ pub enum RibbonCommand {
     BuiltInStyle(&'static str),
     /// «Вставка → Рисунки»: выбрать файл картинки и вставить рисунок.
     InsertPicture,
+    /// «Обтекание текстом» выделенного рисунка.
+    PictureWrap(letter_editor::PictureWrap),
     /// Правка документа командой редактора (вставка таблицы и т. п.).
     Edit(letter_editor::Command),
     /// Открыть список или меню на ленте (подсказки клавиш).
@@ -234,6 +240,8 @@ pub struct RibbonInfo {
     pub in_table: bool,
     /// Выделено несколько ячеек таблицы: их можно объединить.
     pub can_merge: bool,
+    /// Обтекание выделенного рисунка (`None` — рисунок не выделен).
+    pub picture_wrap: Option<letter_editor::PictureWrap>,
 }
 
 /// Состояние ленты.
@@ -276,7 +284,11 @@ impl Ribbon {
         if matches!(self.tab, Tab::TableDesign | Tab::TableLayout) && !info.in_table {
             self.tab = Tab::Home;
         }
-        self.tabs(ui, info.in_table, &mut out);
+        // И вкладка рисунка — когда рисунок перестаёт быть выделенным.
+        if self.tab == Tab::PictureFormat && info.picture_wrap.is_none() {
+            self.tab = Tab::Home;
+        }
+        self.tabs(ui, info, &mut out);
         if !self.collapsed {
             let colors = Palette::of(ui.ctx());
             egui::Frame::new()
@@ -293,6 +305,7 @@ impl Ribbon {
                         Tab::Insert => crate::insert::insert(ui, info, &mut out),
                         Tab::TableDesign => crate::insert::table_design(ui, info, &mut out),
                         Tab::TableLayout => crate::insert::table_layout(ui, info, &mut out),
+                        Tab::PictureFormat => crate::insert::picture_format(ui, info, &mut out),
                         _ => {
                             ui.label(RichText::new(tr("tab-coming-soon")).color(Color32::GRAY));
                         }
@@ -306,7 +319,7 @@ impl Ribbon {
     }
 
     /// Меню «Файл» и вкладки.
-    fn tabs(&mut self, ui: &mut Ui, in_table: bool, out: &mut Vec<RibbonCommand>) {
+    fn tabs(&mut self, ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
         ui.horizontal(|ui| {
             let file = egui::Button::new(RichText::new(tr("tab-file")).color(Color32::WHITE))
                 .fill(ACCENT)
@@ -323,12 +336,14 @@ impl Ribbon {
             if response.clicked() {
                 out.push(RibbonCommand::Backstage);
             }
-            let contextual: &[Tab] = if in_table {
-                &[Tab::TableDesign, Tab::TableLayout]
-            } else {
-                &[]
-            };
-            for &tab in Tab::ALL.iter().chain(contextual) {
+            let mut contextual = Vec::new();
+            if info.in_table {
+                contextual.extend([Tab::TableDesign, Tab::TableLayout]);
+            }
+            if info.picture_wrap.is_some() {
+                contextual.push(Tab::PictureFormat);
+            }
+            for tab in Tab::ALL.into_iter().chain(contextual) {
                 let selected = self.tab == tab && !self.collapsed;
                 let text = if selected {
                     RichText::new(tab.title())

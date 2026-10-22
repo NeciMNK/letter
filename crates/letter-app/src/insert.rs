@@ -1,9 +1,9 @@
 //! Вкладки «Вставка» (пока — группы «Таблицы» и «Иллюстрации»), «Конструктор
-//! таблиц» и «Макет таблицы» (две последние видны, когда курсор
-//! в таблице).
+//! таблиц» и «Макет таблицы» (видны, когда курсор в таблице) и «Формат
+//! рисунка» (видна, когда выделен рисунок).
 
 use eframe::egui::{self, Color32, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
-use letter_editor::{BorderPreset, Command};
+use letter_editor::{BorderPreset, Command, PictureWrap};
 use letter_model::Color;
 
 use crate::i18n::tr;
@@ -35,6 +35,10 @@ pub const TABLE_KEYTIPS: [&str; 6] = [
 /// Подсказки клавиш вкладки «Конструктор таблиц» (для проверки).
 #[cfg(test)]
 pub const DESIGN_KEYTIPS: [&str; 2] = ["keytip-design-shading", "keytip-design-borders"];
+
+/// Подсказки клавиш вкладки «Формат рисунка» (для проверки).
+#[cfg(test)]
+pub const PICTURE_KEYTIPS: [&str; 1] = ["keytip-picture-wrap"];
 
 /// Светло-серые заливки (как «Белый, фон 1, более тёмный оттенок»).
 const GRAYS: [(u8, u8, u8); 4] = [
@@ -286,6 +290,48 @@ fn menu_button(
         egui::Popup::menu(&response).show(menu);
         ui.label(label);
     });
+}
+
+/// Вкладка «Формат рисунка»: обтекание выделенного рисунка текстом.
+pub fn picture_format(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+    let current = info.picture_wrap;
+    group(ui, tr("group-arrange"), |ui| {
+        menu_button(
+            ui,
+            Icon::WrapText,
+            tr("wrap-text"),
+            tr("wrap-text-hint"),
+            "keytip-picture-wrap",
+            info.has_document && current.is_some(),
+            |ui| {
+                for wrap in PictureWrap::ALL {
+                    if ui
+                        .add(egui::Button::selectable(
+                            current == Some(wrap),
+                            tr(wrap_label(wrap)),
+                        ))
+                        .clicked()
+                    {
+                        out.push(RibbonCommand::PictureWrap(wrap));
+                        ui.close();
+                    }
+                }
+            },
+        );
+    });
+}
+
+/// Имя пункта меню «Обтекание текстом».
+fn wrap_label(wrap: PictureWrap) -> &'static str {
+    match wrap {
+        PictureWrap::InLine => "wrap-inline",
+        PictureWrap::Square => "wrap-square",
+        PictureWrap::Tight => "wrap-tight",
+        PictureWrap::Through => "wrap-through",
+        PictureWrap::TopAndBottom => "wrap-top-bottom",
+        PictureWrap::Behind => "wrap-behind",
+        PictureWrap::InFront => "wrap-in-front",
+    }
 }
 
 /// Вкладка «Конструктор таблиц»: заливка и границы ячеек.

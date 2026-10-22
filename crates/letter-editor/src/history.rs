@@ -7,7 +7,7 @@
 //! операцию к каждой правке, а память тратится только на задетые абзацы.
 //! Набор текста объединяется в один шаг по словам, как в Word.
 
-use letter_model::{Alignment, Block, Color, Document, Picture, Section};
+use letter_model::{Alignment, Anchor, Block, Color, Document, Picture, Section};
 
 use crate::clipboard::{insert_fragment, insert_plain_text};
 use crate::edit::paragraph_count;
@@ -22,7 +22,7 @@ use crate::lists::{
     ListKind, change_list_level, continue_numbering, multilevel_list, restart_numbering,
     tab_changes_level, toggle_list,
 };
-use crate::picture::{insert_picture, resize_picture};
+use crate::picture::{insert_picture, resize_picture, set_picture_anchor};
 use crate::search::{SearchOptions, clamp, replace_all};
 use crate::selection::Selection;
 use crate::table::{
@@ -109,6 +109,9 @@ pub enum Command {
         /// Высота.
         height: i64,
     },
+    /// Новая привязка выделенного рисунка (обтекание, место на странице);
+    /// `None` — рисунок в тексте.
+    PictureAnchor(Option<Box<Anchor>>),
     /// «Заменить все»: найденное `query` заменить на `replacement` во
     /// всём документе. Курсор остаётся в том же абзаце (выделение
     /// снимается).
@@ -257,6 +260,7 @@ impl History {
                 | Command::CellShading(_)
                 | Command::MergeCells
                 | Command::ResizePicture { .. }
+                | Command::PictureAnchor(_)
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -371,6 +375,10 @@ impl History {
                 resize_picture(doc, start, *width, *height);
                 Some(selection)
             }
+            Command::PictureAnchor(anchor) => {
+                set_picture_anchor(doc, start, anchor.clone());
+                Some(selection)
+            }
             _ => None,
         };
         let focus = match &command {
@@ -404,7 +412,8 @@ impl History {
             | Command::CellBorders(_)
             | Command::CellShading(_)
             | Command::MergeCells
-            | Command::ResizePicture { .. } => at,
+            | Command::ResizePicture { .. }
+            | Command::PictureAnchor(_) => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
 

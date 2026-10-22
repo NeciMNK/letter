@@ -89,6 +89,8 @@ pub enum Icon {
     Table,
     /// Рисунок: картинка с горами.
     Picture,
+    /// Обтекание текстом.
+    WrapText,
     /// Удалить строки, столбцы или таблицу.
     DeleteTable,
     /// Вставить строку сверху.
@@ -177,6 +179,7 @@ impl Icon {
             Icon::Multilevel => ("list-tree", '\u{E408}'),
             Icon::Table => ("table", '\u{E17D}'),
             Icon::Picture => ("image", '\u{E0F6}'),
+            Icon::WrapText => ("wrap-text", '\u{E248}'),
             Icon::DeleteTable => ("grid-2x2-x", '\u{E5E5}'),
             Icon::InsertAbove => ("between-horizontal-start", '\u{E592}'),
             Icon::InsertBelow => ("between-horizontal-end", '\u{E591}'),
@@ -360,7 +363,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 38] = [
+    const ALL: [Icon; 39] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -399,6 +402,7 @@ mod tests {
         Icon::PasteMerge,
         Icon::PasteText,
         Icon::Picture,
+        Icon::WrapText,
     ];
 
     #[test]

@@ -43,8 +43,9 @@ pub use lists::{
 };
 pub use navigation::{Motion, Moved, move_cursor};
 pub use picture::{
-    MIN_PICTURE_SIZE, PictureBox, insert_picture, is_picture, picture_at_point, picture_ref,
-    pictures_on_page, resize_picture, selected_picture,
+    MIN_PICTURE_SIZE, PictureBox, PictureWrap, anchor_with_wrap, insert_picture, is_picture,
+    moved_anchor, picture_at_point, picture_ref, pictures_on_page, resize_picture,
+    selected_picture, set_picture_anchor,
 };
 pub use position::{Affinity, Position};
 pub use search::{Found, SearchOptions, find_all, find_next, replace_all};

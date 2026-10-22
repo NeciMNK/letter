@@ -84,7 +84,7 @@ pub fn tab_tips() -> Vec<(&'static str, TipAction)> {
     ];
     for tab in Tab::ALL
         .into_iter()
-        .chain([Tab::TableDesign, Tab::TableLayout])
+        .chain([Tab::TableDesign, Tab::TableLayout, Tab::PictureFormat])
     {
         tips.push((tab.keytip(), TipAction::Tab(tab)));
     }
@@ -422,6 +422,7 @@ mod tests {
                 &crate::insert::INSERT_KEYTIPS[..],
                 &crate::insert::TABLE_KEYTIPS[..],
                 &crate::insert::DESIGN_KEYTIPS[..],
+                &crate::insert::PICTURE_KEYTIPS[..],
             ] {
                 let keys: Vec<String> = ids.iter().map(|id| tr(id).to_owned()).collect();
                 no_prefixes(&keys);

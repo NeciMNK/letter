@@ -63,17 +63,19 @@ pub fn picture_from_bytes(bytes: Vec<u8>, extension: &str) -> Result<Picture, St
     })
 }
 
-/// Размер рисунка меняют мышью.
+/// Рисунок тянут мышью: меняют размер или переносят.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PictureDrag {
     /// Рисунок до изменения.
     pub picture: PictureBox,
-    /// Какой маркер тянут.
+    /// Какой маркер тянут ([`Handle::MOVE`] — переносят весь рисунок).
     pub handle: Handle,
     /// Где нажали кнопку мыши, точки экрана.
     pub start: Pos2,
     /// Новый размер, пт.
     pub size: Vec2,
+    /// На сколько сдвинут перенесённый рисунок, пт.
+    pub offset: Vec2,
 }
 
 /// Маркер на рамке рисунка: какой край или угол он двигает.
@@ -98,6 +100,9 @@ impl Handle {
         Handle { x: -1, y: 0 },
     ];
 
+    /// Не маркер, а сам рисунок: его переносят.
+    pub const MOVE: Handle = Handle { x: 0, y: 0 };
+
     /// Угловой маркер меняет размер с сохранением пропорций.
     pub fn is_corner(self) -> bool {
         self.x != 0 && self.y != 0
@@ -119,6 +124,7 @@ impl Handle {
     /// Указатель мыши над маркером.
     pub fn cursor(self) -> CursorIcon {
         match (self.x, self.y) {
+            (0, 0) => CursorIcon::Move,
             (0, _) => CursorIcon::ResizeVertical,
             (_, 0) => CursorIcon::ResizeHorizontal,
             (x, y) if x == y => CursorIcon::ResizeNwSe,
