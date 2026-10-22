@@ -24,6 +24,10 @@ use crate::lists::{
 };
 use crate::search::{SearchOptions, clamp, replace_all};
 use crate::selection::Selection;
+use crate::table::{
+    delete_columns, delete_rows, delete_table, in_table, insert_columns, insert_rows, insert_table,
+    next_cell,
+};
 
 /// Правка документа.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +70,29 @@ pub enum Command {
         /// С Shift.
         shift: bool,
     },
+    /// Вставить таблицу (строк × столбцов) у курсора.
+    InsertTable {
+        /// Строк.
+        rows: usize,
+        /// Столбцов.
+        columns: usize,
+    },
+    /// Вставить строки таблицы над или под выделенными.
+    InsertRows {
+        /// Под выделенными.
+        below: bool,
+    },
+    /// Вставить столбцы таблицы слева или справа от выделенных.
+    InsertColumns {
+        /// Справа.
+        right: bool,
+    },
+    /// Удалить строки таблицы с выделенным.
+    DeleteRows,
+    /// Удалить столбцы таблицы с выделенным.
+    DeleteColumns,
+    /// Удалить таблицу с курсором.
+    DeleteTable,
     /// «Заменить все»: найденное `query` заменить на `replacement` во
     /// всём документе. Курсор остаётся в том же абзаце (выделение
     /// снимается).
@@ -174,6 +201,15 @@ impl History {
     pub fn run(&mut self, doc: &mut Document, selection: Selection, command: Command) -> Selection {
         let (start, end) = (selection.start(), selection.end());
         let command = match command {
+            // В таблице Tab переходит в следующую ячейку, а в последней
+            // добавляет строку.
+            Command::Tab { shift } if in_table(doc, selection.focus.paragraph) => {
+                match next_cell(doc, selection.focus.paragraph, shift) {
+                    Some(next) => return next,
+                    None if !shift => Command::InsertRows { below: true },
+                    None => return selection,
+                }
+            }
             Command::Tab { shift } if tab_changes_level(doc, start, end) => {
                 Command::ListLevel(if shift { -1 } else { 1 })
             }
@@ -196,6 +232,11 @@ impl History {
                 | Command::RestartNumbering
                 | Command::ContinueNumbering
                 | Command::ReplaceAll { .. }
+                | Command::InsertRows { .. }
+                | Command::InsertColumns { .. }
+                | Command::DeleteRows
+                | Command::DeleteColumns
+                | Command::DeleteTable
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -274,6 +315,26 @@ impl History {
                 replace_all(doc, query, replacement, *options);
                 Some(Selection::caret(clamp(doc, selection.focus)))
             }
+            Command::InsertRows { below } => {
+                let at = insert_rows(doc, start.paragraph, end.paragraph, *below);
+                Some(at.map_or(selection, Selection::caret))
+            }
+            Command::InsertColumns { right } => {
+                let at = insert_columns(doc, start.paragraph, end.paragraph, *right);
+                Some(at.map_or(selection, Selection::caret))
+            }
+            Command::DeleteRows => {
+                let at = delete_rows(doc, start.paragraph, end.paragraph);
+                Some(at.map_or(selection, Selection::caret))
+            }
+            Command::DeleteColumns => {
+                let at = delete_columns(doc, start.paragraph, end.paragraph);
+                Some(at.map_or(selection, Selection::caret))
+            }
+            Command::DeleteTable => {
+                let at = delete_table(doc, selection.focus.paragraph);
+                Some(at.map_or(selection, Selection::caret))
+            }
             _ => None,
         };
         let focus = match &command {
@@ -286,6 +347,7 @@ impl History {
             Command::DeleteForward => delete_forward(doc, at),
             Command::Paste(fragment) => insert_fragment(doc, at, fragment),
             Command::PasteText(text) => insert_plain_text(doc, at, text),
+            Command::InsertTable { rows, columns } => insert_table(doc, at, *rows, *columns),
             Command::Format(_)
             | Command::Align(_)
             | Command::Paragraph(_)
@@ -296,7 +358,12 @@ impl History {
             | Command::RestartNumbering
             | Command::ContinueNumbering
             | Command::Tab { .. }
-            | Command::ReplaceAll { .. } => at,
+            | Command::ReplaceAll { .. }
+            | Command::InsertRows { .. }
+            | Command::InsertColumns { .. }
+            | Command::DeleteRows
+            | Command::DeleteColumns
+            | Command::DeleteTable => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
 
@@ -490,6 +557,37 @@ mod tests {
 
     fn caret(p: usize, o: usize) -> Selection {
         Selection::caret(Position::new(p, o))
+    }
+
+    #[test]
+    fn tables_are_undone() {
+        let mut d = doc(&["ab"]);
+        let mut h = History::new();
+        let caret = |p, o| Selection::caret(Position::new(p, o));
+        let insert = Command::InsertTable {
+            rows: 1,
+            columns: 2,
+        };
+        let s = h.run(&mut d, caret(0, 2), insert);
+        assert_eq!(s, caret(1, 0));
+        assert_eq!(d.plain_text(), "ab\n\t\n");
+        // Tab — в следующую ячейку, в последней — новая строка.
+        let s = h.run(&mut d, s, Command::Type("x".into()));
+        let s = h.run(&mut d, s, Command::Tab { shift: false });
+        assert_eq!(s, caret(2, 0));
+        let s = h.run(&mut d, s, Command::Tab { shift: false });
+        assert_eq!(s, caret(3, 0));
+        assert_eq!(d.plain_text(), "ab\nx\t\n\t\n");
+        let s = h.run(&mut d, s, Command::Tab { shift: true });
+        assert_eq!(s.focus, Position::new(2, 0));
+        h.run(&mut d, caret(1, 0), Command::DeleteTable);
+        assert_eq!(d.plain_text(), "ab\n");
+        h.undo(&mut d);
+        assert_eq!(d.plain_text(), "ab\nx\t\n\t\n");
+        h.undo(&mut d);
+        h.undo(&mut d);
+        h.undo(&mut d);
+        assert_eq!(d.plain_text(), "ab");
     }
 
     #[test]

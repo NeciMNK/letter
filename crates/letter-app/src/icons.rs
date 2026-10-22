@@ -85,6 +85,18 @@ pub enum Icon {
     Numbering,
     /// Многоуровневый список.
     Multilevel,
+    /// Таблица.
+    Table,
+    /// Удалить строки, столбцы или таблицу.
+    DeleteTable,
+    /// Вставить строку сверху.
+    InsertAbove,
+    /// Вставить строку снизу.
+    InsertBelow,
+    /// Вставить столбец слева.
+    InsertLeft,
+    /// Вставить столбец справа.
+    InsertRight,
 }
 
 /// Шрифт со значками.
@@ -143,6 +155,12 @@ impl Icon {
             Icon::Bullets => ("list", '\u{E106}'),
             Icon::Numbering => ("list-ordered", '\u{E1D1}'),
             Icon::Multilevel => ("list-tree", '\u{E408}'),
+            Icon::Table => ("table", '\u{E17D}'),
+            Icon::DeleteTable => ("grid-2x2-x", '\u{E5E5}'),
+            Icon::InsertAbove => ("between-horizontal-start", '\u{E592}'),
+            Icon::InsertBelow => ("between-horizontal-end", '\u{E591}'),
+            Icon::InsertLeft => ("between-vertical-start", '\u{E594}'),
+            Icon::InsertRight => ("between-vertical-end", '\u{E593}'),
         }
     }
 }

@@ -241,6 +241,80 @@ impl<'a> Navigator<'a> {
         self.page_tops[page] + line.top + line.height / 2.0
     }
 
+    /// Верх и низ строки в стопке листов, пт.
+    fn line_span(&self, index: usize) -> (f32, f32) {
+        let (page, _, line) = self.lines[index];
+        let top = self.page_tops[page] + line.top;
+        (top, top + line.height)
+    }
+
+    /// Строка на `n` строк выше или ниже строки `current` при курсоре
+    /// на высоте `x`. Вне таблиц — соседняя по порядку. В таблице —
+    /// сначала строки той же ячейки, а за её краем — ближайшая строка
+    /// по вертикали в столбце под курсором (или вне таблицы), а не
+    /// соседняя ячейка той же строки.
+    fn line_step(&self, current: usize, x: f32, n: isize) -> Option<usize> {
+        let mut at = current;
+        for _ in 0..n.unsigned_abs() {
+            at = self.one_line(at, x, n > 0)?;
+        }
+        Some(at)
+    }
+
+    fn one_line(&self, current: usize, x: f32, down: bool) -> Option<usize> {
+        let line = self.lines[current].2;
+        let neighbour = if down {
+            current.checked_add(1).filter(|&i| i < self.lines.len())
+        } else {
+            current.checked_sub(1)
+        };
+        let in_table = |i: usize| self.lines[i].2.cell.is_some();
+        if line.cell.is_none() && !neighbour.is_some_and(in_table) {
+            return neighbour;
+        }
+        // Следующая строка той же ячейки.
+        if let Some(i) = neighbour
+            && line.cell.is_some()
+            && self.lines[i].2.cell == line.cell
+        {
+            return Some(i);
+        }
+        // Край ячейки (или строки вне таблицы) в стопке листов.
+        let (page, _, _) = self.lines[current];
+        let edge = match (line.cell, down) {
+            (Some(cell), true) => self.page_tops[page] + cell.bottom,
+            (Some(cell), false) => self.page_tops[page] + cell.top,
+            (None, true) => self.line_span(current).1,
+            (None, false) => self.line_span(current).0,
+        };
+        let beyond = |i: usize| {
+            let (top, bottom) = self.line_span(i);
+            if down {
+                top >= edge - 0.5
+            } else {
+                bottom <= edge + 0.5
+            }
+        };
+        let column = |i: usize| {
+            self.lines[i]
+                .2
+                .cell
+                .is_none_or(|c| (c.left..c.right).contains(&x))
+        };
+        let distance = |i: usize| {
+            let (top, bottom) = self.line_span(i);
+            if down { top - edge } else { edge - bottom }
+        };
+        let candidates: Vec<usize> = (0..self.lines.len())
+            .filter(|&i| i != current && beyond(i))
+            .collect();
+        let pick = |list: &mut dyn Iterator<Item = usize>| {
+            list.min_by(|&a, &b| distance(a).total_cmp(&distance(b)))
+        };
+        pick(&mut candidates.iter().copied().filter(|&i| column(i)))
+            .or_else(|| pick(&mut candidates.iter().copied()))
+    }
+
     fn vertical(&self, from: Position, goal_x: Option<f32>, step: Step) -> Moved {
         let stay = Moved {
             position: from,
@@ -251,9 +325,7 @@ impl<'a> Navigator<'a> {
         };
         let x = goal_x.unwrap_or(c.x);
         let target = match step {
-            Step::Lines(n) => current
-                .checked_add_signed(n)
-                .filter(|&i| i < self.lines.len()),
+            Step::Lines(n) => self.line_step(current, x, n),
             Step::Points(distance) => {
                 let y = self.line_middle(current) + distance;
                 // Строка, середина которой ближе всего к нужной высоте.
@@ -400,6 +472,47 @@ mod tests {
             move_cursor(&doc, start, Motion::Right, Some(x)).goal_x,
             None
         );
+    }
+
+    #[test]
+    fn up_and_down_go_through_table_columns() {
+        use letter_model::{Table, TableCell, TableRow, Twips};
+        let cell = |text: &str| TableCell {
+            blocks: text.split('|').map(|t| Paragraph::text(t).into()).collect(),
+            ..TableCell::default()
+        };
+        let mut doc = Document::new();
+        let table = Table {
+            grid: vec![Twips(2000), Twips(2000)],
+            rows: vec![
+                TableRow {
+                    cells: vec![cell("a"), cell("b1|b2")],
+                    ..TableRow::default()
+                },
+                TableRow {
+                    cells: vec![cell("c"), cell("d")],
+                    ..TableRow::default()
+                },
+            ],
+            ..Table::default()
+        };
+        doc.sections[0].blocks = vec![
+            Paragraph::text("top").into(),
+            table.into(),
+            Paragraph::text("end").into(),
+        ];
+        let layout = layout_document(&doc, &mut Shaper::new(), &FontLibrary::embedded_only());
+        let down = |p: usize| go(&layout, Position::new(p, 0), Motion::Down).paragraph;
+        let up = |p: usize| go(&layout, Position::new(p, 0), Motion::Up).paragraph;
+        // «a» → «c» мимо «b1», «b2»; «b1» → «b2» → «d» → «end».
+        assert_eq!(down(1), 4);
+        assert_eq!(down(2), 3);
+        assert_eq!(down(3), 5);
+        assert_eq!(down(5), 6);
+        assert_eq!(up(5), 3);
+        assert_eq!(up(4), 1);
+        assert_eq!(down(0), 1);
+        assert_eq!(up(1), 0);
     }
 
     #[test]
