@@ -25,6 +25,7 @@ mod ribbon;
 mod ruler;
 mod settings;
 mod shortcuts;
+mod story;
 mod styles;
 mod theme;
 mod units;

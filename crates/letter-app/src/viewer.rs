@@ -16,6 +16,7 @@
 
 use crate::i18n::{tr, tr_args};
 use crate::shortcuts::{self, Shortcut};
+use crate::story::{StoryEdit, edit_layout};
 use std::path::{Path, PathBuf};
 
 use std::sync::Arc;
@@ -161,6 +162,9 @@ struct OpenDocument {
     /// Статистика для строки состояния, посчитанная для одного состояния
     /// документа и выделения: каждый кадр не пересчитывается.
     counts: Option<Counts>,
+    /// Открытый для правки колонтитул: тогда `doc`, `history` и `layout`
+    /// — колонтитула, а сам документ отложен здесь.
+    story: Option<Box<StoryEdit>>,
 }
 
 /// Статистика документа и выделения для строки состояния.
@@ -197,6 +201,7 @@ impl OpenDocument {
             cursor_since: 0.0,
             goal_x: None,
             counts: None,
+            story: None,
         }
     }
 
@@ -225,7 +230,10 @@ impl OpenDocument {
 
     /// Изменён ли документ после сохранения.
     fn modified(&self) -> bool {
-        self.history.state() != self.saved
+        match &self.story {
+            Some(story) => story.history.state() != self.saved || self.history.can_undo(),
+            None => self.history.state() != self.saved,
+        }
     }
 
     /// Имя для заголовка окна и вопросов.
@@ -250,7 +258,87 @@ impl OpenDocument {
 
     /// Верстает документ заново после правки.
     fn relayout(&mut self, shaper: &mut Shaper, library: &FontLibrary) {
-        self.layout = layout_document_cached(&self.doc, shaper, library, &mut self.cache);
+        match &mut self.story {
+            Some(story) => {
+                story.write_back(&self.doc);
+                story.display =
+                    layout_document_cached(&story.body, shaper, library, &mut self.cache);
+                self.layout = edit_layout(&story.display, story.page, story.header);
+            }
+            None => {
+                self.layout = layout_document_cached(&self.doc, shaper, library, &mut self.cache);
+            }
+        }
+    }
+
+    /// Сам документ (и во время правки колонтитула — с ним).
+    fn body(&self) -> &Document {
+        self.story.as_ref().map_or(&self.doc, |s| &s.body)
+    }
+
+    /// Открывает для правки верхний (`header`) или нижний колонтитул
+    /// страницы `page`.
+    fn begin_story(
+        &mut self,
+        page: usize,
+        header: bool,
+        shaper: &mut Shaper,
+        library: &FontLibrary,
+    ) {
+        if self.story.is_some() {
+            self.end_story(shaper, library);
+        }
+        let Some(shown) = self.layout.pages.get(page) else {
+            return;
+        };
+        let (section, kind) = (shown.section, shown.kind);
+        let display = self.layout.clone();
+        let body = std::mem::take(&mut self.doc);
+        let history = std::mem::take(&mut self.history);
+        let (edit, story) = StoryEdit::begin(
+            body,
+            history,
+            self.cursor,
+            self.anchor,
+            display,
+            page,
+            section,
+            kind,
+            header,
+        );
+        self.doc = story;
+        self.story = Some(Box::new(edit));
+        self.cursor = Position::default();
+        self.anchor = Position::default();
+        self.goal_x = None;
+        self.relayout(shaper, library);
+    }
+
+    /// Кончает правку колонтитула: изменение — один шаг отмены.
+    fn end_story(&mut self, shaper: &mut Shaper, library: &FontLibrary) {
+        let Some(edit) = self.story.take() else {
+            return;
+        };
+        let (section, header, kind) = (edit.section, edit.header, edit.kind);
+        let (cursor, anchor) = (edit.cursor, edit.anchor);
+        let (body, history, edited) = edit.finish(&self.doc);
+        self.doc = body;
+        self.history = history;
+        self.cursor = cursor;
+        self.anchor = anchor;
+        self.goal_x = None;
+        if let Some(story) = edited {
+            let command = Command::HeaderFooter {
+                section,
+                header,
+                kind,
+                story: story.map(Box::new),
+            };
+            let selection = self.selection();
+            let selection = self.history.run(&mut self.doc, selection, command);
+            self.set_selection(selection);
+        }
+        self.relayout(shaper, library);
     }
 }
 
@@ -431,6 +519,48 @@ const MARKS_COLOR: Color32 = Color32::from_rgb(0x50, 0x60, 0x80);
 /// которого на экране — `origin`; `scale` — точек экрана на пункт.
 /// Стрелки табуляции и разрыва строки — значки (в шрифте интерфейса
 /// таких букв нет), остальное — буквы.
+/// Во время правки колонтитула текст страницы бледнее, а край места
+/// колонтитула отмечен пунктиром с подписью.
+fn paint_story_frame(
+    ui: &egui::Ui,
+    page: &letter_layout::Page,
+    rect: Rect,
+    scale: f32,
+    header: bool,
+) {
+    let (header_end, footer_start) = crate::story::bounds(page);
+    let painter = ui.painter();
+    let body = Rect::from_min_max(
+        Pos2::new(rect.min.x, rect.min.y + header_end * scale),
+        Pos2::new(rect.max.x, rect.min.y + footer_start * scale),
+    );
+    painter.rect_filled(
+        body,
+        0.0,
+        Color32::from_rgba_unmultiplied(255, 255, 255, 140),
+    );
+    let y = rect.min.y + if header { header_end } else { footer_start } * scale;
+    let color = Color32::from_rgb(43, 87, 154);
+    painter.extend(egui::Shape::dashed_line(
+        &[Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y)],
+        egui::Stroke::new(1.0, color),
+        4.0,
+        3.0,
+    ));
+    let label = tr(if header {
+        "header-label"
+    } else {
+        "footer-label"
+    });
+    let font = egui::FontId::proportional(11.0);
+    let galley = painter.layout_no_wrap(label.to_owned(), font, Color32::WHITE);
+    let size = galley.size() + Vec2::new(8.0, 2.0);
+    let top = if header { y } else { y - size.y };
+    let tag = Rect::from_min_size(Pos2::new(rect.min.x + 1.0, top), size);
+    painter.rect_filled(tag, 0.0, color);
+    painter.galley(tag.min + Vec2::new(4.0, 1.0), galley, Color32::WHITE);
+}
+
 fn paint_marks(painter: &egui::Painter, page: &letter_layout::Page, origin: Pos2, scale: f32) {
     for mark in formatting_marks(page) {
         let size = (mark.size * scale).max(4.0);
@@ -603,8 +733,8 @@ impl Viewer {
     fn backstage_info(&self) -> BackstageInfo {
         BackstageInfo {
             document: self.document.as_ref().map(|document| {
-                let stats = document.doc.statistics();
-                let core = &document.doc.properties.core;
+                let stats = document.body().statistics();
+                let core = &document.body().properties.core;
                 DocumentInfo {
                     name: document.name(),
                     path: document.path.clone(),
@@ -718,6 +848,8 @@ impl Viewer {
         let Some(document) = &mut self.document else {
             return false;
         };
+        // Колонтитул дописывается в документ до сохранения.
+        document.end_story(&mut self.shaper, &self.library);
         if let Err(e) = files::write(&document.doc, path) {
             self.report(tr("error-save"), e);
             return false;
@@ -779,7 +911,7 @@ impl Viewer {
         };
         // Не вышло — попробуем в следующий раз; работе это не мешает.
         if autosave
-            .save(&document.doc, document.path.as_deref())
+            .save(document.body(), document.path.as_deref())
             .is_ok()
         {
             document.autosaved = document.history.state();
@@ -978,6 +1110,15 @@ impl Viewer {
         if self.document.is_none() || ctx.egui_wants_keyboard_input() {
             return;
         }
+        // Esc кончает правку колонтитула.
+        if self.document.as_ref().is_some_and(|d| d.story.is_some())
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+            && let Some(document) = &mut self.document
+        {
+            document.end_story(&mut self.shaper, &self.library);
+            self.reveal_cursor = true;
+            return;
+        }
         // Сочетания Word и обычные клавиши — по порядку нажатия: «Ctrl+B,
         // текст» печатает текст полужирным.
         let table = shortcuts::table();
@@ -1097,6 +1238,20 @@ impl Viewer {
                     stale = true;
                 }
                 Action::Edit(command) => {
+                    // В колонтитуле нет разрывов и разделов; новые рисунки
+                    // в колонтитул пока не вставляются.
+                    if document.story.is_some()
+                        && matches!(
+                            command,
+                            Command::Break(_)
+                                | Command::SectionBreak(_)
+                                | Command::PageSetup(_)
+                                | Command::HeaderFooter { .. }
+                                | Command::InsertPicture(_)
+                        )
+                    {
+                        continue;
+                    }
                     let selection = document.selection();
                     let selection = document.history.run(&mut document.doc, selection, command);
                     document.set_selection(selection);
@@ -1643,7 +1798,10 @@ impl Viewer {
         let Some(document) = document else {
             return;
         };
-        let pages = &document.layout.pages;
+        let pages = match &document.story {
+            Some(story) => &story.display.pages,
+            None => &document.layout.pages,
+        };
         let sizes: Vec<(f32, f32)> = pages.iter().map(|p| (p.width, p.height)).collect();
         let placement = place_pages(&sizes, zoom, area_rect.width());
 
@@ -1666,6 +1824,9 @@ impl Viewer {
         }
         let mut ruler_page = None;
         let mut menu = Vec::new();
+        // Двойной щелчок по колонтитулу открывает его для правки
+        // (страница, верхний ли, место щелчка), по тексту — закрывает.
+        let mut story_request: Option<Option<(usize, bool, Vec2)>> = None;
         let output = area.show_viewport(ui, |ui, viewport| {
             let origin = ui.max_rect().min;
             let response = ui
@@ -1864,6 +2025,19 @@ impl Viewer {
                     document.goal_x = None;
                 }
             }
+            if response.double_clicked()
+                && let Some((page, local)) = spot
+                && let Some(shown) = pages.get(page)
+            {
+                let zone = crate::story::zone(shown, local.y);
+                let editing = document.story.as_ref().map(|s| (s.page, s.header));
+                match (zone, editing) {
+                    (Some(header), Some(open)) if open == (page, header) => {}
+                    (Some(header), _) => story_request = Some(Some((page, header, local))),
+                    (None, Some(_)) => story_request = Some(None),
+                    (None, None) => {}
+                }
+            }
             let has_selection = document.anchor != document.cursor;
             let paragraph = document.cursor.paragraph;
             let numbered = (list_kind(&document.doc, paragraph) == Some(ListKind::Numbered))
@@ -1879,6 +2053,9 @@ impl Viewer {
                     painter.paint_page(ui.painter(), library, page, screen_rect(i));
                     if *show_marks {
                         paint_marks(ui.painter(), page, screen_rect(i).min, 1.0 / points);
+                    }
+                    if let Some(story) = &document.story {
+                        paint_story_frame(ui, page, screen_rect(i), 1.0 / points, story.header);
                     }
                 }
             }
@@ -1958,6 +2135,19 @@ impl Viewer {
             }
         });
         self.ruler_page = ruler_page;
+        if let (Some(request), Some(document)) = (story_request, &mut self.document) {
+            match request {
+                Some((page, header, local)) => {
+                    document.begin_story(page, header, &mut self.shaper, &self.library);
+                    if let Some(position) = hit_test(&document.layout, page, local.x, local.y) {
+                        document.cursor = position;
+                        document.anchor = position;
+                    }
+                }
+                None => document.end_story(&mut self.shaper, &self.library),
+            }
+            document.cursor_since = ui.input(|i| i.time);
+        }
         if !menu.is_empty() {
             let ctx = ui.ctx().clone();
             self.run_ribbon(&ctx, menu);
@@ -2860,6 +3050,80 @@ mod tests {
     fn image_png(out: &mut Vec<u8>) {
         let picture = crate::picture::tests_png();
         out.extend_from_slice(&picture);
+    }
+
+    #[test]
+    fn double_click_edits_the_header() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("header-footer.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        frame(&ctx, &mut viewer, screen());
+        let header_text = |viewer: &Viewer| {
+            let document = viewer.document.as_ref().unwrap();
+            let props = &document.body().sections[0].props;
+            props.headers.default.as_ref().unwrap().blocks[0].plain_text()
+        };
+        let shown_header = |viewer: &Viewer| {
+            let document = viewer.document.as_ref().unwrap();
+            let page = match &document.story {
+                Some(story) => &story.display.pages[0],
+                None => &document.layout.pages[0],
+            };
+            let line = &page.header.lines[0];
+            line.text[line.line.range.clone()].to_string()
+        };
+
+        // Двойной щелчок по строке верхнего колонтитула.
+        let document = viewer.document.as_ref().unwrap();
+        let first = &document.layout.pages[0];
+        let line = first.header.lines[0].clone();
+        let scale = viewer.zoom() * SCREEN_PIXELS_PER_POINT;
+        let page = place_pages(
+            &[(first.width, first.height)],
+            viewer.zoom(),
+            viewer.view_size.x,
+        )
+        .rects[0];
+        let at = viewer.view_origin
+            + page.min.to_vec2()
+            + vec2(line.x + 1.0, line.top + line.height / 2.0) * scale;
+        let button = |pressed: bool| Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        let mut input = events(vec![
+            Event::PointerMoved(at),
+            button(true),
+            button(false),
+            button(true),
+            button(false),
+        ]);
+        input.time = Some(5.0);
+        frame(&ctx, &mut viewer, input);
+        assert!(viewer.document.as_ref().unwrap().story.is_some());
+        assert_eq!(viewer.cursor(), Some(Position::new(0, 0)));
+
+        // Набранное сразу видно в колонтитуле.
+        frame(&ctx, &mut viewer, events(vec![Event::Text("New ".into())]));
+        assert_eq!(header_text(&viewer), "New Header text");
+        assert_eq!(shown_header(&viewer), "New Header text");
+        // Разрыв страницы в колонтитул не вставляется.
+        frame(&ctx, &mut viewer, key(Key::Enter, Modifiers::COMMAND));
+        assert_eq!(header_text(&viewer), "New Header text");
+
+        // Esc кончает правку; изменение — один шаг отмены.
+        frame(&ctx, &mut viewer, key(Key::Escape, Modifiers::NONE));
+        let document = viewer.document.as_ref().unwrap();
+        assert!(document.story.is_none());
+        assert!(document.modified());
+        assert_eq!(header_text(&viewer), "New Header text");
+        assert_eq!(shown_header(&viewer), "New Header text");
+        frame(&ctx, &mut viewer, key(Key::Z, Modifiers::COMMAND));
+        assert_eq!(header_text(&viewer), "Header text");
+        assert_eq!(shown_header(&viewer), "Header text");
     }
 
     #[test]

@@ -526,3 +526,7 @@ keytip-layout-orientation = О
 keytip-layout-size = Р
 keytip-layout-columns = К
 keytip-layout-breaks = З
+
+## Колонтитулы
+header-label = Верхний колонтитул
+footer-label = Нижний колонтитул
