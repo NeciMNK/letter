@@ -377,20 +377,27 @@ fn home(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 RunFormat::Underline,
             );
             ui.separator();
-            toggle(
-                ui,
-                false,
-                RichText::new("A+"),
-                "Увеличить размер шрифта (Ctrl+])",
-                RunFormat::Grow,
-            );
-            toggle(
-                ui,
-                false,
-                RichText::new("A-"),
-                "Уменьшить размер шрифта (Ctrl+[)",
-                RunFormat::Shrink,
-            );
+            for (icon, name, tip, f) in [
+                (
+                    Icon::Grow,
+                    "Увеличить размер шрифта",
+                    "Увеличить размер шрифта (Ctrl+])",
+                    RunFormat::Grow,
+                ),
+                (
+                    Icon::Shrink,
+                    "Уменьшить размер шрифта",
+                    "Уменьшить размер шрифта (Ctrl+[)",
+                    RunFormat::Shrink,
+                ),
+            ] {
+                if icon_button(ui, icon, name, vec2(26.0, 24.0), doc, false)
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    out.push(RibbonCommand::Format(f));
+                }
+            }
         });
     });
     group(ui, "Абзац", |ui| {

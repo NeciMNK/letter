@@ -38,6 +38,7 @@ fn main() -> eframe::Result {
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
             // Светлое оформление, как у Word по умолчанию.
             cc.egui_ctx.set_theme(egui::Theme::Light);
+            icons::install(&cc.egui_ctx);
             let mut viewer = Viewer::with_storage(FontLibrary::new(), files::app_dir());
             match file {
                 Some(file) => viewer.open_or_report(&file),
