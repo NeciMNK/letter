@@ -38,6 +38,7 @@ use crate::clipboard::{Clipboard, SystemBuffer};
 use crate::files::{self, Autosave, OPEN_FILTERS, Recent, Recovered, SAVE_FILTERS};
 use crate::find::{FindAction, FindDialog};
 use crate::icons::{self, Icon};
+use crate::paragraph_dialog::{ParagraphDialog, ParagraphValues};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
 use crate::ruler::{self, RULER_SIZE, RulerParagraph, RulerState};
 use crate::settings::Settings;
@@ -309,6 +310,8 @@ pub struct Viewer {
     ruler_page: Option<(usize, Rect)>,
     /// Горизонтальная линейка: вид новой табуляции, перетаскивание.
     ruler_state: RulerState,
+    /// Окно «Абзац».
+    paragraph_dialog: ParagraphDialog,
     /// Шрифты для списка на ленте.
     font_names: Arc<[String]>,
     /// Окно «Найти и заменить».
@@ -438,6 +441,7 @@ impl Viewer {
             statistics_open: false,
             ruler_page: None,
             ruler_state: RulerState::default(),
+            paragraph_dialog: ParagraphDialog::default(),
         }
     }
 
@@ -721,6 +725,10 @@ impl Viewer {
             self.run_ribbon(&ctx, commands);
             if let Some(action) = self.find.ui(&ctx) {
                 self.find_action(&ctx, action);
+            }
+            if let Some(changes) = self.paragraph_dialog.ui(&ctx) {
+                let format = letter_editor::ParagraphFormat::Set(changes);
+                self.run_ribbon(&ctx, vec![RibbonCommand::Paragraph(format)]);
             }
             egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
             egui::CentralPanel::no_frame()
@@ -1163,6 +1171,15 @@ impl Viewer {
                 RibbonCommand::Find => self.find.show(false),
                 RibbonCommand::Replace => self.find.show(true),
                 RibbonCommand::SelectAll => actions.push(Action::SelectAll),
+                RibbonCommand::ParagraphDialog => {
+                    if let Some(document) = &self.document
+                        && let Some((props, _)) =
+                            formatting_at(&document.doc, document.selection().start())
+                    {
+                        self.paragraph_dialog.show(ParagraphValues::new(&props));
+                    }
+                }
+                RibbonCommand::FontDialog => {}
             }
         }
         self.apply_actions(ctx, actions);
@@ -1874,6 +1891,12 @@ mod tests {
         let document = viewer.document.as_mut().unwrap();
         let first = letter_editor::paragraph_mut(&mut document.doc, 0).unwrap();
         assert!(first.props.indentation.left.is_some_and(|l| l.0 > 0));
+        // Окно «Абзац» открывается со значениями абзаца у курсора.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ParagraphDialog]);
+        assert!(viewer.paragraph_dialog.open);
+        let values = viewer.paragraph_dialog.values.unwrap();
+        assert_eq!(values.before, 240);
+        assert_eq!(values.line, crate::paragraph_dialog::LineKind::Double);
     }
 
     fn fixture(name: &str) -> PathBuf {

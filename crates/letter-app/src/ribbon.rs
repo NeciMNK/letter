@@ -8,7 +8,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use eframe::egui::{self, Align, Color32, CornerRadius, Layout, RichText, Stroke, Ui, vec2};
+use eframe::egui::{
+    self, Align, Color32, CornerRadius, Layout, Rect, RichText, Stroke, Ui, pos2, vec2,
+};
 use letter_editor::{ParagraphFormat, RunFormat};
 
 use crate::home::{HomeState, home};
@@ -114,6 +116,10 @@ pub enum RibbonCommand {
     Replace,
     /// «Выделить все».
     SelectAll,
+    /// Окно «Шрифт».
+    FontDialog,
+    /// Окно «Абзац».
+    ParagraphDialog,
     /// Масштаб крупнее.
     ZoomIn,
     /// Масштаб мельче.
@@ -293,6 +299,19 @@ fn quick_access(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
 /// Группа команд: содержимое и подпись снизу по центру, справа —
 /// разделитель. Ширина группы — по содержимому.
 pub(crate) fn group(ui: &mut Ui, caption: &str, content: impl FnOnce(&mut Ui)) {
+    group_with_launcher(ui, caption, None, content);
+}
+
+/// Группа ленты с кнопкой-стрелкой у подписи, которая открывает окно
+/// группы (как «Шрифт» и «Абзац» в Word); `launcher` — название окна.
+/// Возвращает, нажата ли кнопка.
+pub(crate) fn group_with_launcher(
+    ui: &mut Ui,
+    caption: &str,
+    launcher: Option<&str>,
+    content: impl FnOnce(&mut Ui),
+) -> bool {
+    let mut clicked = false;
     ui.vertical(|ui| {
         let top = ui.cursor().top();
         ui.scope(content);
@@ -311,8 +330,32 @@ pub(crate) fn group(ui: &mut Ui, caption: &str, content: impl FnOnce(&mut Ui)) {
                 );
             },
         );
+        if let Some(name) = launcher {
+            let rect = ui.min_rect();
+            let at = Rect::from_min_size(
+                pos2(
+                    rect.right() - caption_height,
+                    rect.bottom() - caption_height,
+                ),
+                vec2(caption_height, caption_height),
+            );
+            let response = ui
+                .put(at, |ui: &mut Ui| {
+                    crate::icons::icon_button(
+                        ui,
+                        crate::icons::Icon::Launcher,
+                        name,
+                        vec2(caption_height, caption_height),
+                        true,
+                        false,
+                    )
+                })
+                .on_hover_text(name);
+            clicked = response.clicked();
+        }
     });
     ui.separator();
+    clicked
 }
 
 /// Вкладка «Вид».

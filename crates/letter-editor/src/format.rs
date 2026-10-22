@@ -222,6 +222,45 @@ pub enum ParagraphFormat {
     },
     /// Убрать позицию табуляции (стащить с линейки).
     RemoveTab(Twips),
+    /// Изменения из окна «Абзац».
+    Set(ParagraphChanges),
+}
+
+/// Изменения из окна «Абзац»: `None` — поле не трогали, у абзацев
+/// остаётся своё значение.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ParagraphChanges {
+    /// Выравнивание.
+    pub alignment: Option<Alignment>,
+    /// Отступ слева.
+    pub left: Option<Twips>,
+    /// Отступ справа.
+    pub right: Option<Twips>,
+    /// Первая строка: `Some(None)` — «(нет)».
+    pub first_line: Option<Option<FirstLineIndent>>,
+    /// Интервал перед.
+    pub before: Option<Twips>,
+    /// Интервал после.
+    pub after: Option<Twips>,
+    /// Межстрочный интервал.
+    pub line: Option<LineSpacing>,
+    /// «Не добавлять интервал между абзацами одного стиля».
+    pub contextual_spacing: Option<bool>,
+    /// «Запрет висячих строк».
+    pub widow_control: Option<bool>,
+    /// «Не отрывать от следующего».
+    pub keep_next: Option<bool>,
+    /// «Не разрывать абзац».
+    pub keep_lines: Option<bool>,
+    /// «С новой страницы».
+    pub page_break_before: Option<bool>,
+}
+
+impl ParagraphChanges {
+    /// Ничего не меняется.
+    pub fn is_empty(&self) -> bool {
+        *self == ParagraphChanges::default()
+    }
 }
 
 /// Меняет оформление абзацев от `start` до `end`.
@@ -283,7 +322,33 @@ pub fn format_paragraphs(
             ParagraphFormat::RemoveTab(at) => {
                 change_tabs(doc, index, |tabs| tabs.retain(|t| t.position != at));
             }
+            ParagraphFormat::Set(changes) => {
+                set(&mut props.alignment, changes.alignment);
+                set(&mut props.indentation.left, changes.left);
+                set(&mut props.indentation.right, changes.right);
+                if let Some(first_line) = changes.first_line {
+                    // «(нет)» записывается нулём: иначе останется отступ
+                    // из стиля.
+                    props.indentation.first_line =
+                        Some(first_line.unwrap_or(FirstLineIndent::FirstLine(Twips(0))));
+                }
+                set(&mut props.spacing.before, changes.before);
+                set(&mut props.spacing.after, changes.after);
+                set(&mut props.spacing.line, changes.line);
+                set(&mut props.contextual_spacing, changes.contextual_spacing);
+                set(&mut props.widow_control, changes.widow_control);
+                set(&mut props.keep_next, changes.keep_next);
+                set(&mut props.keep_lines, changes.keep_lines);
+                set(&mut props.page_break_before, changes.page_break_before);
+            }
         }
+    }
+}
+
+/// Ставит `value` в `target`, если оно задано.
+fn set<T>(target: &mut Option<T>, value: Option<T>) {
+    if value.is_some() {
+        *target = value;
     }
 }
 
@@ -753,6 +818,38 @@ mod tests {
         all(&mut d, RunFormat::Bold);
         all(&mut d, RunFormat::Clear);
         assert_eq!(props(&d), RunProps::default());
+    }
+
+    #[test]
+    fn dialog_changes_only_what_was_touched() {
+        let mut d = doc(vec![Paragraph::text("a"), Paragraph::text("b")]);
+        para_mut(&mut d, 1).props.alignment = Some(Alignment::Center);
+        let changes = ParagraphChanges {
+            left: Some(Twips(567)),
+            first_line: Some(None),
+            line: Some(LineSpacing::Exact(Twips(300))),
+            keep_next: Some(true),
+            ..ParagraphChanges::default()
+        };
+        assert!(!changes.is_empty() && ParagraphChanges::default().is_empty());
+        format_paragraphs(
+            &mut d,
+            Position::new(0, 0),
+            Position::new(1, 0),
+            ParagraphFormat::Set(changes),
+        );
+        for i in 0..2 {
+            let r = d.resolve_paragraph(&para(&d, i).props);
+            assert_eq!(r.indent_left, Twips(567));
+            assert_eq!(r.line_spacing, LineSpacing::Exact(Twips(300)));
+            assert!(r.keep_next);
+            assert!(matches!(
+                r.first_line,
+                None | Some(FirstLineIndent::FirstLine(Twips(0)))
+            ));
+        }
+        assert_eq!(para(&d, 0).props.alignment, None);
+        assert_eq!(para(&d, 1).props.alignment, Some(Alignment::Center));
     }
 
     #[test]
