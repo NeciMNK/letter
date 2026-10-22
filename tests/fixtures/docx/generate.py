@@ -480,7 +480,8 @@ def set_borders(paragraph, sides: dict[str, tuple[str, int, int, str]], fill: st
 
 def borders() -> Document:
     """Границы и заливка абзацев: рамка вокруг двух абзацев с линией
-    между ними, линия под заголовком, заливка без линий."""
+    между ними, линия под заголовком, заливка без линий; цвет страницы
+    и рамка страницы."""
     doc = new_document("Границы и заливка")
     box = {
         side: ("single", 8, 4 if side in ("left", "right") else 1, "1F4E79")
@@ -491,6 +492,27 @@ def borders() -> Document:
     set_borders(doc.add_paragraph("Заголовок с линией снизу"), {"bottom": ("double", 6, 1, "auto")})
     set_borders(doc.add_paragraph("Абзац с заливкой без линий."), {}, fill="FFF2CC")
     doc.add_paragraph("Обычный абзац.")
+    # Цвет страницы (с флагом в настройках, без которого Word его не
+    # показывает) и рамка страницы в 24 пт от края листа.
+    background = etree.Element(qn("w:background"))
+    background.set(qn("w:color"), "EAF1DD")
+    doc.element.insert(0, background)
+    zoom = doc.settings.element.find(qn("w:zoom"))
+    flag = etree.Element(qn("w:displayBackgroundShape"))
+    if zoom is not None:
+        zoom.addnext(flag)
+    else:
+        doc.settings.element.insert(0, flag)
+    sect = doc.sections[0]._sectPr
+    page_borders = etree.Element(qn("w:pgBorders"))
+    page_borders.set(qn("w:offsetFrom"), "page")
+    for side in ("top", "left", "bottom", "right"):
+        border = etree.SubElement(page_borders, qn(f"w:{side}"))
+        border.set(qn("w:val"), "single")
+        border.set(qn("w:sz"), "12")
+        border.set(qn("w:space"), "24")
+        border.set(qn("w:color"), "auto")
+    sect.find(qn("w:pgMar")).addnext(page_borders)
     return doc
 
 

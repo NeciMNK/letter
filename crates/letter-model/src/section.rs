@@ -1,6 +1,6 @@
 //! Разделы документа: размер страницы, поля, ориентация.
 
-use crate::{Block, RawXml, Twips};
+use crate::{Block, Border, RawXml, Twips};
 
 /// Раздел документа. У каждого раздела свои размер страницы и поля;
 /// документ из одного раздела — самый частый случай.
@@ -41,9 +41,43 @@ pub struct SectionProps {
     pub footers: HeaderFooters,
     /// «Особый колонтитул для первой страницы» (`w:titlePg`).
     pub title_page: bool,
+    /// Границы страниц (`w:pgBorders`).
+    pub page_borders: Option<PageBorders>,
     /// Свойства, которые программа пока не понимает (колонтитулы, колонки,
     /// сетка и т. п.), в порядке из файла.
     pub unknown: Vec<RawXml>,
+}
+
+/// Границы страниц раздела (`w:pgBorders`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PageBorders {
+    /// Сверху.
+    pub top: Option<Border>,
+    /// Слева.
+    pub left: Option<Border>,
+    /// Снизу.
+    pub bottom: Option<Border>,
+    /// Справа.
+    pub right: Option<Border>,
+    /// Отступ линий (`w:space`) считается от края листа
+    /// (`w:offsetFrom="page"`), иначе — от текста.
+    pub from_page_edge: bool,
+    /// На каких страницах раздела линии видны (`w:display`).
+    pub display: PageBorderDisplay,
+    /// Линии под текстом (`w:zOrder="back"`), иначе — над ним.
+    pub behind_text: bool,
+}
+
+/// На каких страницах раздела видны границы.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PageBorderDisplay {
+    /// На всех (`allPages`).
+    #[default]
+    AllPages,
+    /// Только на первой (`firstPage`).
+    FirstPage,
+    /// На всех, кроме первой (`notFirstPage`).
+    NotFirstPage,
 }
 
 /// Колонтитул: абзацы и таблицы над или под текстом страницы.

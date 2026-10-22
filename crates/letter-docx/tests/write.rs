@@ -444,6 +444,46 @@ fn everything_the_model_knows_survives() {
 }
 
 #[test]
+fn page_color_and_borders_survive() {
+    use letter_model::{PageBorderDisplay, PageBorders};
+    let check = |mut doc: Document| {
+        doc.background = Some(Color::Rgb(0xFF, 0xF2, 0xCC));
+        doc.sections[0].props.page_borders = Some(PageBorders {
+            top: Some(Border {
+                space: Some(24),
+                ..Border::single(4)
+            }),
+            bottom: Some(Border {
+                style: "double".into(),
+                size: Some(6),
+                space: Some(24),
+                color: Some(Color::Rgb(0x1F, 0x4E, 0x79)),
+            }),
+            from_page_edge: true,
+            display: PageBorderDisplay::NotFirstPage,
+            behind_text: true,
+            ..PageBorders::default()
+        });
+        let saved = write_bytes(&doc).unwrap();
+        let reopened = read_bytes(&saved).unwrap();
+        assert_eq!(reopened.background, doc.background);
+        assert_eq!(reopened.sections, doc.sections);
+        // В настройках — флаг, без которого Word не показывает цвет.
+        let parts = zip_parts(&saved);
+        let settings = parts
+            .iter()
+            .find(|(name, _)| name.ends_with("settings.xml"))
+            .map(|(_, data)| String::from_utf8_lossy(data).into_owned())
+            .unwrap_or_default();
+        assert!(settings.contains("displayBackgroundShape"), "{settings}");
+        assert_eq!(round_trip(&reopened), reopened);
+    };
+    // Новый документ (без части настроек) и файл с настройками.
+    check(Document::new());
+    check(read_bytes(&fixture_bytes("plain-text.docx")).unwrap());
+}
+
+#[test]
 fn styles_are_added_to_a_file_without_them() {
     // empty.docx от python-docx содержит стили; убираем их из пакета,
     // как будто файл пришёл из программы, которая стилей не пишет.

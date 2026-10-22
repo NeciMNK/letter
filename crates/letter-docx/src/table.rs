@@ -361,7 +361,7 @@ pub(crate) fn read_paragraph_borders(element: &Element) -> Option<ParagraphBorde
     Some(borders)
 }
 
-fn read_border(element: &Element) -> Option<Border> {
+pub(crate) fn read_border(element: &Element) -> Option<Border> {
     if !element.only_attrs(&["val", "sz", "space", "color"]) {
         return None;
     }
@@ -597,7 +597,12 @@ pub(crate) fn paragraph_borders_xml(borders: &ParagraphBorders) -> String {
     )
 }
 
-fn sides_xml(name: &str, sides: [(&str, &Option<Border>); 6]) -> String {
+fn sides_xml<const N: usize>(name: &str, sides: [(&str, &Option<Border>); N]) -> String {
+    element(name, &border_lines(sides))
+}
+
+/// Линии границ по сторонам: `<w:top …/>` и т. п.
+pub(crate) fn border_lines<const N: usize>(sides: [(&str, &Option<Border>); N]) -> String {
     let mut inner = String::new();
     for (side, border) in sides {
         if let Some(border) = border {
@@ -614,7 +619,7 @@ fn sides_xml(name: &str, sides: [(&str, &Option<Border>); 6]) -> String {
             inner.push_str(&empty(side, &attrs));
         }
     }
-    element(name, &inner)
+    inner
 }
 
 pub(crate) fn shading_xml(shading: &Shading) -> String {

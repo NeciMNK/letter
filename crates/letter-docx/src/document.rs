@@ -8,9 +8,9 @@ use letter_model::{
     Block, Bookmark, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind,
     FirstLineIndent, HalfPoints, HeaderFooter, HeaderFooterKind, HeaderFooters, Hyperlink,
     Indentation, Inline, LineSpacing, Note, NoteKind, NoteReference, NumberingRef, Orientation,
-    PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run, RunContent, RunFonts, RunProps,
-    Section, SectionProps, SectionStart, Spacing, TabStop, ThemeColor, Twips, Underline,
-    VerticalAlign,
+    PageBorderDisplay, PageBorders, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run,
+    RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Spacing, TabStop,
+    ThemeColor, Twips, Underline, VerticalAlign,
 };
 
 use crate::ReadError;
@@ -18,7 +18,7 @@ use crate::names::{
     ALIGNMENTS, HIGHLIGHTS, TAB_KINDS, TAB_LEADERS, THEME_FONTS, UNDERLINES, lookup,
 };
 use crate::serialize::R_NS;
-use crate::table::{read_paragraph_borders, read_shading};
+use crate::table::{read_border, read_paragraph_borders, read_shading};
 use crate::xml::Element;
 
 /// Пространство имён WordprocessingML (обычный вариант OOXML).
@@ -69,6 +69,13 @@ pub(crate) fn read_document(root: &Element) -> Result<Document, ReadError> {
     for child in root.elements() {
         if child.is_w("body") {
             doc.sections = read_body(child);
+        } else if child.is_w("background")
+            && doc.background.is_none()
+            && child.only_attrs(&["color"])
+            && child.elements().next().is_none()
+            && let Some(color) = child.w_attr("color").and_then(parse_color)
+        {
+            doc.background = Some(color);
         } else {
             doc.unknown.push(child.raw());
         }
@@ -625,6 +632,7 @@ fn read_section_props(sect: &Element) -> SectionProps {
                 "headerReference" => read_reference(child, &mut props.headers),
                 "footerReference" => read_reference(child, &mut props.footers),
                 "titlePg" => toggle(child).map(|on| props.title_page = on).is_some(),
+                "pgBorders" => set(&mut props.page_borders, read_page_borders(child)),
                 _ => false,
             };
         if !understood {
@@ -632,6 +640,50 @@ fn read_section_props(sect: &Element) -> SectionProps {
         }
     }
     props
+}
+
+/// `w:pgBorders`: границы страниц. `None`, если внутри непонятное
+/// (например, рисунчатая граница) — тогда элемент сохраняется как есть.
+fn read_page_borders(element: &Element) -> Option<PageBorders> {
+    if !element.only_attrs(&["offsetFrom", "display", "zOrder"]) {
+        return None;
+    }
+    let mut borders = PageBorders {
+        from_page_edge: match element.w_attr("offsetFrom") {
+            None | Some("text") => false,
+            Some("page") => true,
+            Some(_) => return None,
+        },
+        display: match element.w_attr("display") {
+            None | Some("allPages") => PageBorderDisplay::AllPages,
+            Some("firstPage") => PageBorderDisplay::FirstPage,
+            Some("notFirstPage") => PageBorderDisplay::NotFirstPage,
+            Some(_) => return None,
+        },
+        behind_text: match element.w_attr("zOrder") {
+            None | Some("front") => false,
+            Some("back") => true,
+            Some(_) => return None,
+        },
+        ..PageBorders::default()
+    };
+    for child in element.elements() {
+        if !is_w_ns(child.ns.as_deref()) {
+            return None;
+        }
+        let slot = match child.local.as_str() {
+            "top" => &mut borders.top,
+            "left" => &mut borders.left,
+            "bottom" => &mut borders.bottom,
+            "right" => &mut borders.right,
+            _ => return None,
+        };
+        if slot.is_some() {
+            return None;
+        }
+        *slot = Some(read_border(child)?);
+    }
+    Some(borders)
 }
 
 /// Ссылка на колонтитул (`w:headerReference`, `w:footerReference`):
@@ -1283,9 +1335,11 @@ mod tests {
 
     #[test]
     fn document_level_unknowns_and_strict_namespace() {
-        let xml = r#"<w:document xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main"><w:background w:color="FFFF00"/><w:body><w:p><w:r><w:t>s</w:t></w:r></w:p></w:body></w:document>"#;
+        let xml = r#"<w:document xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main"><w:background w:color="FFFF00"/><w:background w:color="00FF00"/><w:body><w:p><w:r><w:t>s</w:t></w:r></w:p></w:body></w:document>"#;
         let doc = read_document(&xml::parse(xml.as_bytes()).unwrap()).unwrap();
         assert_eq!(doc.plain_text(), "s");
+        // Цвет страницы понят, повтор сохранён как есть.
+        assert_eq!(doc.background, Some(Color::Rgb(0xFF, 0xFF, 0)));
         assert_eq!(doc.unknown.len(), 1);
     }
 

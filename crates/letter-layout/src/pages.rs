@@ -48,10 +48,10 @@ use std::sync::Arc;
 use letter_model::{
     Alignment, Anchor, AnchorAlign, Block, Border, Document, EMU_PER_POINT, FirstLineIndent,
     HeaderFooter, HeaderFooterKind, HorizontalFrom, ImageData, LevelSuffix, LineSpacing,
-    ListCounters, ListLabel, NoteKind, Numbering, PageSize, Paragraph, ParagraphBorders, Placement,
-    ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps, RunContent, RunFonts, RunProps,
-    Section, SectionProps, SectionStart, Settings, Styles, TabStopKind, Theme, Twips,
-    VerticalAlign, VerticalFrom, Wrap,
+    ListCounters, ListLabel, NoteKind, Numbering, PageBorderDisplay, PageBorders, PageSize,
+    Paragraph, ParagraphBorders, Placement, ResolvedFonts, ResolvedParagraphProps,
+    ResolvedRunProps, RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart,
+    Settings, Styles, TabStopKind, Theme, Twips, VerticalAlign, VerticalFrom, Wrap,
 };
 
 use crate::fields;
@@ -532,7 +532,101 @@ pub fn layout_document_cached(
     cache.rebuilt = rebuilt;
     let mut pages = pager.pages;
     place_stories(doc, &mut pages, &stories, shaper, library);
+    page_background(doc, &mut pages);
     DocumentLayout { pages }
+}
+
+/// Цвет страницы (заливка всего листа под всем остальным) и границы
+/// страниц раздела.
+fn page_background(doc: &Document, pages: &mut [Page]) {
+    let mut previous_section = None;
+    for page in pages {
+        let first = previous_section != Some(page.section);
+        previous_section = Some(page.section);
+        if let Some(letter_model::Color::Rgb(r, g, b)) = doc.background {
+            page.shapes.insert(
+                0,
+                Shape {
+                    x: 0.0,
+                    y: 0.0,
+                    width: page.width,
+                    height: page.height,
+                    color: (r, g, b),
+                    kind: ShapeKind::Fill,
+                },
+            );
+        }
+        let borders = doc
+            .sections
+            .get(page.section)
+            .and_then(|s| s.props.page_borders.as_ref());
+        if let Some(borders) = borders {
+            let shown = match borders.display {
+                PageBorderDisplay::AllPages => true,
+                PageBorderDisplay::FirstPage => first,
+                PageBorderDisplay::NotFirstPage => !first,
+            };
+            if shown {
+                page_borders(page, borders);
+            }
+        }
+    }
+}
+
+/// Линии границ страницы: на расстоянии `w:space` пт от края листа или
+/// снаружи от текста.
+fn page_borders(page: &mut Page, borders: &PageBorders) {
+    let line = |b: &Option<Border>| ParagraphBorders::visible(b).cloned();
+    let (top, left, bottom, right) = (
+        line(&borders.top),
+        line(&borders.left),
+        line(&borders.bottom),
+        line(&borders.right),
+    );
+    let width = |b: &Option<Border>| b.as_ref().map_or(0.0, Border::width_points);
+    let space = |b: &Option<Border>| b.as_ref().map_or(0.0, |b| b.space.unwrap_or(0) as f32);
+    let m = page.margins;
+    // Внешние края рамки.
+    let (x0, y0, x1, y1) = if borders.from_page_edge {
+        (
+            space(&left),
+            space(&top),
+            page.width - space(&right),
+            page.height - space(&bottom),
+        )
+    } else {
+        (
+            m.left - space(&left) - width(&left),
+            m.top - space(&top) - width(&top),
+            page.width - m.right + space(&right) + width(&right),
+            page.height - m.bottom + space(&bottom) + width(&bottom),
+        )
+    };
+    let rule = |b: &Border, x: f32, y: f32, w: f32, h: f32| Shape {
+        x,
+        y,
+        width: w,
+        height: h,
+        color: match b.color {
+            Some(letter_model::Color::Rgb(r, g, b)) => (r, g, b),
+            _ => (0, 0, 0),
+        },
+        kind: ShapeKind::Rule,
+    };
+    if let Some(b) = &top {
+        page.shapes.push(rule(b, x0, y0, x1 - x0, b.width_points()));
+    }
+    if let Some(b) = &bottom {
+        let w = b.width_points();
+        page.shapes.push(rule(b, x0, y1 - w, x1 - x0, w));
+    }
+    if let Some(b) = &left {
+        page.shapes.push(rule(b, x0, y0, b.width_points(), y1 - y0));
+    }
+    if let Some(b) = &right {
+        let w = b.width_points();
+        page.shapes.push(rule(b, x1 - w, y0, w, y1 - y0));
+    }
 }
 
 /// Раскладывает блоки раздела или колонтитула: подряд идущие абзацы
@@ -3707,6 +3801,50 @@ mod tests {
         let layout = lay(&plain);
         assert!(layout.pages[0].lines[0].top.abs() < 1e-3);
         assert_eq!(layout.pages[0].shapes.len(), 5);
+    }
+
+    #[test]
+    fn page_color_and_page_borders() {
+        use letter_model::{Border, Color, PageBorderDisplay, PageBorders};
+        let mut d = doc(singles(40));
+        d.background = Some(Color::Rgb(1, 2, 3));
+        let line = Border {
+            space: Some(24),
+            ..Border::single(8)
+        };
+        d.sections[0].props.page_borders = Some(PageBorders {
+            top: Some(line.clone()),
+            left: Some(line),
+            from_page_edge: true,
+            display: PageBorderDisplay::NotFirstPage,
+            ..PageBorders::default()
+        });
+        let layout = lay(&d);
+        assert!(layout.pages.len() > 1);
+        for (i, page) in layout.pages.iter().enumerate() {
+            let fill = page.shapes.first().copied();
+            assert_eq!(
+                fill.map(|s| (s.kind, s.color)),
+                Some((ShapeKind::Fill, (1, 2, 3)))
+            );
+            assert_eq!(
+                fill.map(|s| (s.width, s.height)),
+                Some((page.width, page.height))
+            );
+            let rules: Vec<&Shape> = page
+                .shapes
+                .iter()
+                .filter(|s| s.kind == ShapeKind::Rule)
+                .collect();
+            if i == 0 {
+                assert!(rules.is_empty());
+            } else {
+                // Сверху и слева, в 24 пт от края листа.
+                assert_eq!(rules.len(), 2);
+                assert!(rules.iter().all(|r| (r.x - 24.0).abs() < 1e-3));
+                assert!(rules.iter().all(|r| (r.y - 24.0).abs() < 1e-3));
+            }
+        }
     }
 
     #[test]
