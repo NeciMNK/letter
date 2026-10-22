@@ -403,6 +403,7 @@ fn inline(doc: &Document, p: &Paragraph, skip: usize, cell: bool) -> String {
         for item in &run.content {
             let piece = match item {
                 RunContent::Text(text) => text.clone(),
+                RunContent::Symbol(s) => s.unicode().to_string(),
                 RunContent::Tab => "\t".to_owned(),
                 RunContent::Break(BreakKind::Line) => "\n".to_owned(),
                 RunContent::Break(_)

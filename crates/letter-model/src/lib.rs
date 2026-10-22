@@ -31,6 +31,7 @@ mod resolve;
 mod run;
 mod section;
 mod style;
+mod symbol;
 mod table;
 mod theme;
 mod units;
@@ -65,6 +66,7 @@ pub use section::{
     PageBorders, PageMargins, PageSize, Section, SectionProps, SectionStart,
 };
 pub use style::{DocDefaults, Style, StyleKind, Styles};
+pub use symbol::{Symbol, is_symbol_font, symbol_char};
 pub use table::{
     Block, CellMargins, CellProps, CellVerticalAlign, HeightRule, RowHeight, RowProps, Table,
     TableCell, TableLayout, TableProps, TableRow, TableWidth, VerticalMerge,

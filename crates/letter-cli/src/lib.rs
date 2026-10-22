@@ -361,6 +361,9 @@ fn dump_run(out: &mut String, depth: usize, run: &Run) {
     for item in &run.content {
         match item {
             RunContent::Text(text) => content.push_str(text),
+            RunContent::Symbol(s) => {
+                let _ = write!(content, "<символ {} {:04X}>", s.font, s.code);
+            }
             RunContent::Unknown(raw) => {
                 let _ = write!(content, "<{}>", raw.name());
             }

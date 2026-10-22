@@ -33,6 +33,7 @@ mod settings;
 mod shortcuts;
 mod story;
 mod styles;
+mod symbols;
 mod theme;
 mod units;
 mod view;
@@ -61,6 +62,7 @@ fn main() -> eframe::Result {
             // Ctrl+плюс/минус меняют масштаб документа, а не интерфейса.
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
             icons::install(&cc.egui_ctx);
+            symbols::install(&cc.egui_ctx);
             let mut viewer = Viewer::with_storage(FontLibrary::new(), files::app_dir());
             match file {
                 Some(file) => viewer.open_or_report(&file),

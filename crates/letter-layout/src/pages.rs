@@ -1504,6 +1504,18 @@ fn prepare(
                         notes.push((spans.iter().map(|s| s.text.len()).sum(), r.id.clone()));
                     }
                 }
+                // Знак из шрифта — надпись похожим знаком Юникода.
+                RunContent::Symbol(symbol) => {
+                    push_text(
+                        &mut spans,
+                        &mut span_props,
+                        &std::mem::take(&mut text),
+                        &resolved,
+                    );
+                    let style = text_style(&resolved, &resolved.fonts.h_ansi);
+                    spans.push(TextSpan::label(symbol.unicode().to_string(), style));
+                    span_props.push(resolved.clone());
+                }
                 // Код поля не виден, видно только его результат.
                 RunContent::FieldChar(_) | RunContent::FieldCode(_) | RunContent::Unknown(_) => {}
             }
@@ -1630,14 +1642,19 @@ fn list_mark(
 ) -> (ListMark, Line) {
     let level = &label.level;
     let mut run = level.run.clone();
-    let symbols = |family: &Option<String>| family.as_deref().and_then(symbol_font);
+    let symbols =
+        |family: &Option<String>| family.clone().filter(|f| letter_model::is_symbol_font(f));
     let font = symbols(&run.fonts.ascii).or_else(|| symbols(&run.fonts.h_ansi));
     let text = match font {
         // Знаки из шрифтов Symbol и Wingdings заменяются похожими знаками
         // Юникода обычным шрифтом: самих этих шрифтов обычно нет.
         Some(font) => {
             run.fonts = RunFonts::default();
-            label.text.chars().map(|c| symbol_char(font, c)).collect()
+            label
+                .text
+                .chars()
+                .map(|c| letter_model::symbol_char(&font, c))
+                .collect()
         }
         None => label.text.clone(),
     };
@@ -1720,60 +1737,6 @@ fn list_mark(
         props,
     };
     (mark, line)
-}
-
-/// Шрифт со знаками на месте букв, у которого знаки маркеров лежат
-/// в области `U+F000`–`U+F0FF`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SymbolFont {
-    Symbol,
-    Wingdings,
-}
-
-fn symbol_font(family: &str) -> Option<SymbolFont> {
-    let family = family.to_lowercase();
-    if family == "symbol" {
-        Some(SymbolFont::Symbol)
-    } else if family.starts_with("wingdings") {
-        Some(SymbolFont::Wingdings)
-    } else {
-        None
-    }
-}
-
-/// Знак Юникода, похожий на знак шрифта Symbol или Wingdings.
-fn symbol_char(font: SymbolFont, c: char) -> char {
-    let code = c as u32;
-    let byte = if (0xF020..=0xF0FF).contains(&code) {
-        code - 0xF000
-    } else if (0x20..=0xFF).contains(&code) {
-        code
-    } else {
-        return c;
-    };
-    match (font, byte) {
-        (SymbolFont::Symbol, 0xB7) => '•',
-        (SymbolFont::Symbol, 0xA8) => '♦',
-        (SymbolFont::Symbol, 0xA7) => '♣',
-        (SymbolFont::Symbol, 0xA9) => '♥',
-        (SymbolFont::Symbol, 0xAA) => '♠',
-        (SymbolFont::Symbol, 0xAE) => '→',
-        (SymbolFont::Symbol, 0x2D) => '−',
-        (SymbolFont::Wingdings, 0x6C) => '●',
-        (SymbolFont::Wingdings, 0x6E) => '■',
-        (SymbolFont::Wingdings, 0x71) => '❑',
-        (SymbolFont::Wingdings, 0x76) => '❖',
-        (SymbolFont::Wingdings, 0x9F) => '•',
-        (SymbolFont::Wingdings, 0xA1) => '○',
-        (SymbolFont::Wingdings, 0xA7) => '▪',
-        (SymbolFont::Wingdings, 0xA8) => '◻',
-        (SymbolFont::Wingdings, 0xD8) => '➢',
-        (SymbolFont::Wingdings, 0xE0) => '➢',
-        (SymbolFont::Wingdings, 0xFC) => '✓',
-        (SymbolFont::Wingdings, 0xFE) => '☑',
-        // Остальные знаки — обычный маркер.
-        _ => '•',
-    }
 }
 
 /// Во сколько раз уменьшаются строчные буквы, показанные малыми
@@ -4195,10 +4158,30 @@ mod tests {
     }
 
     #[test]
-    fn symbol_bullets_become_unicode() {
-        assert_eq!(symbol_char(SymbolFont::Symbol, '\u{f0b7}'), '•');
-        assert_eq!(symbol_char(SymbolFont::Wingdings, '\u{f0a7}'), '▪');
-        assert_eq!(symbol_font("Wingdings 2"), Some(SymbolFont::Wingdings));
-        assert_eq!(symbol_font("Courier New"), None);
+    fn symbol_from_a_font_is_shown_as_unicode() {
+        let run = Run {
+            content: vec![
+                RunContent::Text("a".into()),
+                RunContent::Symbol(letter_model::Symbol {
+                    font: "Symbol".into(),
+                    code: 0xF070,
+                }),
+            ],
+            ..Run::default()
+        };
+        let layout = lay(&doc(vec![Paragraph::from_runs([run])]));
+        let line = &layout.pages[0].lines[0];
+        assert_eq!(&*line.text, format!("a{}", letter_model::OBJECT_CHAR));
+        let glyphs: usize = line
+            .line
+            .items
+            .iter()
+            .map(|item| match item {
+                crate::LineItem::Text(t) => t.run.glyphs.len(),
+                _ => 0,
+            })
+            .sum();
+        assert_eq!(glyphs, 2);
+        assert!(line.line.width > 0.0);
     }
 }

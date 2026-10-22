@@ -482,6 +482,11 @@ fn run_xml(run: &Run) -> String {
         match item {
             RunContent::Text(text) => out.push_str(&text_xml(text)),
             RunContent::Tab => out.push_str("<w:tab/>"),
+            RunContent::Symbol(s) => out.push_str(&format!(
+                r#"<w:sym w:font="{}" w:char="{:04X}"/>"#,
+                escape_attr(&s.font),
+                s.code
+            )),
             RunContent::Break(BreakKind::Line) => out.push_str("<w:br/>"),
             RunContent::Break(BreakKind::Page) => out.push_str(r#"<w:br w:type="page"/>"#),
             RunContent::Break(BreakKind::Column) => out.push_str(r#"<w:br w:type="column"/>"#),

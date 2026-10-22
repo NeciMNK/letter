@@ -21,6 +21,14 @@ macro_rules! embedded {
     };
 }
 
+/// Встроенный шрифт по имени файла (`LiberationSans-Regular.ttf`).
+pub fn embedded_font(file: &str) -> Option<&'static [u8]> {
+    EMBEDDED_FONTS
+        .iter()
+        .find(|(name, _)| *name == file)
+        .map(|(_, data)| *data)
+}
+
 /// Открытые шрифты, встроенные в программу (см. `fonts/README.md`).
 const EMBEDDED_FONTS: &[EmbeddedFont] = embedded!(
     "Carlito-Regular.ttf",
