@@ -244,6 +244,26 @@ def header_footer() -> Document:
     return doc
 
 
+def add_field(paragraph, code: str, result: str) -> None:
+    """Поле Word из знаков поля: начало, код, разделитель, результат, конец."""
+    from docx.oxml import OxmlElement
+
+    def char(kind: str) -> None:
+        run = paragraph.add_run()
+        element = OxmlElement("w:fldChar")
+        element.set(qn("w:fldCharType"), kind)
+        run._r.append(element)
+
+    char("begin")
+    instruction = OxmlElement("w:instrText")
+    instruction.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    instruction.text = code
+    paragraph.add_run()._r.append(instruction)
+    char("separate")
+    paragraph.add_run(result)
+    char("end")
+
+
 def headers() -> Document:
     """Колонтитулы: особый для первой страницы, разные для чётных
     и нечётных; второй раздел берёт верхний колонтитул первого, а нижний
@@ -257,7 +277,11 @@ def headers() -> Document:
     first.first_page_header.paragraphs[0].text = "First page header"
     first.header.paragraphs[0].text = "Odd page header"
     first.even_page_header.paragraphs[0].text = "Even page header"
-    first.footer.paragraphs[0].text = "Odd page footer"
+    odd = first.footer.paragraphs[0]
+    odd.text = "Odd page footer, page "
+    add_field(odd, " PAGE ", "1")
+    odd.add_run(" of ")
+    add_field(odd, " NUMPAGES ", "1")
     first.even_page_footer.paragraphs[0].text = "Even page footer"
     first.first_page_footer.paragraphs[0].text = "First page footer"
     text = (

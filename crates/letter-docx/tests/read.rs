@@ -198,7 +198,10 @@ fn headers_and_footers_are_read() {
     assert!(first.title_page);
     assert_eq!(text(first.headers.first.as_ref()), ["First page header"]);
     assert_eq!(text(first.headers.even.as_ref()), ["Even page header"]);
-    assert_eq!(text(first.footers.default.as_ref()), ["Odd page footer"]);
+    assert_eq!(
+        text(first.footers.default.as_ref()),
+        ["Odd page footer, page 1 of 1"]
+    );
     // Второй раздел своего верхнего колонтитула не задаёт.
     let second = &doc.sections[1].props;
     assert!(second.headers.is_empty());
