@@ -1,8 +1,10 @@
-//! Вкладки «Вставка» (пока — только группа «Таблицы») и «Макет
-//! таблицы» (видна, когда курсор в таблице).
+//! Вкладки «Вставка» (пока — только группа «Таблицы»), «Конструктор
+//! таблиц» и «Макет таблицы» (две последние видны, когда курсор
+//! в таблице).
 
 use eframe::egui::{self, Color32, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
-use letter_editor::Command;
+use letter_editor::{BorderPreset, Command};
+use letter_model::Color;
 
 use crate::i18n::tr;
 use crate::icons::{Icon, icon_button, icon_text_button};
@@ -21,12 +23,25 @@ pub const INSERT_KEYTIPS: [&str; 1] = ["keytip-insert-table"];
 
 /// Подсказки клавиш вкладки «Макет таблицы» (для проверки).
 #[cfg(test)]
-pub const TABLE_KEYTIPS: [&str; 5] = [
+pub const TABLE_KEYTIPS: [&str; 6] = [
+    "keytip-table-merge",
     "keytip-table-delete",
     "keytip-table-above",
     "keytip-table-below",
     "keytip-table-left",
     "keytip-table-right",
+];
+
+/// Подсказки клавиш вкладки «Конструктор таблиц» (для проверки).
+#[cfg(test)]
+pub const DESIGN_KEYTIPS: [&str; 2] = ["keytip-design-shading", "keytip-design-borders"];
+
+/// Светло-серые заливки (как «Белый, фон 1, более тёмный оттенок»).
+const GRAYS: [(u8, u8, u8); 4] = [
+    (242, 242, 242),
+    (217, 217, 217),
+    (191, 191, 191),
+    (166, 166, 166),
 ];
 
 /// Вкладка «Вставка».
@@ -108,6 +123,29 @@ fn table_picker(ui: &mut Ui, out: &mut Vec<RibbonCommand>) {
 /// Вкладка «Макет таблицы»: удаление и вставка строк и столбцов.
 pub fn table_layout(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     let enabled = info.has_document && info.in_table;
+    group(ui, tr("group-merge"), |ui| {
+        let response = icon_button(
+            ui,
+            Icon::MergeCells,
+            tr("merge-cells"),
+            vec2(44.0, 34.0),
+            enabled && info.can_merge,
+            false,
+        )
+        .on_hover_text(tr("merge-cells"));
+        let command = RibbonCommand::Edit(Command::MergeCells);
+        keytips::tip(
+            ui,
+            &response,
+            Level::Commands,
+            "keytip-table-merge",
+            TipAction::Command(command.clone()),
+        );
+        if response.clicked() {
+            out.push(command);
+        }
+        ui.label(tr("merge-cells"));
+    });
     group(ui, tr("group-rows-columns"), |ui| {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
@@ -203,4 +241,104 @@ fn table_button(
     if response.clicked() {
         out.push(command);
     }
+}
+
+/// Большая кнопка со значком, подписью под ней и меню.
+fn menu_button(
+    ui: &mut Ui,
+    icon: Icon,
+    label: &str,
+    hint: &str,
+    key: &str,
+    enabled: bool,
+    menu: impl FnOnce(&mut Ui),
+) {
+    ui.vertical(|ui| {
+        let response =
+            icon_button(ui, icon, label, vec2(44.0, 34.0), enabled, false).on_hover_text(hint);
+        let popup = egui::Popup::default_response_id(&response);
+        keytips::tip(ui, &response, Level::Commands, key, TipAction::Popup(popup));
+        egui::Popup::menu(&response).show(menu);
+        ui.label(label);
+    });
+}
+
+/// Вкладка «Конструктор таблиц»: заливка и границы ячеек.
+pub fn table_design(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+    let enabled = info.has_document && info.in_table;
+    group(ui, tr("group-shading"), |ui| {
+        menu_button(
+            ui,
+            Icon::Shading,
+            tr("shading"),
+            tr("shading-hint"),
+            "keytip-design-shading",
+            enabled,
+            |ui| shading_menu(ui, out),
+        );
+    });
+    group(ui, tr("group-table-borders"), |ui| {
+        menu_button(
+            ui,
+            Icon::BordersAll,
+            tr("borders"),
+            tr("borders-hint"),
+            "keytip-design-borders",
+            enabled,
+            |ui| {
+                for (icon, label, preset) in [
+                    (
+                        Icon::BorderBottom,
+                        tr("border-bottom"),
+                        BorderPreset::Bottom,
+                    ),
+                    (Icon::BorderTop, tr("border-top"), BorderPreset::Top),
+                    (Icon::BorderLeft, tr("border-left"), BorderPreset::Left),
+                    (Icon::BorderRight, tr("border-right"), BorderPreset::Right),
+                    (Icon::BordersNone, tr("border-none"), BorderPreset::None),
+                    (Icon::BordersAll, tr("border-all"), BorderPreset::All),
+                    (
+                        Icon::BordersOutside,
+                        tr("border-outside"),
+                        BorderPreset::Outside,
+                    ),
+                    (Icon::Table, tr("border-inside"), BorderPreset::Inside),
+                ] {
+                    if icon_text_button(ui, icon, label, true).clicked() {
+                        out.push(RibbonCommand::Edit(Command::CellBorders(preset)));
+                        ui.close();
+                    }
+                }
+            },
+        );
+    });
+}
+
+/// Меню «Заливка»: без цвета, стандартные цвета и серые.
+fn shading_menu(ui: &mut Ui, out: &mut Vec<RibbonCommand>) {
+    let mut pick = |color: Option<Color>, ui: &mut Ui| {
+        out.push(RibbonCommand::Edit(Command::CellShading(color)));
+        ui.close();
+    };
+    if ui.button(tr("shading-none")).clicked() {
+        pick(None, ui);
+    }
+    ui.label(egui::RichText::new(tr("color-standard")).small());
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for (name, rgb) in crate::home::STANDARD_COLORS {
+            if crate::home::swatch(ui, crate::home::color32(rgb), tr(name)).clicked() {
+                pick(Some(Color::Rgb(rgb.0, rgb.1, rgb.2)), ui);
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for rgb in GRAYS {
+            let name = format!("#{:02X}{:02X}{:02X}", rgb.0, rgb.1, rgb.2);
+            if crate::home::swatch(ui, crate::home::color32(rgb), &name).clicked() {
+                pick(Some(Color::Rgb(rgb.0, rgb.1, rgb.2)), ui);
+            }
+        }
+    });
 }

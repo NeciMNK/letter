@@ -42,6 +42,8 @@ pub enum Tab {
     Review,
     /// «Вид».
     View,
+    /// «Конструктор таблиц»: видна, только когда курсор в таблице.
+    TableDesign,
     /// «Макет таблицы»: видна, только когда курсор в таблице.
     TableLayout,
 }
@@ -66,6 +68,7 @@ impl Tab {
             Tab::References => "keytip-tab-references",
             Tab::Review => "keytip-tab-review",
             Tab::View => "keytip-tab-view",
+            Tab::TableDesign => "keytip-tab-table-design",
             Tab::TableLayout => "keytip-tab-table-layout",
         }
     }
@@ -79,6 +82,7 @@ impl Tab {
             Tab::References => tr("tab-references"),
             Tab::Review => tr("tab-review"),
             Tab::View => tr("tab-view"),
+            Tab::TableDesign => tr("tab-table-design"),
             Tab::TableLayout => tr("tab-table-layout"),
         }
     }
@@ -226,6 +230,8 @@ pub struct RibbonInfo {
     pub ruler: bool,
     /// Курсор в таблице.
     pub in_table: bool,
+    /// Выделено несколько ячеек таблицы: их можно объединить.
+    pub can_merge: bool,
 }
 
 /// Состояние ленты.
@@ -265,7 +271,7 @@ impl Ribbon {
         ui.spacing_mut().item_spacing.x = 2.0;
         quick_access(ui, info, &mut out);
         // Вкладка таблицы пропадает, когда курсор уходит из таблицы.
-        if self.tab == Tab::TableLayout && !info.in_table {
+        if matches!(self.tab, Tab::TableDesign | Tab::TableLayout) && !info.in_table {
             self.tab = Tab::Home;
         }
         self.tabs(ui, info.in_table, &mut out);
@@ -283,6 +289,7 @@ impl Ribbon {
                         Tab::Home => home(ui, &mut self.home, info, &mut out),
                         Tab::View => view(ui, info, &mut out),
                         Tab::Insert => crate::insert::insert(ui, info, &mut out),
+                        Tab::TableDesign => crate::insert::table_design(ui, info, &mut out),
                         Tab::TableLayout => crate::insert::table_layout(ui, info, &mut out),
                         _ => {
                             ui.label(RichText::new(tr("tab-coming-soon")).color(Color32::GRAY));
@@ -314,8 +321,12 @@ impl Ribbon {
             if response.clicked() {
                 out.push(RibbonCommand::Backstage);
             }
-            let contextual = in_table.then_some(Tab::TableLayout);
-            for tab in Tab::ALL.into_iter().chain(contextual) {
+            let contextual: &[Tab] = if in_table {
+                &[Tab::TableDesign, Tab::TableLayout]
+            } else {
+                &[]
+            };
+            for &tab in Tab::ALL.iter().chain(contextual) {
                 let selected = self.tab == tab && !self.collapsed;
                 let text = if selected {
                     RichText::new(tab.title())
@@ -745,6 +756,32 @@ mod tests {
             vec![
                 RibbonCommand::Edit(letter_editor::Command::InsertRows { below: true }),
                 RibbonCommand::Edit(letter_editor::Command::InsertColumns { right: false }),
+            ]
+        );
+        h.state_mut().out.clear();
+        h.get_by_label("Конструктор таблиц").click();
+        h.run();
+        h.get_all_by_label("Границы")
+            .next()
+            .expect("кнопка")
+            .click();
+        h.run();
+        h.get_by_label("Все границы").click();
+        h.run();
+        h.get_all_by_label("Заливка")
+            .next()
+            .expect("кнопка")
+            .click();
+        h.run();
+        h.get_by_label("Нет цвета").click();
+        h.run();
+        assert_eq!(
+            h.state().out,
+            vec![
+                RibbonCommand::Edit(letter_editor::Command::CellBorders(
+                    letter_editor::BorderPreset::All
+                )),
+                RibbonCommand::Edit(letter_editor::Command::CellShading(None)),
             ]
         );
         // Курсор ушёл из таблицы — снова «Главная».

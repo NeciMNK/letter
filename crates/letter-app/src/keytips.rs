@@ -82,7 +82,10 @@ pub fn tab_tips() -> Vec<(&'static str, TipAction)> {
         ("keytip-undo", TipAction::Command(RibbonCommand::Undo)),
         ("keytip-redo", TipAction::Command(RibbonCommand::Redo)),
     ];
-    for tab in Tab::ALL.into_iter().chain([Tab::TableLayout]) {
+    for tab in Tab::ALL
+        .into_iter()
+        .chain([Tab::TableDesign, Tab::TableLayout])
+    {
         tips.push((tab.keytip(), TipAction::Tab(tab)));
     }
     tips
@@ -418,6 +421,7 @@ mod tests {
                 &crate::ribbon::VIEW_KEYTIPS[..],
                 &crate::insert::INSERT_KEYTIPS[..],
                 &crate::insert::TABLE_KEYTIPS[..],
+                &crate::insert::DESIGN_KEYTIPS[..],
             ] {
                 let keys: Vec<String> = ids.iter().map(|id| tr(id).to_owned()).collect();
                 no_prefixes(&keys);

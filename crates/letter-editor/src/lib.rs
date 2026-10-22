@@ -45,6 +45,6 @@ pub use position::{Affinity, Position};
 pub use search::{Found, SearchOptions, find_all, find_next, replace_all};
 pub use selection::{Selection, SelectionRect, paragraph_at, select_all, selection_rects, word_at};
 pub use table::{
-    delete_columns, delete_rows, delete_table, in_table, insert_columns, insert_rows, insert_table,
-    next_cell,
+    BorderPreset, can_merge, delete_columns, delete_rows, delete_table, in_table, insert_columns,
+    insert_rows, insert_table, merge_cells, next_cell, set_cell_borders, set_cell_shading,
 };

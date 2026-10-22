@@ -1216,6 +1216,12 @@ impl Viewer {
             }
             info.list = list_kind(&document.doc, document.cursor.paragraph);
             info.in_table = letter_editor::in_table(&document.doc, document.cursor.paragraph);
+            let selection = document.selection();
+            info.can_merge = letter_editor::can_merge(
+                &document.doc,
+                selection.start().paragraph,
+                selection.end().paragraph,
+            );
         }
         info
     }

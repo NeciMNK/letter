@@ -99,7 +99,7 @@ pub fn parse_size(text: &str) -> Option<HalfPoints> {
         .then(|| HalfPoints((value * 2.0).round() as u32))
 }
 
-fn color32((r, g, b): (u8, u8, u8)) -> Color32 {
+pub(crate) fn color32((r, g, b): (u8, u8, u8)) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
@@ -796,7 +796,7 @@ fn color_menu(ui: &mut Ui, state: &mut HomeState, out: &mut Vec<RibbonCommand>) 
 }
 
 /// Квадратик цвета в палитре.
-fn swatch(ui: &mut Ui, fill: Color32, name: &str) -> egui::Response {
+pub(crate) fn swatch(ui: &mut Ui, fill: Color32, name: &str) -> egui::Response {
     let button = egui::Button::new("")
         .fill(fill)
         .stroke(egui::Stroke::new(1.0, Color32::from_gray(160)))

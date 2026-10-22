@@ -7,7 +7,7 @@
 //! операцию к каждой правке, а память тратится только на задетые абзацы.
 //! Набор текста объединяется в один шаг по словам, как в Word.
 
-use letter_model::{Alignment, Block, Document, Section};
+use letter_model::{Alignment, Block, Color, Document, Section};
 
 use crate::clipboard::{insert_fragment, insert_plain_text};
 use crate::edit::paragraph_count;
@@ -25,8 +25,8 @@ use crate::lists::{
 use crate::search::{SearchOptions, clamp, replace_all};
 use crate::selection::Selection;
 use crate::table::{
-    delete_columns, delete_rows, delete_table, in_table, insert_columns, insert_rows, insert_table,
-    next_cell,
+    BorderPreset, delete_columns, delete_rows, delete_table, in_table, insert_columns, insert_rows,
+    insert_table, merge_cells, next_cell, set_cell_borders, set_cell_shading,
 };
 
 /// Правка документа.
@@ -93,6 +93,12 @@ pub enum Command {
     DeleteColumns,
     /// Удалить таблицу с курсором.
     DeleteTable,
+    /// Границы выделенных ячеек (меню «Границы»).
+    CellBorders(BorderPreset),
+    /// Заливка выделенных ячеек; `None` — без заливки.
+    CellShading(Option<Color>),
+    /// Объединить выделенные ячейки.
+    MergeCells,
     /// «Заменить все»: найденное `query` заменить на `replacement` во
     /// всём документе. Курсор остаётся в том же абзаце (выделение
     /// снимается).
@@ -237,6 +243,9 @@ impl History {
                 | Command::DeleteRows
                 | Command::DeleteColumns
                 | Command::DeleteTable
+                | Command::CellBorders(_)
+                | Command::CellShading(_)
+                | Command::MergeCells
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -335,6 +344,18 @@ impl History {
                 let at = delete_table(doc, selection.focus.paragraph);
                 Some(at.map_or(selection, Selection::caret))
             }
+            Command::CellBorders(preset) => {
+                set_cell_borders(doc, start.paragraph, end.paragraph, *preset);
+                Some(selection)
+            }
+            Command::CellShading(color) => {
+                set_cell_shading(doc, start.paragraph, end.paragraph, *color);
+                Some(selection)
+            }
+            Command::MergeCells => {
+                let at = merge_cells(doc, start.paragraph, end.paragraph);
+                Some(at.map_or(selection, Selection::caret))
+            }
             _ => None,
         };
         let focus = match &command {
@@ -363,7 +384,10 @@ impl History {
             | Command::InsertColumns { .. }
             | Command::DeleteRows
             | Command::DeleteColumns
-            | Command::DeleteTable => at,
+            | Command::DeleteTable
+            | Command::CellBorders(_)
+            | Command::CellShading(_)
+            | Command::MergeCells => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
 
@@ -588,6 +612,33 @@ mod tests {
         h.undo(&mut d);
         h.undo(&mut d);
         assert_eq!(d.plain_text(), "ab");
+    }
+
+    #[test]
+    fn cell_formatting_and_merging_are_undone() {
+        let mut d = doc(&["ab"]);
+        let mut h = History::new();
+        let insert = Command::InsertTable {
+            rows: 1,
+            columns: 2,
+        };
+        h.run(&mut d, Selection::caret(Position::new(0, 0)), insert);
+        let both = Selection::new(Position::new(0, 0), Position::new(1, 0));
+        let before = d.clone();
+        let s = h.run(
+            &mut d,
+            both,
+            Command::CellShading(Some(letter_model::Color::Rgb(9, 9, 9))),
+        );
+        assert_eq!(s, both);
+        h.run(&mut d, both, Command::CellBorders(BorderPreset::None));
+        let s = h.run(&mut d, both, Command::MergeCells);
+        assert_eq!(s, Selection::caret(Position::new(0, 0)));
+        assert_eq!(d.plain_text(), "\nab");
+        h.undo(&mut d);
+        h.undo(&mut d);
+        h.undo(&mut d);
+        assert_eq!(d, before);
     }
 
     #[test]

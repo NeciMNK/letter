@@ -7,8 +7,9 @@
 //! стиля, он добавляется (вместе со стилем таблиц по умолчанию).
 
 use letter_model::{
-    Block, Border, Borders, CellMargins, Document, LineSpacing, PageSize, Paragraph, Style,
-    StyleKind, Table, TableCell, TableProps, TableRow, TableWidth, Twips, VerticalMerge,
+    Block, Border, Borders, CellMargins, Color, Document, LineSpacing, PageSize, Paragraph,
+    Shading, Style, StyleKind, Table, TableCell, TableProps, TableRow, TableWidth, Twips,
+    VerticalMerge,
 };
 
 use crate::edit::{
@@ -580,6 +581,296 @@ pub fn delete_columns(doc: &mut Document, start: usize, end: usize) -> Option<Po
     Some(Position::new(cell_start(doc, &at.table, row, cell), 0))
 }
 
+/// Какие границы поставить или убрать у выделенных ячеек (меню
+/// «Границы»).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorderPreset {
+    /// Все границы.
+    All,
+    /// Нет границ.
+    None,
+    /// Внешние границы.
+    Outside,
+    /// Внутренние границы.
+    Inside,
+    /// Верхняя граница.
+    Top,
+    /// Нижняя граница.
+    Bottom,
+    /// Левая граница.
+    Left,
+    /// Правая граница.
+    Right,
+}
+
+/// Прямоугольник ячеек: строки `rows` и столбцы сетки `g0..g1`.
+struct CellBlock {
+    table: Path,
+    rows: (usize, usize),
+    columns: (usize, usize),
+}
+
+impl CellBlock {
+    /// Ячейки прямоугольника: строка, номер ячейки, столбцы сетки.
+    fn cells(&self, table: &Table) -> Vec<(usize, usize, usize, usize)> {
+        let (g0, g1) = self.columns;
+        let mut out = Vec::new();
+        for r in self.rows.0..=self.rows.1 {
+            let Some(row) = table.rows.get(r) else {
+                continue;
+            };
+            for c in 0..row.cells.len() {
+                let (a, b) = grid_span(row, c);
+                if a < g1 && b > g0 {
+                    out.push((r, c, a, b));
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Выделенные ячейки: от ячейки начала до ячейки конца выделения
+/// (прямоугольником, расширенным до целых объединённых ячеек). Если
+/// конец в другой таблице — только ячейка начала.
+fn cell_block(doc: &Document, start: usize, end: usize) -> Option<CellBlock> {
+    let first = cell_of(doc, start)?;
+    let table = table_ref(doc, &first.table)?;
+    let last = cell_of(doc, end)
+        .filter(|c| c.table == first.table)
+        .unwrap_or_else(|| first.clone());
+    let (a0, a1) = grid_span(table.rows.get(first.row)?, first.cell);
+    let (b0, b1) = grid_span(table.rows.get(last.row)?, last.cell);
+    let mut block = CellBlock {
+        table: first.table.clone(),
+        rows: (first.row.min(last.row), first.row.max(last.row)),
+        columns: (a0.min(b0), a1.max(b1)),
+    };
+    // Объединённые ячейки на краю входят целиком.
+    loop {
+        let (mut g0, mut g1) = block.columns;
+        for (_, _, a, b) in block.cells(table) {
+            g0 = g0.min(a);
+            g1 = g1.max(b);
+        }
+        if (g0, g1) == block.columns {
+            break;
+        }
+        block.columns = (g0, g1);
+    }
+    Some(block)
+}
+
+/// Выделено больше одной ячейки — их можно объединить.
+pub fn can_merge(doc: &Document, start: usize, end: usize) -> bool {
+    cell_block(doc, start, end)
+        .and_then(|b| Some(b.cells(table_ref(doc, &b.table)?).len() > 1))
+        .unwrap_or(false)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+fn side_mut(borders: &mut Borders, side: Side) -> &mut Option<Border> {
+    match side {
+        Side::Top => &mut borders.top,
+        Side::Bottom => &mut borders.bottom,
+        Side::Left => &mut borders.left,
+        Side::Right => &mut borders.right,
+    }
+}
+
+/// Ставит линию `border` на край `side` ячейки (`row`, `cell`) и на тот
+/// же край соседней ячейки по другую сторону: вёрстка берёт линию
+/// у любой из них.
+fn set_edge(table: &mut Table, row: usize, cell: usize, side: Side, border: &Border) {
+    let Some(r) = table.rows.get(row) else {
+        return;
+    };
+    let (a, b) = grid_span(r, cell);
+    let mut targets = vec![(row, cell, side)];
+    match side {
+        Side::Left if cell > 0 => targets.push((row, cell - 1, Side::Right)),
+        Side::Right if cell + 1 < r.cells.len() => targets.push((row, cell + 1, Side::Left)),
+        Side::Top | Side::Bottom => {
+            let other = if side == Side::Top {
+                row.checked_sub(1)
+            } else {
+                Some(row + 1)
+            };
+            if let Some(o) = other
+                && let Some(neighbour) = table.rows.get(o)
+            {
+                let opposite = if side == Side::Top {
+                    Side::Bottom
+                } else {
+                    Side::Top
+                };
+                for c in 0..neighbour.cells.len() {
+                    let (x, y) = grid_span(neighbour, c);
+                    if x < b && y > a {
+                        targets.push((o, c, opposite));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    for (r, c, side) in targets {
+        if let Some(cell) = table.rows.get_mut(r).and_then(|r| r.cells.get_mut(c)) {
+            let borders = cell.props.borders.get_or_insert_with(Borders::default);
+            *side_mut(borders, side) = Some(border.clone());
+        }
+    }
+}
+
+/// Меню «Границы»: ставит или убирает линии у выделенных ячеек.
+/// Возвращает, были ли ячейки.
+pub fn set_cell_borders(
+    doc: &mut Document,
+    start: usize,
+    end: usize,
+    preset: BorderPreset,
+) -> bool {
+    let Some(block) = cell_block(doc, start, end) else {
+        return false;
+    };
+    let Some(table) = table_mut(doc, &block.table) else {
+        return false;
+    };
+    let line = Border::single(4);
+    let none = Border {
+        style: "nil".into(),
+        size: None,
+        space: None,
+        color: None,
+    };
+    for (r, c, a, b) in block.cells(table) {
+        let edges = [
+            (Side::Top, r == block.rows.0),
+            (Side::Bottom, r == block.rows.1),
+            (Side::Left, a == block.columns.0),
+            (Side::Right, b == block.columns.1),
+        ];
+        for (side, outer) in edges {
+            let border = match preset {
+                BorderPreset::All => Some(&line),
+                BorderPreset::None => Some(&none),
+                BorderPreset::Outside => outer.then_some(&line),
+                BorderPreset::Inside => (!outer).then_some(&line),
+                BorderPreset::Top => (outer && side == Side::Top).then_some(&line),
+                BorderPreset::Bottom => (outer && side == Side::Bottom).then_some(&line),
+                BorderPreset::Left => (outer && side == Side::Left).then_some(&line),
+                BorderPreset::Right => (outer && side == Side::Right).then_some(&line),
+            };
+            if let Some(border) = border {
+                set_edge(table, r, c, side, border);
+            }
+        }
+    }
+    true
+}
+
+/// «Заливка»: цвет фона выделенных ячеек; `None` — без заливки.
+pub fn set_cell_shading(
+    doc: &mut Document,
+    start: usize,
+    end: usize,
+    color: Option<Color>,
+) -> bool {
+    let Some(block) = cell_block(doc, start, end) else {
+        return false;
+    };
+    let Some(table) = table_mut(doc, &block.table) else {
+        return false;
+    };
+    for (r, c, _, _) in block.cells(table) {
+        if let Some(cell) = table.rows.get_mut(r).and_then(|r| r.cells.get_mut(c)) {
+            cell.props.shading = color.map(Shading::fill);
+        }
+    }
+    true
+}
+
+/// «Объединить ячейки»: выделенные ячейки становятся одной. Текст всех
+/// ячеек (кроме пустых абзацев) собирается в левую верхнюю. Возвращает
+/// позицию в ней.
+pub fn merge_cells(doc: &mut Document, start: usize, end: usize) -> Option<Position> {
+    let block = cell_block(doc, start, end)?;
+    let table = table_mut(doc, &block.table)?;
+    let cells = block.cells(table);
+    if cells.len() < 2 {
+        return None;
+    }
+    let (g0, g1) = block.columns;
+    let width: i32 = table.grid.iter().skip(g0).take(g1 - g0).map(|t| t.0).sum();
+    let mut content: Vec<Block> = Vec::new();
+    for &(r, c, _, _) in &cells {
+        if let Some(cell) = table.rows.get(r).and_then(|row| row.cells.get(c)) {
+            content.extend(
+                cell.blocks
+                    .iter()
+                    .filter(|b| match b {
+                        Block::Paragraph(p) => !p.plain_text().is_empty(),
+                        _ => true,
+                    })
+                    .cloned(),
+            );
+        }
+    }
+    let first_row = block.rows.0;
+    let tall = block.rows.1 > block.rows.0;
+    for r in (block.rows.0..=block.rows.1).rev() {
+        let Some(row) = table.rows.get_mut(r) else {
+            continue;
+        };
+        let indices: Vec<usize> = cells
+            .iter()
+            .filter(|&&(cr, ..)| cr == r)
+            .map(|&(_, c, _, _)| c)
+            .collect();
+        let (Some(&first), Some(&last)) = (indices.first(), indices.last()) else {
+            continue;
+        };
+        let mut merged = row.cells[first].clone();
+        merged.props.grid_span = (g1 - g0 > 1).then_some((g1 - g0) as u32);
+        if width > 0 {
+            merged.props.width = Some(TableWidth::Twips(Twips(width)));
+        }
+        merged.props.v_merge = match (tall, r == first_row) {
+            (false, _) => None,
+            (true, true) => Some(VerticalMerge::Restart),
+            (true, false) => Some(VerticalMerge::Continue),
+        };
+        let paragraph_props = merged.blocks.iter().find_map(|b| match b {
+            Block::Paragraph(p) => Some(p.props.clone()),
+            _ => None,
+        });
+        merged.blocks = if r == first_row && !content.is_empty() {
+            std::mem::take(&mut content)
+        } else {
+            vec![
+                Paragraph {
+                    props: paragraph_props.unwrap_or_default(),
+                    content: Vec::new(),
+                }
+                .into(),
+            ]
+        };
+        row.cells.splice(first..=last, [merged]);
+    }
+    let first = cells.first().map_or(0, |&(_, c, _, _)| c);
+    Some(Position::new(
+        cell_start(doc, &block.table, first_row, first),
+        0,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,6 +988,84 @@ mod tests {
         assert_eq!(at, Position::new(1, 0));
         assert_eq!(paragraph_count(&doc), 2);
         assert_eq!(delete_table(&mut doc, 0), None);
+    }
+
+    /// Таблица 3×3 с текстом «r,c» в ячейках сразу после абзаца «x».
+    fn grid3() -> Document {
+        let mut doc = doc_with(&["x"]);
+        insert_table(&mut doc, Position::new(0, 0), 3, 3);
+        for i in 0..9 {
+            insert_text(
+                &mut doc,
+                Position::new(i, 0),
+                &format!("{},{}", i / 3, i % 3),
+            );
+        }
+        doc
+    }
+
+    fn borders(doc: &Document, row: usize, cell: usize) -> Borders {
+        table(doc).rows[row].cells[cell]
+            .props
+            .borders
+            .clone()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn borders_and_shading_of_cells() {
+        let mut doc = grid3();
+        // Средняя ячейка: только внешние линии — и у соседей тоже.
+        assert!(set_cell_borders(&mut doc, 4, 4, BorderPreset::None));
+        let nil = |b: &Option<Border>| b.as_ref().is_some_and(Border::is_none);
+        let middle = borders(&doc, 1, 1);
+        assert!(nil(&middle.top) && nil(&middle.left) && nil(&middle.bottom) && nil(&middle.right));
+        assert!(nil(&borders(&doc, 0, 1).bottom));
+        assert!(nil(&borders(&doc, 1, 0).right));
+        assert!(nil(&borders(&doc, 2, 1).top));
+        assert!(borders(&doc, 0, 0).top.is_none());
+        // Внешние линии прямоугольника 2×2 сверху слева.
+        set_cell_borders(&mut doc, 0, 4, BorderPreset::Outside);
+        let single = |b: &Option<Border>| b.as_ref().is_some_and(|b| b.style == "single");
+        assert!(single(&borders(&doc, 0, 0).top) && single(&borders(&doc, 0, 1).right));
+        assert!(single(&borders(&doc, 1, 1).bottom) && single(&borders(&doc, 1, 1).right));
+        assert!(nil(&borders(&doc, 1, 1).top));
+        // Заливка и её снятие.
+        set_cell_shading(&mut doc, 0, 1, Some(Color::Rgb(1, 2, 3)));
+        assert!(table(&doc).rows[0].cells[1].props.shading.is_some());
+        assert!(table(&doc).rows[0].cells[2].props.shading.is_none());
+        set_cell_shading(&mut doc, 1, 1, None);
+        assert!(table(&doc).rows[0].cells[1].props.shading.is_none());
+        assert!(!set_cell_shading(&mut doc, 9, 9, None));
+    }
+
+    #[test]
+    fn merge_cells_across_and_down() {
+        let mut doc = grid3();
+        assert!(!can_merge(&doc, 0, 0));
+        assert!(can_merge(&doc, 0, 4));
+        // Первая строка: 0,0 и 0,1 — в одну ячейку на два столбца.
+        let at = merge_cells(&mut doc, 0, 1).unwrap();
+        assert_eq!(at, Position::new(0, 0));
+        let t = table(&doc);
+        assert_eq!(t.rows[0].cells.len(), 2);
+        assert_eq!(t.rows[0].cells[0].span(), 2);
+        assert_eq!(t.rows[0].cells[0].plain_text(), "0,0\n0,1");
+        // Затем прямоугольник: объединённая ячейка и строка под ней.
+        merge_cells(&mut doc, 0, 4).unwrap();
+        let t = table(&doc);
+        assert_eq!(
+            t.rows[0].cells[0].props.v_merge,
+            Some(VerticalMerge::Restart)
+        );
+        assert_eq!(
+            t.rows[1].cells[0].props.v_merge,
+            Some(VerticalMerge::Continue)
+        );
+        assert_eq!(t.rows[1].cells.len(), 2);
+        assert_eq!(t.rows[0].cells[0].plain_text(), "0,0\n0,1\n1,0\n1,1");
+        assert_eq!(t.rows[1].cells[0].plain_text(), "");
+        assert_eq!(merge_cells(&mut doc, 0, 0), None);
     }
 
     #[test]
