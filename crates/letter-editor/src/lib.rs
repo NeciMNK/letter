@@ -10,7 +10,8 @@
 //! - [`clipboard`] — копирование и вставка;
 //! - [`format`] — оформление выделенного;
 //! - [`lists`] — списки: маркеры, нумерация, уровни;
-//! - [`search`] — поиск и замена.
+//! - [`search`] — поиск и замена;
+//! - [`table`] — таблицы: вставка, ячейки, строки и столбцы.
 
 pub mod caret;
 pub mod clipboard;
@@ -22,6 +23,7 @@ pub mod navigation;
 pub mod position;
 pub mod search;
 pub mod selection;
+pub mod table;
 
 pub use caret::{Caret, CaretStop, caret, hit_test, line_stops, position_in_line};
 pub use clipboard::{copy_range, insert_fragment, insert_plain_text};
@@ -42,3 +44,7 @@ pub use navigation::{Motion, Moved, move_cursor};
 pub use position::{Affinity, Position};
 pub use search::{Found, SearchOptions, find_all, find_next, replace_all};
 pub use selection::{Selection, SelectionRect, paragraph_at, select_all, selection_rects, word_at};
+pub use table::{
+    delete_columns, delete_rows, delete_table, in_table, insert_columns, insert_rows, insert_table,
+    next_cell,
+};

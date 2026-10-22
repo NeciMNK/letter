@@ -134,7 +134,10 @@ fn compare_reports_differences() {
     // Строки таблицы на своих местах; с допуском 0,5 пт расходится
     // только первая строка.
     assert!(!out.contains("только"), "{out}");
-    assert!(out.contains("«A 3×3 table with a merged cell:»: сдвиг"), "{out}");
+    assert!(
+        out.contains("«A 3×3 table with a merged cell:»: сдвиг"),
+        "{out}"
+    );
 
     assert!(run(&args(&["compare", &fixture("table.docx")])).is_err());
     assert!(run(&args(&["compare", "--tolerance", "x", "a.docx", "b.pdf"])).is_err());

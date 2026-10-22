@@ -42,6 +42,8 @@ pub enum Tab {
     Review,
     /// «Вид».
     View,
+    /// «Макет таблицы»: видна, только когда курсор в таблице.
+    TableLayout,
 }
 
 impl Tab {
@@ -64,6 +66,7 @@ impl Tab {
             Tab::References => "keytip-tab-references",
             Tab::Review => "keytip-tab-review",
             Tab::View => "keytip-tab-view",
+            Tab::TableLayout => "keytip-tab-table-layout",
         }
     }
 
@@ -76,6 +79,7 @@ impl Tab {
             Tab::References => tr("tab-references"),
             Tab::Review => tr("tab-review"),
             Tab::View => tr("tab-view"),
+            Tab::TableLayout => tr("tab-table-layout"),
         }
     }
 }
@@ -163,6 +167,8 @@ pub enum RibbonCommand {
     Insert(&'static str),
     /// Встроенный стиль Word по имени (`heading 1`).
     BuiltInStyle(&'static str),
+    /// Правка документа командой редактора (вставка таблицы и т. п.).
+    Edit(letter_editor::Command),
     /// Открыть список или меню на ленте (подсказки клавиш).
     OpenPopup(egui::Id),
     /// Поставить фокус в поле ввода на ленте (подсказки клавиш).
@@ -218,6 +224,8 @@ pub struct RibbonInfo {
     pub page_width: bool,
     /// Линейка показана.
     pub ruler: bool,
+    /// Курсор в таблице.
+    pub in_table: bool,
 }
 
 /// Состояние ленты.
@@ -256,7 +264,11 @@ impl Ribbon {
         keytips::begin(ui.ctx(), self.keytips.level);
         ui.spacing_mut().item_spacing.x = 2.0;
         quick_access(ui, info, &mut out);
-        self.tabs(ui, &mut out);
+        // Вкладка таблицы пропадает, когда курсор уходит из таблицы.
+        if self.tab == Tab::TableLayout && !info.in_table {
+            self.tab = Tab::Home;
+        }
+        self.tabs(ui, info.in_table, &mut out);
         if !self.collapsed {
             let colors = Palette::of(ui.ctx());
             egui::Frame::new()
@@ -270,6 +282,8 @@ impl Ribbon {
                     ui.horizontal(|ui| match self.tab {
                         Tab::Home => home(ui, &mut self.home, info, &mut out),
                         Tab::View => view(ui, info, &mut out),
+                        Tab::Insert => crate::insert::insert(ui, info, &mut out),
+                        Tab::TableLayout => crate::insert::table_layout(ui, info, &mut out),
                         _ => {
                             ui.label(RichText::new(tr("tab-coming-soon")).color(Color32::GRAY));
                         }
@@ -283,7 +297,7 @@ impl Ribbon {
     }
 
     /// Меню «Файл» и вкладки.
-    fn tabs(&mut self, ui: &mut Ui, out: &mut Vec<RibbonCommand>) {
+    fn tabs(&mut self, ui: &mut Ui, in_table: bool, out: &mut Vec<RibbonCommand>) {
         ui.horizontal(|ui| {
             let file = egui::Button::new(RichText::new(tr("tab-file")).color(Color32::WHITE))
                 .fill(ACCENT)
@@ -300,7 +314,8 @@ impl Ribbon {
             if response.clicked() {
                 out.push(RibbonCommand::Backstage);
             }
-            for tab in Tab::ALL {
+            let contextual = in_table.then_some(Tab::TableLayout);
+            for tab in Tab::ALL.into_iter().chain(contextual) {
                 let selected = self.tab == tab && !self.collapsed;
                 let text = if selected {
                     RichText::new(tab.title())
@@ -679,6 +694,63 @@ mod tests {
             h.state().out,
             vec![RibbonCommand::ToggleRuler, RibbonCommand::PageWidth]
         );
+    }
+
+    #[test]
+    fn insert_a_table_and_change_it() {
+        let mut h = harness(document());
+        // Без таблицы вкладки «Макет таблицы» нет.
+        assert!(h.query_by_label("Макет таблицы").is_none());
+        h.get_by_label("Вставка").click();
+        h.run();
+        h.get_all_by_label("Таблица")
+            .next()
+            .expect("кнопка")
+            .click();
+        h.run();
+        // Указатель над третьим столбцом второй строки сетки.
+        let grid = h.get_by_label("Вставить таблицу").rect();
+        let pos = grid.min + vec2(2.5 * 16.0, 1.5 * 16.0);
+        h.input_mut().events.push(egui::Event::PointerMoved(pos));
+        h.run();
+        for pressed in [true, false] {
+            h.input_mut().events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        h.run();
+        assert_eq!(
+            h.state().out,
+            vec![RibbonCommand::Edit(letter_editor::Command::InsertTable {
+                rows: 2,
+                columns: 3
+            })]
+        );
+
+        let mut h = harness(RibbonInfo {
+            in_table: true,
+            ..document()
+        });
+        h.get_by_label("Макет таблицы").click();
+        h.run();
+        h.get_by_label("Вставить снизу").click();
+        h.run();
+        h.get_by_label("Вставить слева").click();
+        h.run();
+        assert_eq!(
+            h.state().out,
+            vec![
+                RibbonCommand::Edit(letter_editor::Command::InsertRows { below: true }),
+                RibbonCommand::Edit(letter_editor::Command::InsertColumns { right: false }),
+            ]
+        );
+        // Курсор ушёл из таблицы — снова «Главная».
+        h.state_mut().info.in_table = false;
+        h.run();
+        assert_eq!(h.state().ribbon.tab, Tab::Home);
     }
 
     #[test]

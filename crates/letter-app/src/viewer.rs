@@ -1215,6 +1215,7 @@ impl Viewer {
                 info.space_after = paragraph.space_after.0;
             }
             info.list = list_kind(&document.doc, document.cursor.paragraph);
+            info.in_table = letter_editor::in_table(&document.doc, document.cursor.paragraph);
         }
         info
     }
@@ -1287,6 +1288,7 @@ impl Viewer {
                     actions.push(Action::Edit(Command::ContinueNumbering));
                 }
                 RibbonCommand::Style(id) => actions.push(Action::Edit(Command::Style(id))),
+                RibbonCommand::Edit(command) => actions.push(Action::Edit(command)),
                 RibbonCommand::BuiltInStyle(name) => {
                     if let Some(id) = self
                         .document

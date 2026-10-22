@@ -82,7 +82,7 @@ pub fn tab_tips() -> Vec<(&'static str, TipAction)> {
         ("keytip-undo", TipAction::Command(RibbonCommand::Undo)),
         ("keytip-redo", TipAction::Command(RibbonCommand::Redo)),
     ];
-    for tab in Tab::ALL {
+    for tab in Tab::ALL.into_iter().chain([Tab::TableLayout]) {
         tips.push((tab.keytip(), TipAction::Tab(tab)));
     }
     tips
@@ -413,7 +413,12 @@ mod tests {
     fn command_tips_are_unique() {
         for lang in Language::ALL {
             set_language(lang);
-            for ids in [&crate::home::KEYTIPS[..], &crate::ribbon::VIEW_KEYTIPS[..]] {
+            for ids in [
+                &crate::home::KEYTIPS[..],
+                &crate::ribbon::VIEW_KEYTIPS[..],
+                &crate::insert::INSERT_KEYTIPS[..],
+                &crate::insert::TABLE_KEYTIPS[..],
+            ] {
                 let keys: Vec<String> = ids.iter().map(|id| tr(id).to_owned()).collect();
                 no_prefixes(&keys);
                 for key in &keys {
