@@ -23,6 +23,7 @@ letter-cli = { path = "crates/letter-cli" }
 
 eframe = "0.37"
 egui = { version = "0.37", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

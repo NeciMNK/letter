@@ -1,7 +1,8 @@
 //! Документ целиком.
 
 use crate::{
-    Block, Numbering, Paragraph, Properties, RawXml, Section, SourcePackage, Styles, Theme, Twips,
+    Block, Inline, Numbering, Paragraph, Picture, Properties, RawXml, RunContent, Section,
+    SourcePackage, Styles, Theme, Twips,
 };
 
 /// Документ: разделы с содержимым, стили, нумерация списков и настройки.
@@ -58,6 +59,39 @@ impl Document {
             .map(Block::plain_text)
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Вызывает `f` для каждого рисунка документа, включая рисунки
+    /// в таблицах (и во вложенных таблицах).
+    pub fn for_each_picture_mut(&mut self, mut f: impl FnMut(&mut Picture)) {
+        for section in &mut self.sections {
+            pictures_in(&mut section.blocks, &mut f);
+        }
+    }
+}
+
+fn pictures_in(blocks: &mut [Block], f: &mut impl FnMut(&mut Picture)) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                for inline in &mut paragraph.content {
+                    let Inline::Run(run) = inline else { continue };
+                    for item in &mut run.content {
+                        if let RunContent::Picture(picture) = item {
+                            f(picture);
+                        }
+                    }
+                }
+            }
+            Block::Table(table) => {
+                for row in &mut table.rows {
+                    for cell in &mut row.cells {
+                        pictures_in(&mut cell.blocks, f);
+                    }
+                }
+            }
+            Block::Unknown(_) => {}
+        }
     }
 }
 

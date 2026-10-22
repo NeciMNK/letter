@@ -24,8 +24,8 @@ mod table;
 
 pub use fonts::{FontId, FontLibrary, FontMatch};
 pub use lines::{
-    Align, Line, LineEnd, LineItem, ParagraphFormat, ParagraphLines, TabItem, TabKind, TabLeader,
-    TabStop, TextItem, TextSpan, break_lines,
+    Align, InlineObject, Line, LineEnd, LineItem, ObjectItem, ParagraphFormat, ParagraphLines,
+    TabItem, TabKind, TabLeader, TabStop, TextItem, TextSpan, break_lines,
 };
 pub use pages::{
     CellArea, DocumentLayout, LayoutCache, Margins, Page, PageLine, Shape, ShapeKind,

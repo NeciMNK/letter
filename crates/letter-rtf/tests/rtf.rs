@@ -73,8 +73,12 @@ fn docx_survives_conversion_to_rtf() {
         let docx = letter_docx::read_file(&path).unwrap();
         let back = letter_rtf::read(letter_rtf::write(&docx).as_bytes()).unwrap();
         let name = path.display();
-        // В RTF в документе всегда есть хотя бы один абзац.
-        let mut expected = texts(&docx);
+        // В RTF в документе всегда есть хотя бы один абзац. Рисунки
+        // в RTF пока не записываются.
+        let mut expected: Vec<String> = texts(&docx)
+            .iter()
+            .map(|t| t.replace(letter_model::OBJECT_CHAR, ""))
+            .collect();
         if expected.is_empty() {
             expected.push(String::new());
         }

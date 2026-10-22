@@ -128,7 +128,7 @@ fn edited_document_keeps_images() {
         Block::Paragraph(p) => p.runs().any(|r| {
             r.content
                 .iter()
-                .any(|c| matches!(c, RunContent::Unknown(raw) if raw.local_name() == "drawing"))
+                .any(|c| matches!(c, RunContent::Picture(p) if p.image.is_some()))
         }),
         _ => false,
     });
@@ -482,4 +482,79 @@ fn settings_are_read() {
     assert!(!doc.settings.add_paragraph_spacing);
     // Часть настроек не пересобирается, поэтому после сохранения те же.
     assert_eq!(round_trip(&doc).settings, doc.settings);
+}
+
+#[test]
+fn resized_image_keeps_its_new_size() {
+    let mut doc = read_bytes(&fixture_bytes("image.docx")).unwrap();
+    let mut count = 0;
+    doc.for_each_picture_mut(|picture| {
+        picture.width /= 2;
+        picture.height /= 2;
+        count += 1;
+    });
+    assert_eq!(count, 1);
+    let mut reopened = round_trip(&doc);
+    let mut sizes = Vec::new();
+    reopened.for_each_picture_mut(|picture| {
+        sizes.push((picture.width, picture.height, picture.image.is_some()));
+    });
+    assert_eq!(sizes, [(914_400, 548_640, true)]);
+}
+
+#[test]
+fn pictures_from_another_document_get_their_own_part() {
+    let source = read_bytes(&fixture_bytes("image.docx")).unwrap();
+    let mut pictures = Vec::new();
+    let mut copy = source.clone();
+    copy.for_each_picture_mut(|p| pictures.push(p.clone()));
+    let [copied] = &pictures[..] else {
+        panic!("{pictures:?}");
+    };
+    let image = copied.image.clone().unwrap();
+    // Новый рисунок без исходной разметки и тот же рисунок, вставленный
+    // из другого документа (связь rId9 в новом документе ведёт не туда).
+    let fresh = letter_model::Picture {
+        width: 127_000,
+        height: 254_000,
+        image: Some(image.clone()),
+        relationship: None,
+        raw: None,
+    };
+    let mut doc = Document::new();
+    doc.sections[0].blocks = vec![
+        Paragraph::from_runs([letter_model::Run {
+            props: Default::default(),
+            content: vec![
+                RunContent::Picture(copied.clone()),
+                RunContent::Text("и".into()),
+                RunContent::Picture(fresh),
+            ],
+        }])
+        .into(),
+    ];
+    let bytes = write_bytes(&doc).unwrap();
+    let parts = zip_parts(&bytes);
+    // Одна картинка — одна часть, с типом содержимого.
+    let media: Vec<_> = parts.keys().filter(|n| n.contains("media/")).collect();
+    assert_eq!(media.len(), 1, "{media:?}");
+    let types = String::from_utf8(parts["[Content_Types].xml"].clone()).unwrap();
+    assert!(
+        types.contains(r#"Extension="png" ContentType="image/png""#),
+        "{types}"
+    );
+
+    let mut reopened = read_bytes(&bytes).unwrap();
+    let mut found = Vec::new();
+    reopened.for_each_picture_mut(|p| found.push(p.clone()));
+    assert_eq!(found.len(), 2);
+    for picture in &found {
+        let data = picture.image.as_ref().expect("image");
+        assert_eq!(data.bytes, image.bytes);
+    }
+    assert_eq!((found[1].width, found[1].height), (127_000, 254_000));
+    // Повторная запись ничего не добавляет.
+    let again = write_bytes(&reopened).unwrap();
+    let parts = zip_parts(&again);
+    assert_eq!(parts.keys().filter(|n| n.contains("media/")).count(), 1);
 }

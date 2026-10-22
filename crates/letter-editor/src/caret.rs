@@ -55,6 +55,17 @@ pub fn line_stops(line: &PageLine) -> Vec<CaretStop> {
                     x: left + tab.width,
                 });
             }
+            LineItem::Object(object) => {
+                let left = line.x + object.x;
+                stops.push(CaretStop {
+                    offset: object.at,
+                    x: left,
+                });
+                stops.push(CaretStop {
+                    offset: object.at + letter_model::OBJECT_CHAR.len_utf8(),
+                    x: left + object.width,
+                });
+            }
         }
     }
 

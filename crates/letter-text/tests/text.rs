@@ -42,8 +42,17 @@ fn paragraphs(doc: &Document) -> Vec<&Paragraph> {
     out
 }
 
+/// Тексты абзацев без рисунков: в TXT их нет по смыслу, в HTML
+/// и Markdown они пока не записываются.
 fn texts(doc: &Document) -> Vec<String> {
-    paragraphs(doc).iter().map(|p| p.plain_text()).collect()
+    paragraphs(doc)
+        .iter()
+        .map(|p| without_pictures(&p.plain_text()))
+        .collect()
+}
+
+fn without_pictures(text: &str) -> String {
+    text.replace(letter_model::OBJECT_CHAR, "")
 }
 
 /// Текст без пустых абзацев (их нет в Markdown).
@@ -87,7 +96,9 @@ fn html_keeps_text_and_formatting() {
                 p.content
                     .iter()
                     .filter_map(|i| match i {
-                        Inline::Run(r) if !r.plain_text().is_empty() => Some(r.clone()),
+                        Inline::Run(r) if !without_pictures(&r.plain_text()).is_empty() => {
+                            Some(r.clone())
+                        }
                         _ => None,
                     })
                     .collect()
@@ -110,7 +121,7 @@ fn html_keeps_text_and_formatting() {
                             x.highlight,
                             x.vertical_align,
                         );
-                        std::iter::repeat_n(key, r.plain_text().chars().count())
+                        std::iter::repeat_n(key, without_pictures(&r.plain_text()).chars().count())
                     })
                     .collect::<Vec<_>>()
             };

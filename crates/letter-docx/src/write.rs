@@ -8,7 +8,12 @@
 use std::borrow::Cow;
 use std::io::{Seek, Write};
 
-use letter_model::{AppProperties, CoreProperties, Document, SourcePackage, Styles};
+use std::sync::Arc;
+
+use letter_model::{
+    AppProperties, Block, CoreProperties, Document, ImageData, Picture, RunContent, SourcePackage,
+    Styles,
+};
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
@@ -35,6 +40,7 @@ const REL_CORE: &str =
     "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties";
 const REL_APP: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties";
+const REL_IMAGE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
 const CT_CORE: &str = "application/vnd.openxmlformats-package.core-properties+xml";
 const CT_APP: &str = "application/vnd.openxmlformats-officedocument.extended-properties+xml";
 const NS_RELS: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
@@ -60,15 +66,36 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
         }
     }
 
-    parts.push((
-        main.clone(),
-        serialize::document_xml(doc).into_bytes().into(),
-    ));
-    ensure_override(&mut overrides, &main, CT_MAIN);
-
     let mut links = Links::new(source);
     links.find_or_add("", REL_OFFICE_DOCUMENT, &["/officeDocument"], &main, true);
     let mut replaced = vec![main.clone()];
+
+    // Картинки, у которых нет своей связи (новые рисунки, рисунки,
+    // вставленные из другого документа), записываются новыми частями.
+    let mut media = Vec::new();
+    let doc = link_pictures(doc, &main, &mut links, &mut media);
+    let doc = doc.as_ref();
+    for (name, data) in media {
+        if let Some((_, ext)) = name.rsplit_once('.')
+            && !defaults.iter().any(|(e, _)| e.eq_ignore_ascii_case(ext))
+        {
+            defaults.push((
+                ext.to_ascii_lowercase(),
+                image_content_type(ext).to_string(),
+            ));
+        }
+        replaced.push(name.clone());
+        parts.push((name, Cow::Owned(data)));
+    }
+
+    parts.insert(
+        0,
+        (
+            main.clone(),
+            serialize::document_xml(doc).into_bytes().into(),
+        ),
+    );
+    ensure_override(&mut overrides, &main, CT_MAIN);
 
     let base_dir = main.rsplit_once('/').map_or("", |(dir, _)| dir);
     let styles_part = match &source.styles_part {
@@ -169,6 +196,106 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
     Ok(())
 }
 
+/// Проверяет, что связь каждого рисунка ведёт к его картинке. Если нет
+/// (новый рисунок, рисунок из другого документа), картинка добавляется
+/// в `media` новой частью со своей связью, а в копии документа рисунок
+/// получает эту связь. Если всё верно, документ не копируется.
+fn link_pictures<'d>(
+    doc: &'d Document,
+    main: &str,
+    links: &mut Links<'_>,
+    media: &mut Vec<(String, Vec<u8>)>,
+) -> Cow<'d, Document> {
+    let mut broken = false;
+    let mut probe = |picture: &Picture| {
+        if let Some(image) = &picture.image
+            && !links.points_to(main, picture.relationship.as_deref(), image)
+        {
+            broken = true;
+        }
+    };
+    visit_pictures(doc, &mut probe);
+    if !broken {
+        return Cow::Borrowed(doc);
+    }
+    let mut fixed = doc.clone();
+    // Одна и та же картинка (общие байты) — одна часть.
+    let mut added: Vec<(Arc<ImageData>, String)> = Vec::new();
+    fixed.for_each_picture_mut(|picture| {
+        let Some(image) = picture.image.clone() else {
+            return;
+        };
+        if links.points_to(main, picture.relationship.as_deref(), &image) {
+            return;
+        }
+        let id = match added.iter().find(|(a, _)| Arc::ptr_eq(a, &image)) {
+            Some((_, id)) => id.clone(),
+            None => {
+                let base = main.rsplit_once('/').map_or("", |(dir, _)| dir);
+                let file = image.name.rsplit('/').next().unwrap_or_default();
+                let file = if file.contains('.') {
+                    file
+                } else {
+                    "image.png"
+                };
+                let wanted = join(base, &format!("media/{file}"));
+                let (id, name) = links.add(main, REL_IMAGE, &wanted);
+                media.push((name, image.bytes.clone()));
+                added.push((image, id.clone()));
+                id
+            }
+        };
+        if let Some(raw) = &picture.raw {
+            picture.raw = Some(crate::picture::with_relationship(raw, &id));
+        }
+        picture.relationship = Some(id);
+    });
+    Cow::Owned(fixed)
+}
+
+/// Вызывает `f` для каждого рисунка документа (без изменения).
+fn visit_pictures(doc: &Document, f: &mut impl FnMut(&Picture)) {
+    fn blocks(list: &[Block], f: &mut impl FnMut(&Picture)) {
+        for block in list {
+            match block {
+                Block::Paragraph(p) => {
+                    for run in p.runs() {
+                        for item in &run.content {
+                            if let RunContent::Picture(picture) = item {
+                                f(picture);
+                            }
+                        }
+                    }
+                }
+                Block::Table(table) => {
+                    for cell in table.rows.iter().flat_map(|r| &r.cells) {
+                        blocks(&cell.blocks, f);
+                    }
+                }
+                Block::Unknown(_) => {}
+            }
+        }
+    }
+    for section in &doc.sections {
+        blocks(&section.blocks, f);
+    }
+}
+
+/// Тип содержимого картинки по расширению имени.
+fn image_content_type(ext: &str) -> &'static str {
+    match ext.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" | "jpe" => "image/jpeg",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        "emf" => "image/x-emf",
+        "wmf" => "image/x-wmf",
+        "svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    }
+}
+
 /// Добавляет `Override`, если для части ещё нет своего типа содержимого.
 fn ensure_override(overrides: &mut Vec<(String, String)>, part: &str, content_type: &str) {
     if !overrides.iter().any(|(p, _)| p.eq_ignore_ascii_case(part)) {
@@ -234,22 +361,52 @@ impl<'a> Links<'a> {
         } else {
             self.free_name(wanted)
         };
-        let rels = &mut self.changed[index].1;
-        let mut number = rels.len() + 1;
-        let id = loop {
-            let id = format!("rId{number}");
-            if !rels.iter().any(|r| r.id == id) {
-                break id;
-            }
-            number += 1;
-        };
-        rels.push(Relationship {
-            id,
-            kind: kind.into(),
-            target: name.clone(),
-            external: false,
-        });
+        push_relationship(&mut self.changed[index].1, kind, &name);
         name
+    }
+
+    /// Ведёт ли связь `id` части `from` к картинке `image`: связь
+    /// с картинкой, имя части и байты совпадают.
+    fn points_to(&self, from: &str, id: Option<&str>, image: &ImageData) -> bool {
+        let Some(id) = id else {
+            return false;
+        };
+        let rels_name = rels_part_for(from);
+        let owned;
+        let rels = match self.changed.iter().find(|(n, _)| *n == rels_name) {
+            Some((_, rels)) => rels,
+            None => {
+                owned = self.load(from, &rels_name);
+                &owned
+            }
+        };
+        rels.iter().any(|r| {
+            r.id == id
+                && !r.external
+                && r.kind.ends_with("/image")
+                && r.target.eq_ignore_ascii_case(&image.name)
+                && self
+                    .source
+                    .part(&r.target)
+                    .is_some_and(|p| p.data == image.bytes)
+        })
+    }
+
+    /// Добавляет части `from` связь типа `kind` с новой частью на
+    /// свободном имени рядом с `wanted`; возвращает имя связи и части.
+    fn add(&mut self, from: &str, kind: &str, wanted: &str) -> (String, String) {
+        let rels_name = rels_part_for(from);
+        let index = match self.changed.iter().position(|(n, _)| *n == rels_name) {
+            Some(i) => i,
+            None => {
+                let rels = self.load(from, &rels_name);
+                self.changed.push((rels_name, rels));
+                self.changed.len() - 1
+            }
+        };
+        let name = self.free_name(wanted);
+        let id = push_relationship(&mut self.changed[index].1, kind, &name);
+        (id, name)
     }
 
     /// Связи из исходного файла (битый или отсутствующий файл — нет связей).
@@ -309,6 +466,25 @@ impl<'a> Links<'a> {
             .map(|(name, rels)| (name, relationships_xml(&rels)))
             .collect()
     }
+}
+
+/// Добавляет внутреннюю связь со свободным именем `rId<N>`; возвращает имя.
+fn push_relationship(rels: &mut Vec<Relationship>, kind: &str, target: &str) -> String {
+    let mut number = rels.len() + 1;
+    let id = loop {
+        let id = format!("rId{number}");
+        if !rels.iter().any(|r| r.id == id) {
+            break id;
+        }
+        number += 1;
+    };
+    rels.push(Relationship {
+        id: id.clone(),
+        kind: kind.into(),
+        target: target.into(),
+        external: false,
+    });
+    id
 }
 
 fn find(rels: &[Relationship], suffixes: &[&str]) -> Option<String> {

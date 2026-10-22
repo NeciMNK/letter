@@ -5,7 +5,9 @@
 use letter_layout::{
     FontLibrary, LineItem, Page, PageLine, ShapeKind, TabItem, TabLeader, TextItem, baseline_rise,
 };
-use letter_model::{Color, ResolvedRunProps, Underline};
+use std::sync::Arc;
+
+use letter_model::{Color, ImageData, ResolvedRunProps, Underline};
 
 use crate::glyphs::{GlyphCache, GlyphKey, SUBPIXEL_STEPS};
 
@@ -43,11 +45,25 @@ pub enum DrawItem {
         /// Цвет.
         color: Rgba,
     },
+    /// Рисунок: картинка, растянутая на прямоугольник.
+    Picture {
+        /// Левый край.
+        x: f32,
+        /// Верхний край.
+        y: f32,
+        /// Ширина.
+        width: f32,
+        /// Высота.
+        height: f32,
+        /// Картинка; `None` — нарисовать заглушку.
+        image: Option<Arc<ImageData>>,
+    },
 }
 
 /// Список того, что нарисовать на странице при масштабе `scale`
 /// пикселей на пункт. Сначала идут фоны (заливка ячеек, выделение
-/// маркером), потом глифы, потом линии (подчёркивания, границы таблиц).
+/// маркером), потом рисунки, глифы и линии (подчёркивания, границы
+/// таблиц).
 pub fn page_scene(
     page: &Page,
     scale: f32,
@@ -55,6 +71,7 @@ pub fn page_scene(
     cache: &mut GlyphCache,
 ) -> Vec<DrawItem> {
     let mut backgrounds = Vec::new();
+    let mut pictures = Vec::new();
     let mut glyphs = Vec::new();
     let mut lines = Vec::new();
     for shape in &page.shapes {
@@ -105,6 +122,13 @@ pub fn page_scene(
                         leader(&mut lines, line, tab, props, scale);
                     }
                 }
+                LineItem::Object(object) => pictures.push(DrawItem::Picture {
+                    x: (line.x + object.x) * scale,
+                    y: (line.baseline - object.height) * scale,
+                    width: object.width * scale,
+                    height: object.height * scale,
+                    image: object.image.clone(),
+                }),
             }
         }
         // Номер или маркер пункта списка.
@@ -126,6 +150,7 @@ pub fn page_scene(
             }
         }
     }
+    backgrounds.extend(pictures);
     backgrounds.extend(glyphs);
     backgrounds.extend(lines);
     backgrounds

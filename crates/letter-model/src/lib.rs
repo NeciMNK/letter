@@ -22,6 +22,7 @@ mod document;
 mod numbering;
 mod package;
 mod paragraph;
+mod picture;
 mod properties;
 mod raw;
 mod resolve;
@@ -43,12 +44,13 @@ pub use paragraph::{
     Alignment, FirstLineIndent, Indentation, Inline, LineSpacing, Paragraph, ParagraphProps,
     Spacing, TabLeader, TabStop, TabStopKind,
 };
+pub use picture::{EMU_PER_POINT, ImageData, Picture};
 pub use properties::{AppProperties, CoreProperties, Properties, Statistics};
 pub use raw::RawXml;
 pub use resolve::{ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps, overlay_borders};
 pub use run::{
-    BreakKind, Color, Highlight, Run, RunContent, RunFonts, RunProps, ThemeColor, ThemeFont,
-    Underline, VerticalAlign,
+    BreakKind, Color, Highlight, OBJECT_CHAR, Run, RunContent, RunFonts, RunProps, ThemeColor,
+    ThemeFont, Underline, VerticalAlign,
 };
 pub use section::{Orientation, PageMargins, PageSize, Section, SectionProps};
 pub use style::{DocDefaults, Style, StyleKind, Styles};

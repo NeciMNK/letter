@@ -288,6 +288,10 @@ fn read_run(r: &Element) -> Run {
                 "t" => RunContent::Text(child.text()),
                 "tab" if child.attrs.is_empty() => RunContent::Tab,
                 "cr" if child.attrs.is_empty() => RunContent::Break(BreakKind::Line),
+                "drawing" => match crate::picture::read_picture(child) {
+                    Some(picture) => RunContent::Picture(picture),
+                    None => RunContent::Unknown(child.raw()),
+                },
                 "br" if child.only_attrs(&["type"]) => match child.w_attr("type") {
                     None | Some("textWrapping") => RunContent::Break(BreakKind::Line),
                     Some("page") => RunContent::Break(BreakKind::Page),

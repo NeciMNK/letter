@@ -1,6 +1,6 @@
 //! Фрагменты текста ([`Run`]) и оформление символов ([`RunProps`]).
 
-use crate::RawXml;
+use crate::{Picture, RawXml};
 
 /// Фрагмент абзаца: кусок содержимого с одинаковым оформлением символов.
 ///
@@ -30,7 +30,8 @@ impl Run {
     }
 
     /// Текст фрагмента без оформления: табуляция становится `\t`,
-    /// разрыв строки — `\n`, разрыв страницы или колонки — `\u{c}`.
+    /// разрыв строки — `\n`, разрыв страницы или колонки — `\u{c}`,
+    /// рисунок — [`OBJECT_CHAR`].
     pub fn plain_text(&self) -> String {
         let mut out = String::new();
         for item in &self.content {
@@ -49,17 +50,36 @@ pub enum RunContent {
     Tab,
     /// Принудительный разрыв.
     Break(BreakKind),
+    /// Рисунок в строке. В тексте абзаца — знак [`OBJECT_CHAR`].
+    Picture(Picture),
     /// Непонятый элемент (рисунок, поле, символ и т. п.), сохранённый как есть.
     Unknown(RawXml),
 }
 
+/// Знак, которым рисунок и другие объекты в строке стоят в тексте абзаца
+/// (U+FFFC «замещающий объект»).
+pub const OBJECT_CHAR: char = '\u{fffc}';
+
 impl RunContent {
+    /// Длина элемента в тексте абзаца, байты UTF-8: у текста — длина
+    /// текста, у табуляции и разрыва — 1, у рисунка — 3 (знак
+    /// [`OBJECT_CHAR`]), у непонятого элемента — 0.
+    pub fn text_len(&self) -> usize {
+        match self {
+            RunContent::Text(text) => text.len(),
+            RunContent::Tab | RunContent::Break(_) => 1,
+            RunContent::Picture(_) => OBJECT_CHAR.len_utf8(),
+            RunContent::Unknown(_) => 0,
+        }
+    }
+
     fn push_plain_text(&self, out: &mut String) {
         match self {
             RunContent::Text(text) => out.push_str(text),
             RunContent::Tab => out.push('\t'),
             RunContent::Break(BreakKind::Line) => out.push('\n'),
             RunContent::Break(BreakKind::Page | BreakKind::Column) => out.push('\u{c}'),
+            RunContent::Picture(_) => out.push(OBJECT_CHAR),
             RunContent::Unknown(_) => {}
         }
     }
