@@ -534,3 +534,7 @@ keytip-layout-orientation = O
 keytip-layout-size = SZ
 keytip-layout-columns = J
 keytip-layout-breaks = B
+
+## Headers and footers
+header-label = Header
+footer-label = Footer

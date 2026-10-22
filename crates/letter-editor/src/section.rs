@@ -2,8 +2,8 @@
 //! поля и колонки разделов (кнопки вкладки «Макет»).
 
 use letter_model::{
-    Block, BreakKind, Columns, Document, Orientation, PageMargins, PageSize, Paragraph, RunContent,
-    Section, SectionProps, SectionStart, Twips,
+    Block, BreakKind, Columns, Document, HeaderFooter, HeaderFooterKind, Orientation, PageMargins,
+    PageSize, Paragraph, RunContent, Section, SectionProps, SectionStart, Twips,
 };
 
 use crate::edit::{blocks_mut, clamp_offset, find, insert_items, split_content, top_level};
@@ -120,6 +120,49 @@ pub fn insert_section_break(doc: &mut Document, at: Position, start: SectionStar
     };
     doc.sections.insert(path.section + 1, next);
     Position::new(at.paragraph + 1, 0)
+}
+
+/// Раздел, чей колонтитул вида `kind` (`header` — верхний) виден
+/// в разделе `section`: сам раздел или ближайший предыдущий, у которого
+/// такой колонтитул задан. `None` — такого колонтитула нет.
+pub fn header_footer_source(
+    doc: &Document,
+    section: usize,
+    header: bool,
+    kind: HeaderFooterKind,
+) -> Option<usize> {
+    let last = section.min(doc.sections.len().checked_sub(1)?);
+    (0..=last).rev().find(|&s| {
+        let props = &doc.sections[s].props;
+        let set = if header {
+            &props.headers
+        } else {
+            &props.footers
+        };
+        set.get(kind).is_some()
+    })
+}
+
+/// Ставит разделу `section` колонтитул `story` вида `kind` (`header` —
+/// верхний); `None` убирает его (тогда виден колонтитул предыдущего
+/// раздела).
+pub fn set_header_footer(
+    doc: &mut Document,
+    section: usize,
+    header: bool,
+    kind: HeaderFooterKind,
+    story: Option<HeaderFooter>,
+) {
+    let Some(section) = doc.sections.get_mut(section) else {
+        return;
+    };
+    let props = &mut section.props;
+    let set = if header {
+        &mut props.headers
+    } else {
+        &mut props.footers
+    };
+    *set.get_mut(kind) = story;
 }
 
 /// Параметры страницы раздела, в котором абзац `paragraph`.
@@ -351,6 +394,23 @@ mod tests {
         };
         let total: i32 = columns.widths.iter().map(|(w, s)| w.0 + s.0).sum();
         assert_eq!(total, 11906 - 1701 - 850);
+    }
+
+    #[test]
+    fn headers_come_from_earlier_sections() {
+        let mut d = doc(&["a", "b"]);
+        insert_section_break(&mut d, Position::new(1, 0), SectionStart::NextPage);
+        let kind = HeaderFooterKind::Default;
+        assert_eq!(header_footer_source(&d, 1, true, kind), None);
+        let story = HeaderFooter {
+            blocks: vec![Paragraph::text("h").into()],
+            relationship: None,
+        };
+        set_header_footer(&mut d, 0, true, kind, Some(story));
+        assert_eq!(header_footer_source(&d, 1, true, kind), Some(0));
+        assert_eq!(header_footer_source(&d, 1, false, kind), None);
+        set_header_footer(&mut d, 0, true, kind, None);
+        assert_eq!(header_footer_source(&d, 1, true, kind), None);
     }
 
     #[test]

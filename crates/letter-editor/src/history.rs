@@ -8,7 +8,8 @@
 //! Набор текста объединяется в один шаг по словам, как в Word.
 
 use letter_model::{
-    Alignment, Anchor, Block, BreakKind, Color, Document, Picture, Section, SectionStart,
+    Alignment, Anchor, Block, BreakKind, Color, Document, HeaderFooter, HeaderFooterKind, Picture,
+    Section, SectionStart,
 };
 
 use crate::clipboard::{insert_fragment, insert_plain_text};
@@ -26,7 +27,9 @@ use crate::lists::{
 };
 use crate::picture::{insert_picture, resize_picture, set_picture_anchor};
 use crate::search::{SearchOptions, clamp, replace_all};
-use crate::section::{PageSetup, insert_break, insert_section_break, set_page_setup};
+use crate::section::{
+    PageSetup, insert_break, insert_section_break, set_header_footer, set_page_setup,
+};
 use crate::selection::Selection;
 use crate::table::{
     BorderPreset, delete_columns, delete_rows, delete_table, in_table, insert_columns, insert_rows,
@@ -123,6 +126,18 @@ pub enum Command {
     SectionBreak(SectionStart),
     /// Ориентация, размер, поля или колонки разделов выделенного.
     PageSetup(PageSetup),
+    /// Поставить разделу колонтитул (`None` — убрать). Выделение
+    /// остаётся.
+    HeaderFooter {
+        /// Номер раздела.
+        section: usize,
+        /// Верхний (иначе нижний).
+        header: bool,
+        /// Для каких страниц.
+        kind: HeaderFooterKind,
+        /// Колонтитул.
+        story: Option<Box<HeaderFooter>>,
+    },
     /// «Заменить все»: найденное `query` заменить на `replacement` во
     /// всём документе. Курсор остаётся в том же абзаце (выделение
     /// снимается).
@@ -273,6 +288,7 @@ impl History {
                 | Command::ResizePicture { .. }
                 | Command::PictureAnchor(_)
                 | Command::PageSetup(_)
+                | Command::HeaderFooter { .. }
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -293,10 +309,20 @@ impl History {
         let (Some(from), Some(to)) = (from, to) else {
             return selection;
         };
+        // Колонтитул меняет свой раздел, где бы ни было выделение.
+        let (from, to) = match &command {
+            Command::HeaderFooter { section, .. } if *section < doc.sections.len() => {
+                ((*section, 0), (*section, 0))
+            }
+            _ => (from, to),
+        };
         let sections_before = doc.sections.len();
         let blocks_before = doc.sections.get(to.0).map_or(0, |s| s.blocks.len());
         // Разрыв раздела и параметры страницы меняют разделы целиком.
-        let whole = matches!(command, Command::SectionBreak(_) | Command::PageSetup(_));
+        let whole = matches!(
+            command,
+            Command::SectionBreak(_) | Command::PageSetup(_) | Command::HeaderFooter { .. }
+        );
         let saved = if from.0 == to.0 && !whole {
             Saved::Blocks(doc.sections[from.0].blocks[from.1..=to.1].to_vec())
         } else {
@@ -397,6 +423,16 @@ impl History {
                 set_page_setup(doc, start.paragraph, end.paragraph, *setup);
                 Some(selection)
             }
+            Command::HeaderFooter {
+                section,
+                header,
+                kind,
+                story,
+            } => {
+                let story = story.as_deref().cloned();
+                set_header_footer(doc, *section, *header, *kind, story);
+                Some(selection)
+            }
             _ => None,
         };
         let focus = match &command {
@@ -434,7 +470,8 @@ impl History {
             | Command::MergeCells
             | Command::ResizePicture { .. }
             | Command::PictureAnchor(_)
-            | Command::PageSetup(_) => at,
+            | Command::PageSetup(_)
+            | Command::HeaderFooter { .. } => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
 
@@ -899,5 +936,27 @@ mod tests {
         assert_eq!(d, original);
         h.redo(&mut d);
         assert_eq!(d.sections.len(), 2);
+    }
+
+    #[test]
+    fn header_change_is_one_undo_step() {
+        let mut d = doc(&["ab"]);
+        let original = d.clone();
+        let mut h = History::new();
+        let story = HeaderFooter {
+            blocks: vec![Paragraph::text("top").into()],
+            relationship: None,
+        };
+        let command = Command::HeaderFooter {
+            section: 0,
+            header: true,
+            kind: HeaderFooterKind::Default,
+            story: Some(Box::new(story)),
+        };
+        let s = h.run(&mut d, caret(0, 1), command);
+        assert_eq!(s, caret(0, 1));
+        assert!(d.sections[0].props.headers.default.is_some());
+        h.undo(&mut d);
+        assert_eq!(d, original);
     }
 }
