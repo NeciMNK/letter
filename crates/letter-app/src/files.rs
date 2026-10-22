@@ -104,7 +104,7 @@ pub fn write(doc: &Document, path: &Path) -> Result<(), String> {
     write_atomic(path, &data).map_err(|e| fail(&e))
 }
 
-fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
