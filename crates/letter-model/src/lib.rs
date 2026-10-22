@@ -36,7 +36,7 @@ mod units;
 
 pub use border::{Border, Borders, Shading};
 pub use document::{Document, Settings, for_each_picture_in};
-pub use field::{Field, fields, set_field_result};
+pub use field::{Field, alphabetic, fields, roman, set_field_result};
 pub use numbering::{
     AbstractNumbering, LevelOverride, LevelSuffix, ListCounters, ListLabel, ListLevel,
     NumberFormat, Numbering, NumberingInstance, NumberingRef,

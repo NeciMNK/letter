@@ -66,6 +66,7 @@ pub fn table() -> Vec<Shortcut> {
         local(CTRL, Key::Delete, C::DeleteWord { forward: true }),
         local(CTRL_SHIFT, Key::Space, C::Insert("\u{a0}")),
         local(CTRL_SHIFT, Key::Num8, C::ToggleMarks),
+        local(Modifiers::NONE, Key::F9, C::UpdateFields),
         // Шрифт.
         local(CTRL, Key::D, C::FontDialog),
         run(CTRL, Key::B, RunFormat::Bold),

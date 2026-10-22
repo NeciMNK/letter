@@ -27,10 +27,11 @@ use eframe::egui::{
     Vec2, ViewportCommand, emath::GuiRounding, pos2,
 };
 use letter_editor::{
-    Command, History, ListKind, Motion, PictureBox, PictureWrap, Position, RunFormat, Selection,
-    anchor_with_wrap, can_continue_numbering, caret, copy_range, find_all, find_next,
-    formatting_at, hit_test, language_at, list_kind, move_cursor, moved_anchor, paragraph_at,
-    picture_at_point, picture_ref, select_all, selected_picture, selection_rects, word_at,
+    Command, DateTime, FieldContext, History, ListKind, Motion, PictureBox, PictureWrap, Position,
+    RunFormat, Selection, anchor_with_wrap, can_continue_numbering, caret, copy_range, find_all,
+    find_next, formatting_at, hit_test, language_at, list_kind, move_cursor, moved_anchor,
+    paragraph_at, picture_at_point, picture_ref, select_all, selected_picture, selection_rects,
+    word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
 use letter_model::{Alignment, BreakKind, Document, Paragraph, Statistics};
@@ -336,6 +337,44 @@ impl OpenDocument {
         self.relayout(shaper, library);
         if let Some(header) = header {
             self.begin_story(page, header, shaper, library);
+        }
+    }
+
+    /// Что нужно для обновления полей (F9): время, файл, страницы.
+    fn field_context(&self) -> FieldContext {
+        let now = chrono::Local::now();
+        let offset = i64::from(now.offset().local_minus_utc());
+        let (pages, page_of_paragraph) = match &self.story {
+            // В колонтитуле все абзацы — на странице, где идёт правка.
+            Some(story) => {
+                let count = letter_editor::paragraph_count(&self.doc);
+                (story.display.pages.len(), vec![story.page + 1; count])
+            }
+            None => {
+                let mut pages = Vec::new();
+                for (number, page) in self.layout.pages.iter().enumerate() {
+                    for line in &page.lines {
+                        if pages.len() <= line.paragraph {
+                            pages.resize(line.paragraph + 1, 0);
+                        }
+                        if pages[line.paragraph] == 0 {
+                            pages[line.paragraph] = number + 1;
+                        }
+                    }
+                }
+                (self.layout.pages.len(), pages)
+            }
+        };
+        FieldContext {
+            now: DateTime::from_unix(now.timestamp(), offset),
+            utc_offset: offset,
+            path: self.path.as_ref().map(|p| p.display().to_string()),
+            pages,
+            page_of_paragraph,
+            russian: crate::i18n::language() == crate::i18n::Language::Russian,
+            user_name: std::env::var("USERNAME")
+                .or_else(|_| std::env::var("USER"))
+                .ok(),
         }
     }
 
@@ -1578,6 +1617,14 @@ impl Viewer {
                         document.begin_story(page, header, &mut self.shaper, &self.library);
                         document.cursor_since = ctx.input(|i| i.time);
                         self.reveal_cursor = true;
+                    }
+                }
+                RibbonCommand::UpdateFields => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &self.document {
+                        let context = document.field_context();
+                        let command = Command::UpdateFields(Box::new(context));
+                        actions.push(Action::Edit(command));
                     }
                 }
                 RibbonCommand::CloseHeaderFooter => {
@@ -3227,6 +3274,47 @@ mod tests {
         frame(&ctx, &mut viewer, key(Key::Z, Modifiers::COMMAND));
         assert_eq!(header_text(&viewer), "Header text");
         assert_eq!(shown_header(&viewer), "Header text");
+    }
+
+    #[test]
+    fn f9_updates_fields() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        // В конец документа — абзац с полями PAGE и NUMPAGES.
+        let mut runs = letter_editor::page_number_runs();
+        runs.push(letter_model::Run::text(" / "));
+        for mut run in letter_editor::page_number_runs() {
+            for item in &mut run.content {
+                if let letter_model::RunContent::FieldCode(code) = item {
+                    *code = "NUMPAGES".into();
+                }
+            }
+            runs.push(run);
+        }
+        let Viewer {
+            document,
+            shaper,
+            library,
+            ..
+        } = &mut viewer;
+        let document = document.as_mut().unwrap();
+        let last = document.doc.sections.len() - 1;
+        document.doc.sections[last]
+            .blocks
+            .push(Paragraph::from_runs(runs).into());
+        document.relayout(shaper, library);
+        let pages = document.layout.pages.len();
+        assert!(pages >= 2);
+
+        frame(&ctx, &mut viewer, key(Key::A, Modifiers::COMMAND));
+        frame(&ctx, &mut viewer, key(Key::F9, Modifiers::NONE));
+        let document = viewer.document.as_ref().unwrap();
+        let blocks = &document.doc.sections[last].blocks;
+        let text = blocks[blocks.len() - 1].plain_text();
+        assert_eq!(text, format!("{pages} / {pages}"));
+        assert!(document.modified());
     }
 
     #[test]

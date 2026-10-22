@@ -338,7 +338,7 @@ pub(crate) fn plain_text(paragraph: &Paragraph) -> String {
 }
 
 /// Сколько абзацев в документе (вместе с абзацами таблиц).
-pub(crate) fn paragraph_count(doc: &Document) -> usize {
+pub fn paragraph_count(doc: &Document) -> usize {
     (0..)
         .take_while(|&i| paragraph_ref(doc, i).is_some())
         .count()

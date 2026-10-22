@@ -194,6 +194,8 @@ pub enum RibbonCommand {
     TitlePage(bool),
     /// «Закрыть окно колонтитулов».
     CloseHeaderFooter,
+    /// Обновить поля в выделенном (F9).
+    UpdateFields,
     /// Правка документа командой редактора (вставка таблицы и т. п.).
     Edit(letter_editor::Command),
     /// Открыть список или меню на ленте (подсказки клавиш).
