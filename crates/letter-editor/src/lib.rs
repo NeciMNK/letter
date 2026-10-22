@@ -39,8 +39,8 @@ pub use edit::{
 };
 pub use fields::{DateTime, FieldContext, format_date, update_fields};
 pub use format::{
-    ParagraphChanges, ParagraphFormat, RunChanges, RunFormat, align_paragraphs, apply_style,
-    format_paragraphs, format_runs, formatting_at, language_at,
+    BorderEdge, ParagraphChanges, ParagraphFormat, RunChanges, RunFormat, align_paragraphs,
+    apply_style, format_paragraphs, format_runs, formatting_at, language_at,
 };
 pub use history::{Command, History};
 pub use links::{

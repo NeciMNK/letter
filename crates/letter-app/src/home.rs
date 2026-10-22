@@ -1,10 +1,9 @@
-//! Вкладка «Главная» ленты: буфер обмена, шрифт, абзац.
-//! Списки (F5.1), заливка и границы (F5.11) добавятся вместе с этими
-//! возможностями документа.
+//! Вкладка «Главная» ленты: буфер обмена, шрифт, абзац (со списками,
+//! заливкой и границами), стили, редактирование.
 
 use crate::i18n::tr;
 use eframe::egui::{self, Color32, Key, RichText, TextEdit, Ui, vec2};
-use letter_editor::{ListKind, ParagraphFormat, RunFormat};
+use letter_editor::{BorderEdge, ListKind, ParagraphFormat, RunFormat};
 use letter_model::{Alignment, Color, HalfPoints, Highlight, LineSpacing, Twips};
 
 use crate::icons::{self, Icon, color_button, icon_button, icon_text_button};
@@ -64,6 +63,10 @@ pub struct HomeState {
     highlight: Highlight,
     /// Цвет в окне «Другие цвета».
     custom: Color32,
+    /// Последний выбранный цвет заливки абзаца (`None` — «Нет цвета»).
+    shading: Option<(u8, u8, u8)>,
+    /// Последний выбранный пункт «Границы».
+    border: BorderEdge,
 }
 
 impl Default for HomeState {
@@ -75,6 +78,8 @@ impl Default for HomeState {
             font_color: Color::Rgb(0xFF, 0x00, 0x00),
             highlight: Highlight::Yellow,
             custom: Color32::from_rgb(0x00, 0x70, 0xC0),
+            shading: Some((0xD9, 0xD9, 0xD9)),
+            border: BorderEdge::Bottom,
         }
     }
 }
@@ -114,7 +119,7 @@ fn font_color32(color: Color) -> Color32 {
 /// Подсказки клавиш вкладки «Главная» (имена в файлах перевода) — для
 /// проверки, что они не мешают друг другу.
 #[cfg(test)]
-pub const KEYTIPS: [&str; 33] = [
+pub const KEYTIPS: [&str; 35] = [
     "keytip-home-paste",
     "keytip-home-cut",
     "keytip-home-copy",
@@ -143,6 +148,8 @@ pub const KEYTIPS: [&str; 33] = [
     "keytip-home-align-right",
     "keytip-home-align-justify",
     "keytip-home-line-spacing",
+    "keytip-home-shading",
+    "keytip-home-borders",
     "keytip-home-paragraph-dialog",
     "keytip-home-find",
     "keytip-home-replace",
@@ -228,7 +235,7 @@ pub fn home(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Vec
         RibbonCommand::ParagraphDialog,
     );
     if group_with_launcher(ui, tr("paragraph"), Some(launcher), |ui| {
-        paragraph_group(ui, info, &mut paragraph);
+        paragraph_group(ui, state, info, &mut paragraph);
     }) {
         paragraph.push(RibbonCommand::ParagraphDialog);
     }
@@ -376,7 +383,12 @@ const ADDED_SPACE: Twips = Twips(240);
 
 /// Группа «Абзац»: сверху отступы и знаки форматирования, снизу
 /// выравнивание и интервалы.
-fn paragraph_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+fn paragraph_group(
+    ui: &mut Ui,
+    state: &mut HomeState,
+    info: &RibbonInfo,
+    out: &mut Vec<RibbonCommand>,
+) {
     let doc = info.has_document;
     let button = vec2(26.0, 24.0);
     ui.horizontal(|ui| {
@@ -487,7 +499,66 @@ fn paragraph_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>)
             popup_keytip(ui, &response, "keytip-home-line-spacing");
             response.on_hover_text(tr("line-spacing"));
         });
+        ui.separator();
+        shading_and_borders(ui, state, doc, out);
     });
+}
+
+/// Кнопки «Заливка» и «Границы» со списками: кнопка ставит последний
+/// выбранный цвет или линии.
+fn shading_and_borders(
+    ui: &mut Ui,
+    state: &mut HomeState,
+    doc: bool,
+    out: &mut Vec<RibbonCommand>,
+) {
+    let fill = state.shading.map_or(Color32::TRANSPARENT, color32);
+    let shading = RibbonCommand::Paragraph(ParagraphFormat::Shading(state.shading));
+    let response = color_button(ui, Icon::Shading, tr("shading"), fill, doc)
+        .on_hover_text(tr("paragraph-shading-hint"));
+    keytip(ui, &response, "keytip-home-shading", shading.clone());
+    if response.clicked() {
+        out.push(shading);
+    }
+    drop_down(ui, doc, tr("shading-colors"), |ui| {
+        crate::insert::shading_palette(ui, |fill| {
+            state.shading = fill;
+            out.push(RibbonCommand::Paragraph(ParagraphFormat::Shading(fill)));
+        });
+    });
+    let edge = state.border;
+    let (icon, label) = border_item(edge);
+    let border = RibbonCommand::Paragraph(ParagraphFormat::Border(edge));
+    let response =
+        icon_button(ui, icon, tr(label), vec2(24.0, 24.0), doc, false).on_hover_text(tr(label));
+    keytip(ui, &response, "keytip-home-borders", border.clone());
+    if response.clicked() {
+        out.push(border);
+    }
+    drop_down(ui, doc, tr("borders"), |ui| {
+        for edge in BorderEdge::ALL {
+            let (icon, label) = border_item(edge);
+            if icon_text_button(ui, icon, tr(label), true).clicked() {
+                state.border = edge;
+                out.push(RibbonCommand::Paragraph(ParagraphFormat::Border(edge)));
+                ui.close();
+            }
+        }
+    });
+}
+
+/// Значок и название пункта «Границы».
+fn border_item(edge: BorderEdge) -> (Icon, &'static str) {
+    match edge {
+        BorderEdge::Bottom => (Icon::BorderBottom, "border-bottom"),
+        BorderEdge::Top => (Icon::BorderTop, "border-top"),
+        BorderEdge::Left => (Icon::BorderLeft, "border-left"),
+        BorderEdge::Right => (Icon::BorderRight, "border-right"),
+        BorderEdge::None => (Icon::BordersNone, "border-none"),
+        BorderEdge::All => (Icon::BordersAll, "border-all"),
+        BorderEdge::Outside => (Icon::BordersOutside, "border-outside"),
+        BorderEdge::Inside => (Icon::Table, "border-inside"),
+    }
 }
 
 /// Меню «Интервал»: множители и интервалы перед и после абзаца.

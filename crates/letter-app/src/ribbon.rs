@@ -733,6 +733,23 @@ mod tests {
     }
 
     #[test]
+    fn shading_and_borders_buttons() {
+        use letter_editor::{BorderEdge, ParagraphFormat};
+        let mut h = harness(document());
+        h.get_by_label("Заливка").click();
+        h.run();
+        h.get_by_label("Нижняя граница").click();
+        h.run();
+        assert_eq!(
+            h.state().out,
+            vec![
+                RibbonCommand::Paragraph(ParagraphFormat::Shading(Some((0xD9, 0xD9, 0xD9)))),
+                RibbonCommand::Paragraph(ParagraphFormat::Border(BorderEdge::Bottom)),
+            ]
+        );
+    }
+
+    #[test]
     fn home_buttons_give_commands() {
         let mut h = harness(document());
         h.get_by_label("Ж").click();
