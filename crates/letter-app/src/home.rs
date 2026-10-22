@@ -150,6 +150,85 @@ pub fn home(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Vec
     });
     group(ui, "Шрифт", |ui| font_group(ui, state, info, out));
     group(ui, "Абзац", |ui| paragraph_group(ui, info, out));
+    group(ui, "Стили", |ui| styles_group(ui, info, out));
+}
+
+/// Сколько стилей видно в галерее без списка.
+const GALLERY_TILES: usize = 6;
+
+/// Галерея «Стили»: образцы первых стилей и список всех.
+fn styles_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(info.has_document, |ui| {
+            for style in info.styles.iter().take(GALLERY_TILES) {
+                let on = info.style.as_deref() == Some(style.id.as_str());
+                if style_tile(ui, style, on).clicked() {
+                    out.push(RibbonCommand::Style(style.id.clone()));
+                }
+            }
+        });
+        drop_down(ui, info.has_document, "Все стили", |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(320.0)
+                .show(ui, |ui| {
+                    for style in &info.styles {
+                        let on = info.style.as_deref() == Some(style.id.as_str());
+                        if ui
+                            .selectable_label(on, sample_text(style, &style.name))
+                            .clicked()
+                        {
+                            out.push(RibbonCommand::Style(style.id.clone()));
+                            ui.close();
+                        }
+                    }
+                });
+        });
+    });
+}
+
+/// Образец текста в стиле (размер ужат, чтобы влезть в ленту).
+fn sample_text(style: &crate::styles::GalleryStyle, text: &str) -> RichText {
+    let mut text = RichText::new(text)
+        .size(style.size.clamp(9.0, 13.0))
+        .color(style.color);
+    if style.bold {
+        text = text.strong();
+    }
+    if style.italic {
+        text = text.italics();
+    }
+    text
+}
+
+/// Плитка галереи: образец «АаБбВв» и название стиля.
+fn style_tile(ui: &mut Ui, style: &crate::styles::GalleryStyle, on: bool) -> egui::Response {
+    let response = ui
+        .vertical(|ui| {
+            ui.set_width(66.0);
+            ui.add_sized(
+                vec2(66.0, 30.0),
+                egui::Button::selectable(on, sample_text(style, "АаБбВв"))
+                    .wrap_mode(egui::TextWrapMode::Truncate),
+            )
+        })
+        .inner;
+    let name = ui.painter().layout_no_wrap(
+        style.name.clone(),
+        egui::TextStyle::Small.resolve(ui.style()),
+        Color32::from_gray(60),
+    );
+    let at = egui::pos2(
+        response.rect.center().x - name.size().x.min(66.0) / 2.0,
+        response.rect.bottom() + 1.0,
+    );
+    ui.painter()
+        .with_clip_rect(response.rect.expand2(vec2(0.0, 14.0)))
+        .galley(at, name, Color32::from_gray(60));
+    // Для программ чтения с экрана (и тестов) кнопка называется по стилю.
+    let enabled = ui.is_enabled();
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, on, &style.name));
+    response.on_hover_text(&style.name)
 }
 
 /// Межстрочные интервалы в меню, как в Word.

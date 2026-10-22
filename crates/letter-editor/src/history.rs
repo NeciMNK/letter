@@ -14,7 +14,9 @@ use crate::edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, split_paragraph,
     top_level,
 };
-use crate::format::{ParagraphFormat, RunFormat, align_paragraphs, format_paragraphs, format_runs};
+use crate::format::{
+    ParagraphFormat, RunFormat, align_paragraphs, apply_style, format_paragraphs, format_runs,
+};
 use crate::selection::Selection;
 
 /// Правка документа.
@@ -40,6 +42,8 @@ pub enum Command {
     Align(Alignment),
     /// Поменять отступы и интервалы абзацев выделенного.
     Paragraph(ParagraphFormat),
+    /// Применить стиль с этим идентификатором.
+    Style(String),
 }
 
 /// Сколько шагов помнить.
@@ -141,7 +145,7 @@ impl History {
         // Оформление меняет выделенное, а не заменяет его.
         let formatting = matches!(
             command,
-            Command::Format(_) | Command::Align(_) | Command::Paragraph(_)
+            Command::Format(_) | Command::Align(_) | Command::Paragraph(_) | Command::Style(_)
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -182,6 +186,10 @@ impl History {
                 format_paragraphs(doc, start, end, *format);
                 Some(selection)
             }
+            Command::Style(id) => {
+                apply_style(doc, start, end, id);
+                Some(selection)
+            }
             _ => None,
         };
         let focus = match &command {
@@ -194,7 +202,9 @@ impl History {
             Command::DeleteForward => delete_forward(doc, at),
             Command::Paste(fragment) => insert_fragment(doc, at, fragment),
             Command::PasteText(text) => insert_plain_text(doc, at, text),
-            Command::Format(_) | Command::Align(_) | Command::Paragraph(_) => at,
+            Command::Format(_) | Command::Align(_) | Command::Paragraph(_) | Command::Style(_) => {
+                at
+            }
         };
         let after = after.unwrap_or(Selection::caret(focus));
 

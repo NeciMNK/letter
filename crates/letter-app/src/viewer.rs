@@ -887,6 +887,7 @@ impl Viewer {
         if let Some(document) = &self.document {
             info.has_document = true;
             info.can_undo = document.history.can_undo();
+            info.styles = crate::styles::gallery(&document.doc);
             info.can_redo = document.history.can_redo();
             info.has_selection = !document.selection().is_empty();
             if let Some((paragraph, run)) = formatting_at(&document.doc, document.cursor) {
@@ -899,6 +900,7 @@ impl Viewer {
                 info.font = run.fonts.ascii;
                 info.size = run.size.0;
                 info.alignment = Some(paragraph.alignment);
+                info.style = paragraph.style.clone();
                 info.line_spacing = Some(paragraph.line_spacing);
                 info.space_before = paragraph.space_before.0;
                 info.space_after = paragraph.space_after.0;
@@ -946,6 +948,7 @@ impl Viewer {
                 RibbonCommand::Paragraph(format) => {
                     actions.push(Action::Edit(Command::Paragraph(format)));
                 }
+                RibbonCommand::Style(id) => actions.push(Action::Edit(Command::Style(id))),
             }
         }
         self.apply_actions(ctx, actions);
@@ -1526,7 +1529,10 @@ mod tests {
                 RibbonCommand::Paragraph(ParagraphFormat::SpaceBefore(letter_model::Twips(240))),
             ],
         );
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Style("Heading1".into())]);
         let info = viewer.ribbon_info();
+        assert_eq!(info.style.as_deref(), Some("Heading1"));
+        assert!(info.styles.iter().any(|s| s.name == "Заголовок 1"));
         assert_eq!(info.line_spacing, Some(letter_model::LineSpacing::DOUBLE));
         assert_eq!(info.space_before, 240);
         let document = viewer.document.as_mut().unwrap();
