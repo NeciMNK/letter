@@ -66,6 +66,8 @@ pub fn table() -> Vec<Shortcut> {
         local(CTRL, Key::Backspace, C::DeleteWord { forward: false }),
         local(CTRL, Key::Delete, C::DeleteWord { forward: true }),
         local(CTRL_SHIFT, Key::Space, C::Insert("\u{a0}")),
+        local(CTRL_SHIFT, Key::Minus, C::Insert("\u{2011}")),
+        local(CTRL, Key::Minus, C::Insert("\u{ad}")),
         local(CTRL_SHIFT, Key::Num8, C::ToggleMarks),
         local(Modifiers::NONE, Key::F9, C::UpdateFields),
         local(
@@ -182,6 +184,15 @@ mod tests {
         assert_eq!(
             press(Key::Equals, CTRL),
             Some(RibbonCommand::Format(RunFormat::Subscript))
+        );
+        // Неразрывный дефис и мягкий перенос.
+        assert_eq!(
+            find(&table(), Key::Minus, Some(Key::Minus), CTRL_SHIFT, false),
+            Some(RibbonCommand::Insert("\u{2011}"))
+        );
+        assert_eq!(
+            press(Key::Minus, CTRL),
+            Some(RibbonCommand::Insert("\u{ad}"))
         );
         // Без Shift место клавиши не смотрим: при другой латинской
         // раскладке буквы стоят иначе.

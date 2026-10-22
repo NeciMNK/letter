@@ -505,6 +505,29 @@ fn new_watermark_survives() {
 }
 
 #[test]
+fn special_hyphens_survive() {
+    let mut doc = Document::new();
+    doc.sections[0].blocks = vec![Paragraph::text("a\u{2011}b\u{ad}c").into()];
+    let parts = zip_parts(&write_bytes(&doc).unwrap());
+    let xml = String::from_utf8_lossy(&parts["word/document.xml"]).into_owned();
+    assert!(xml.contains("<w:t>a</w:t><w:noBreakHyphen/><w:t>b</w:t><w:softHyphen/>"));
+    let reopened = round_trip(&doc);
+    let Some(Block::Paragraph(p)) = reopened.sections[0].blocks.first() else {
+        panic!("нет абзаца");
+    };
+    let text: String = p
+        .runs()
+        .flat_map(|r| &r.content)
+        .filter_map(|c| match c {
+            RunContent::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "a\u{2011}b\u{ad}c");
+    assert_eq!(round_trip(&reopened), reopened);
+}
+
+#[test]
 fn styles_are_added_to_a_file_without_them() {
     // empty.docx от python-docx содержит стили; убираем их из пакета,
     // как будто файл пришёл из программы, которая стилей не пишет.

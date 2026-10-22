@@ -1,6 +1,6 @@
 //! Знаки форматирования (кнопка «¶» на ленте): точки на месте
 //! пробелов, стрелки на месте табуляций, «¶» в конце абзаца и «↵» на
-//! месте разрыва строки. Рисуются только на экране.
+//! месте разрыва строки, «¬» на месте мягкого переноса. Рисуются только на экране.
 
 use letter_layout::{LineEnd, LineItem, Page};
 
@@ -11,6 +11,8 @@ pub enum MarkKind {
     Space,
     /// Неразрывный пробел: кружок.
     NonBreakingSpace,
+    /// Мягкий перенос, на котором строка не перенесена: «¬».
+    SoftHyphen,
     /// Табуляция: стрелка вправо.
     Tab,
     /// Конец абзаца: «¶».
@@ -25,6 +27,7 @@ impl MarkKind {
         match self {
             MarkKind::Space => '·',
             MarkKind::NonBreakingSpace => '°',
+            MarkKind::SoftHyphen => '¬',
             MarkKind::Tab => '→',
             MarkKind::Paragraph => '¶',
             MarkKind::LineBreak => '↵',
@@ -70,15 +73,24 @@ pub fn formatting_marks(page: &Page) -> Vec<Mark> {
                 LineItem::Text(text) => {
                     let mut pen = text.x;
                     for glyph in &text.run.glyphs {
-                        let kind = match line
-                            .text
-                            .get(glyph.cluster..)
-                            .and_then(|t| t.chars().next())
-                        {
-                            Some(' ') => Some(MarkKind::Space),
-                            Some('\u{a0}') => Some(MarkKind::NonBreakingSpace),
-                            _ => None,
-                        };
+                        let kind =
+                            match line
+                                .text
+                                .get(glyph.cluster..)
+                                .and_then(|t| t.chars().next())
+                            {
+                                Some(' ') => Some(MarkKind::Space),
+                                Some('\u{a0}') => Some(MarkKind::NonBreakingSpace),
+                                // На месте переноса уже виден дефис.
+                                Some('\u{ad}')
+                                    if !text.run.glyphs.iter().any(|g| {
+                                        g.cluster == glyph.cluster && g.x_advance > 0.0
+                                    }) =>
+                                {
+                                    Some(MarkKind::SoftHyphen)
+                                }
+                                _ => None,
+                            };
                         if let Some(kind) = kind {
                             marks.push(mark(kind, pen + glyph.x_advance / 2.0, text.run.size));
                         }

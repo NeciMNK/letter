@@ -480,7 +480,7 @@ fn run_xml(run: &Run) -> String {
     let mut out = run_props(&run.props);
     for item in &run.content {
         match item {
-            RunContent::Text(text) => out.push_str(&text_element(text)),
+            RunContent::Text(text) => out.push_str(&text_xml(text)),
             RunContent::Tab => out.push_str("<w:tab/>"),
             RunContent::Break(BreakKind::Line) => out.push_str("<w:br/>"),
             RunContent::Break(BreakKind::Page) => out.push_str(r#"<w:br w:type="page"/>"#),
@@ -539,6 +539,30 @@ fn field_char(c: &FieldChar) -> String {
 }
 
 /// `w:t`. Пробелы по краям и подряд Word сохраняет только с `xml:space`.
+/// Текст с неразрывными дефисами (U+2011) и мягкими переносами (U+00AD):
+/// они записываются отдельными элементами `w:noBreakHyphen` и
+/// `w:softHyphen`, как в Word.
+fn text_xml(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(['\u{2011}', '\u{ad}']) {
+        if i > 0 {
+            out.push_str(&text_element(&rest[..i]));
+        }
+        let c = rest[i..].chars().next().unwrap_or_default();
+        out.push_str(if c == '\u{ad}' {
+            "<w:softHyphen/>"
+        } else {
+            "<w:noBreakHyphen/>"
+        });
+        rest = &rest[i + c.len_utf8()..];
+    }
+    if !rest.is_empty() || out.is_empty() {
+        out.push_str(&text_element(rest));
+    }
+    out
+}
+
 fn text_element(text: &str) -> String {
     let needs_preserve = text.starts_with(char::is_whitespace)
         || text.ends_with(char::is_whitespace)
@@ -1051,6 +1075,11 @@ mod tests {
         assert_eq!(text_element(" x"), r#"<w:t xml:space="preserve"> x</w:t>"#);
         // Управляющие символы запрещены в XML — их выбрасываем.
         assert_eq!(text_element("a\u{1}b"), "<w:t>ab</w:t>");
+        assert_eq!(
+            text_xml("a\u{2011}b\u{ad}"),
+            "<w:t>a</w:t><w:noBreakHyphen/><w:t>b</w:t><w:softHyphen/>"
+        );
+        assert_eq!(text_xml(""), "<w:t></w:t>");
         assert_eq!(escape_attr("\"a\"\tb\n"), "&quot;a&quot;&#9;b&#10;");
         assert_eq!(escape_text("\r"), "&#13;");
     }
