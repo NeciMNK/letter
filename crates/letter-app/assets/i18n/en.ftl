@@ -714,3 +714,14 @@ page-break-hint = Start the next page at the cursor (Ctrl+Enter)
 keytip-insert-cover = V
 keytip-insert-blank-page = NP
 keytip-insert-page-break = B
+
+# Layout: paragraph
+layout-indent = Indent
+layout-indent-left = Left:
+layout-indent-right = Right:
+layout-space-before = Before:
+layout-space-after = After:
+keytip-layout-indent-left = IL
+keytip-layout-indent-right = IR
+keytip-layout-space-before = SB
+keytip-layout-space-after = SA

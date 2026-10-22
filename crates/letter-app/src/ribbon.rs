@@ -292,6 +292,10 @@ pub struct RibbonInfo {
     pub title_page: bool,
     /// В документе включена автоматическая расстановка переносов.
     pub auto_hyphenation: bool,
+    /// Отступ слева абзаца с курсором, твипы.
+    pub indent_left: i32,
+    /// Отступ справа абзаца с курсором, твипы.
+    pub indent_right: i32,
 }
 
 /// Состояние ленты.

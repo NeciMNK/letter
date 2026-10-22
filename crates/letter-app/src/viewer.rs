@@ -1746,6 +1746,8 @@ impl Viewer {
                 info.line_spacing = Some(paragraph.line_spacing);
                 info.space_before = paragraph.space_before.0;
                 info.space_after = paragraph.space_after.0;
+                info.indent_left = paragraph.indent_left.0;
+                info.indent_right = paragraph.indent_right.0;
             }
             info.list = list_kind(&document.doc, document.cursor.paragraph);
             info.in_table = letter_editor::in_table(&document.doc, document.cursor.paragraph);
