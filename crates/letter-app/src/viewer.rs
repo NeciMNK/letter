@@ -32,7 +32,7 @@ use letter_editor::{
     picture_at_point, picture_ref, select_all, selected_picture, selection_rects, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
-use letter_model::{Alignment, Document, Statistics};
+use letter_model::{Alignment, BreakKind, Document, Statistics};
 use letter_render::{MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, formatting_marks};
 
 use crate::backstage::{Backstage, BackstageInfo, DocumentInfo, Page};
@@ -1264,6 +1264,8 @@ impl Viewer {
             info.picture_wrap = selected_picture(&document.layout, selection)
                 .and_then(|p| picture_ref(&document.doc, p.at))
                 .map(PictureWrap::of);
+            info.section =
+                letter_editor::section_props(&document.doc, document.cursor.paragraph).cloned();
         }
         info
     }
@@ -2106,7 +2108,11 @@ fn key_action(event: &egui::Event, screen: f32) -> Option<Action> {
             ..
         } => {
             let plain = !modifiers.command && !modifiers.alt;
+            let command = modifiers.command && !modifiers.alt;
             let edit = match key {
+                // Ctrl+Enter — разрыв страницы, Ctrl+Shift+Enter — колонки.
+                Key::Enter if command && modifiers.shift => Some(Command::Break(BreakKind::Column)),
+                Key::Enter if command => Some(Command::Break(BreakKind::Page)),
                 Key::Enter if plain && modifiers.shift => Some(Command::LineBreak),
                 Key::Enter if plain => Some(Command::SplitParagraph),
                 Key::Tab if plain => Some(Command::Tab {
@@ -2583,7 +2589,14 @@ mod tests {
             action(press(Key::Delete, none)),
             Some(Action::Edit(Command::DeleteForward))
         );
-        assert_eq!(action(press(Key::Enter, Modifiers::COMMAND)), None);
+        assert_eq!(
+            action(press(Key::Enter, Modifiers::COMMAND)),
+            Some(Action::Edit(Command::Break(BreakKind::Page)))
+        );
+        assert_eq!(
+            action(press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT)),
+            Some(Action::Edit(Command::Break(BreakKind::Column)))
+        );
         assert_eq!(
             action(press(Key::ArrowLeft, none)),
             Some(Action::Move(Motion::Left, false))
