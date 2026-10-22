@@ -28,9 +28,10 @@ use eframe::egui::{
 };
 use letter_editor::{
     Command, FieldContext, History, ListKind, Motion, PictureBox, PictureWrap, Position, RunFormat,
-    Selection, anchor_with_wrap, can_continue_numbering, caret, copy_range, find_all, find_next,
-    formatting_at, hit_test, language_at, list_kind, move_cursor, moved_anchor, paragraph_at,
-    picture_at_point, picture_ref, select_all, selected_picture, selection_rects, word_at,
+    Selection, anchor_with_wrap, bookmark_position, bookmarks, can_continue_numbering, caret,
+    copy_range, find_all, find_next, formatting_at, hit_test, language_at, link_at, list_kind,
+    move_cursor, moved_anchor, paragraph_at, picture_at_point, picture_ref, select_all,
+    selected_picture, selection_rects, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
 use letter_model::{
@@ -45,6 +46,7 @@ use crate::files::{self, Autosave, OPEN_FILTERS, Recent, Recovered, SAVE_FILTERS
 use crate::find::{FindAction, FindDialog};
 use crate::font_dialog::{FontDialog, FontValues};
 use crate::icons::{self, Icon};
+use crate::link_dialog::{LinkAction, LinkDialog};
 use crate::paragraph_dialog::{ParagraphDialog, ParagraphValues};
 use crate::picture::{Handle, PictureDrag};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
@@ -132,6 +134,17 @@ fn caret_phase(elapsed: f64) -> (bool, f64) {
     } else {
         (false, 2.0 * CARET_BLINK - phase)
     }
+}
+
+/// Переходит по ссылке у места `at`: адрес открывается в браузере;
+/// для ссылки на закладку возвращает, где закладка.
+fn follow_link(ctx: &Context, doc: &Document, at: Position) -> Option<Position> {
+    let (link, _, _) = link_at(doc, at)?;
+    if link.target.is_some() {
+        ctx.open_url(egui::OpenUrl::new_tab(link.address()));
+        return None;
+    }
+    bookmark_position(doc, link.anchor.as_deref()?)
 }
 
 /// Открытый документ.
@@ -340,6 +353,20 @@ impl OpenDocument {
         if let Some(header) = header {
             self.begin_story(page, header, shaper, library);
         }
+    }
+
+    /// Переходит по ссылке у места `at`: адрес открывается в браузере,
+    /// закладка — в документе (курсор встаёт на неё). `true` — курсор
+    /// переставлен.
+    fn follow_link(&mut self, ctx: &Context, at: Position) -> bool {
+        let Some(position) = follow_link(ctx, &self.doc, at) else {
+            return false;
+        };
+        self.cursor = position;
+        self.anchor = position;
+        self.goal_x = None;
+        self.history.seal();
+        true
     }
 
     /// Что нужно для обновления полей (F9): время, файл, страницы.
@@ -582,6 +609,8 @@ pub struct Viewer {
     ruler_state: RulerState,
     /// Окно «Абзац».
     paragraph_dialog: ParagraphDialog,
+    /// Окно «Ссылка».
+    link_dialog: LinkDialog,
     /// Окно «Шрифт».
     font_dialog: FontDialog,
     /// Тема, уже переданная egui.
@@ -761,6 +790,7 @@ impl Viewer {
             ruler_page: None,
             ruler_state: RulerState::default(),
             paragraph_dialog: ParagraphDialog::default(),
+            link_dialog: LinkDialog::default(),
             font_dialog: FontDialog::default(),
             applied_theme: None,
         }
@@ -1042,6 +1072,7 @@ impl Viewer {
             && self.ask.is_none()
             && !self.font_dialog.open
             && !self.paragraph_dialog.open
+            && !self.link_dialog.open
             && (self.ribbon.keytips.active() || !ctx.egui_wants_keyboard_input())
         {
             let commands = self.ribbon.handle_keys(&ctx);
@@ -1082,6 +1113,19 @@ impl Viewer {
             if let Some(changes) = self.paragraph_dialog.ui(&ctx) {
                 let format = letter_editor::ParagraphFormat::Set(changes);
                 self.run_ribbon(&ctx, vec![RibbonCommand::Paragraph(format)]);
+            }
+            if let Some(action) = self.link_dialog.ui(&ctx) {
+                let command = match action {
+                    LinkAction::Apply { link, text } => Command::Link {
+                        link: Some(Box::new(link)),
+                        text,
+                    },
+                    LinkAction::Remove => Command::Link {
+                        link: None,
+                        text: None,
+                    },
+                };
+                self.run_ribbon(&ctx, vec![RibbonCommand::Edit(command)]);
             }
             egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
             egui::CentralPanel::no_frame()
@@ -1419,6 +1463,43 @@ impl Viewer {
         self.apply_actions(ctx, actions);
     }
 
+    /// Окно «Ссылка»: с текстом выделенного (или ссылки у курсора —
+    /// тогда она выделяется целиком) и закладками документа.
+    fn open_link_dialog(&mut self) {
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        let selection = document.selection();
+        let (start, end) = (selection.start(), selection.end());
+        let existing = link_at(&document.doc, start);
+        let text_of = |from: Position, to: Position| {
+            let piece = copy_range(&document.doc, from, to);
+            piece
+                .blocks()
+                .map(letter_model::Block::plain_text)
+                .collect::<Vec<_>>()
+                .join("")
+        };
+        let text = match &existing {
+            Some((_, from, to)) if selection.is_empty() => {
+                let text = text_of(*from, *to);
+                document.anchor = *from;
+                document.cursor = *to;
+                Some(text)
+            }
+            _ if selection.is_empty() => Some(String::new()),
+            _ if start.paragraph == end.paragraph => Some(text_of(start, end)),
+            _ => None,
+        };
+        let names = bookmarks(&document.doc)
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| !name.starts_with('_'))
+            .collect();
+        self.link_dialog
+            .show(text, existing.map(|(link, _, _)| link), names);
+    }
+
     /// «Вставка → Рисунки»: окно выбора картинки, потом вставка.
     fn pick_picture(&mut self, ctx: &Context) {
         if self.document.is_none() {
@@ -1725,6 +1806,23 @@ impl Viewer {
                 RibbonCommand::Find => self.find.show(false),
                 RibbonCommand::Replace => self.find.show(true),
                 RibbonCommand::SelectAll => actions.push(Action::SelectAll),
+                RibbonCommand::LinkDialog => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    self.open_link_dialog();
+                }
+                RibbonCommand::OpenLink => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &mut self.document {
+                        let at = document.cursor;
+                        if document.follow_link(ctx, at) {
+                            self.reveal_cursor = true;
+                        }
+                    }
+                }
+                RibbonCommand::RemoveLink => actions.push(Action::Edit(Command::Link {
+                    link: None,
+                    text: None,
+                })),
                 RibbonCommand::ParagraphDialog => {
                     if let Some(document) = &self.document
                         && let Some((props, _)) =
@@ -2018,6 +2116,8 @@ impl Viewer {
         // Двойной щелчок по колонтитулу открывает его для правки
         // (страница, верхний ли, место щелчка), по тексту — закрывает.
         let mut story_request: Option<Option<(usize, bool, Vec2)>> = None;
+        // Ctrl+щелчок по ссылке на закладку: показать курсор на ней.
+        let mut reveal = false;
         let output = area.show_viewport(ui, |ui, viewport| {
             let origin = ui.max_rect().min;
             let response = ui
@@ -2040,12 +2140,13 @@ impl Viewer {
             // с Shift — выделяет до места щелчка. Если тянуть мышь с
             // нажатой кнопкой, выделение идёт за ней.
             let now = ui.input(|i| i.time);
-            let (press, dragging, pointer, shift) = ui.input(|i| {
+            let (press, dragging, pointer, shift, command) = ui.input(|i| {
                 (
                     i.pointer.primary_pressed(),
                     i.pointer.primary_down(),
                     i.pointer.interact_pos(),
                     i.modifiers.shift,
+                    i.modifiers.command,
                 )
             });
             let spot = pointer.and_then(|pointer| {
@@ -2175,6 +2276,43 @@ impl Viewer {
                 document.goal_x = None;
                 on_picture = true;
             }
+            // Ссылка под указателем: подсказка с адресом, Ctrl+щелчок —
+            // переход. Пока кнопка нажата после перехода, выделение не идёт.
+            let followed_id = egui::Id::NULL.with("letter-link-followed");
+            let mut followed = ui.data(|d| d.get_temp::<bool>(followed_id).unwrap_or(false));
+            if !dragging {
+                followed = false;
+            }
+            let link_under = under_pointer
+                .filter(|_| !on_picture && response.hovered())
+                .and_then(|p| link_at(&document.doc, p));
+            if let Some((link, _, _)) = &link_under {
+                if command {
+                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                }
+                if !dragging {
+                    let text = format!("{}\n{}", link.address(), tr("link-follow-hint"));
+                    response.clone().on_hover_text_at_pointer(text);
+                }
+                if press
+                    && command
+                    && let Some(at) = under_pointer
+                {
+                    followed = true;
+                    if let Some(position) = follow_link(ui.ctx(), &document.doc, at) {
+                        document.cursor = position;
+                        document.anchor = position;
+                        document.goal_x = None;
+                        document.history.seal();
+                        document.cursor_since = now;
+                        reveal = true;
+                    }
+                }
+            }
+            ui.data_mut(|d| d.insert_temp(followed_id, followed));
+            if followed {
+                on_picture = true;
+            }
             if let Some(position) = under_pointer.filter(|_| !on_picture) {
                 if press && response.hovered() {
                     document.cursor = position;
@@ -2230,11 +2368,12 @@ impl Viewer {
                 }
             }
             let has_selection = document.anchor != document.cursor;
+            let on_link = link_at(&document.doc, document.cursor).is_some();
             let paragraph = document.cursor.paragraph;
             let numbered = (list_kind(&document.doc, paragraph) == Some(ListKind::Numbered))
                 .then(|| can_continue_numbering(&document.doc, paragraph));
             response.context_menu(|ui| {
-                crate::context_menu::context_menu(ui, has_selection, numbered, &mut menu);
+                crate::context_menu::context_menu(ui, has_selection, numbered, on_link, &mut menu);
             });
 
             // Тень листа выходит за его края: рисуем и чуть невидимые.
@@ -2326,6 +2465,9 @@ impl Viewer {
             }
         });
         self.ruler_page = ruler_page;
+        if reveal {
+            self.reveal_cursor = true;
+        }
         if let (Some(request), Some(document)) = (story_request, &mut self.document) {
             match request {
                 Some((page, header, local)) => {
@@ -3315,6 +3457,56 @@ mod tests {
         frame(&ctx, &mut viewer, key(Key::Z, Modifiers::COMMAND));
         assert_eq!(header_text(&viewer), "Header text");
         assert_eq!(shown_header(&viewer), "Header text");
+    }
+
+    #[test]
+    fn links_are_followed_and_edited() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("links.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let set_cursor = |viewer: &mut Viewer, at: Position| {
+            let document = viewer.document.as_mut().unwrap();
+            document.cursor = at;
+            document.anchor = at;
+        };
+        // Ссылка на закладку переводит курсор на закладку.
+        set_cursor(&mut viewer, Position::new(1, 8));
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::OpenLink]);
+        assert_eq!(viewer.cursor(), Some(Position::new(2, 8)));
+
+        // Окно на ссылке выделяет её целиком.
+        set_cursor(&mut viewer, Position::new(0, 9));
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::LinkDialog]);
+        assert!(viewer.link_dialog.open);
+        assert!(viewer.link_dialog.editing);
+        assert_eq!(viewer.link_dialog.text, "example site");
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(document.anchor, Position::new(0, 6));
+        assert_eq!(document.cursor, Position::new(0, 18));
+        viewer.link_dialog.open = false;
+
+        // Новая ссылка с текстом у курсора, потом удаление.
+        set_cursor(&mut viewer, Position::new(0, 19));
+        let link = letter_model::Hyperlink::to("https://letter.example/");
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::Edit(Command::Link {
+                link: Some(Box::new(link.clone())),
+                text: Some(" more".into()),
+            })],
+        );
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(
+            document.doc.sections[0].blocks[0].plain_text(),
+            "Site: example site. more"
+        );
+        let found = link_at(&document.doc, Position::new(0, 21)).unwrap();
+        assert_eq!(found.0, link);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::RemoveLink]);
+        let document = viewer.document.as_ref().unwrap();
+        assert!(link_at(&document.doc, Position::new(0, 21)).is_none());
+        assert!(link_at(&document.doc, Position::new(0, 9)).is_some());
     }
 
     #[test]

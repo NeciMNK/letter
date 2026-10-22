@@ -8,8 +8,8 @@
 //! Набор текста объединяется в один шаг по словам, как в Word.
 
 use letter_model::{
-    Alignment, Anchor, Block, BreakKind, Color, Document, HeaderFooter, HeaderFooterKind, Picture,
-    Section, SectionStart,
+    Alignment, Anchor, Block, BreakKind, Color, Document, HeaderFooter, HeaderFooterKind,
+    Hyperlink, Picture, Section, SectionStart,
 };
 
 use crate::clipboard::{insert_fragment, insert_plain_text};
@@ -22,6 +22,7 @@ use crate::fields::{FieldContext, update_fields};
 use crate::format::{
     ParagraphFormat, RunFormat, align_paragraphs, apply_style, format_paragraphs, format_runs,
 };
+use crate::links::{link_at, set_link};
 use crate::lists::{
     ListKind, change_list_level, continue_numbering, multilevel_list, restart_numbering,
     tab_changes_level, toggle_list,
@@ -146,6 +147,15 @@ pub enum Command {
         section: usize,
         /// Включить.
         on: bool,
+    },
+    /// Поставить ссылку (`None` — снять). С текстом — заменить им
+    /// выделенное и поставить ссылку на него; без текста — на выделенное,
+    /// а если ничего не выделено — на всю ссылку у курсора.
+    Link {
+        /// Ссылка.
+        link: Option<Box<Hyperlink>>,
+        /// Текст ссылки.
+        text: Option<String>,
     },
     /// Обновить поля в абзацах выделенного (F9).
     UpdateFields(Box<FieldContext>),
@@ -302,6 +312,7 @@ impl History {
                 | Command::HeaderFooter { .. }
                 | Command::TitlePage { .. }
                 | Command::UpdateFields(_)
+                | Command::Link { text: None, .. }
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -455,6 +466,14 @@ impl History {
                 set_title_page(doc, *section, *on);
                 Some(selection)
             }
+            Command::Link { link, text: None } => {
+                let (from, to) = match link_at(doc, selection.focus) {
+                    Some((_, from, to)) if selection.is_empty() => (from, to),
+                    _ => (start, end),
+                };
+                set_link(doc, from, to, link.as_deref());
+                Some(selection)
+            }
             Command::UpdateFields(context) => {
                 update_fields(doc, start.paragraph, end.paragraph, context);
                 Some(Selection {
@@ -467,6 +486,14 @@ impl History {
         let focus = match &command {
             _ if after.is_some() => at,
             Command::Type(text) => insert_text(doc, at, text),
+            Command::Link {
+                link,
+                text: Some(text),
+            } => {
+                let end = insert_text(doc, at, text);
+                set_link(doc, at, end, link.as_deref());
+                end
+            }
             Command::SplitParagraph => split_paragraph(doc, at),
             Command::LineBreak => insert_line_break(doc, at),
             Command::DeleteBackward | Command::DeleteForward if erasing => at,
@@ -502,7 +529,8 @@ impl History {
             | Command::PageSetup(_)
             | Command::HeaderFooter { .. }
             | Command::TitlePage { .. }
-            | Command::UpdateFields(_) => at,
+            | Command::UpdateFields(_)
+            | Command::Link { text: None, .. } => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
 

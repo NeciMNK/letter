@@ -21,6 +21,7 @@ mod insert;
 mod keytips;
 mod language;
 mod layout;
+mod link_dialog;
 mod paragraph_dialog;
 mod picture;
 mod ribbon;

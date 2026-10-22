@@ -62,6 +62,7 @@ pub fn table() -> Vec<Shortcut> {
         local(CTRL, Key::A, C::SelectAll),
         local(CTRL, Key::F, C::Find),
         local(CTRL, Key::H, C::Replace),
+        local(CTRL, Key::K, C::LinkDialog),
         local(CTRL, Key::Backspace, C::DeleteWord { forward: false }),
         local(CTRL, Key::Delete, C::DeleteWord { forward: true }),
         local(CTRL_SHIFT, Key::Space, C::Insert("\u{a0}")),
