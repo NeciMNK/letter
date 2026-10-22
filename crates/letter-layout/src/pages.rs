@@ -32,9 +32,11 @@
 use std::sync::Arc;
 
 use letter_model::{
-    Alignment, Block, Document, FirstLineIndent, LevelSuffix, LineSpacing, ListCounters, ListLabel,
-    Numbering, PageSize, Paragraph, ResolvedFonts, ResolvedRunProps, RunContent, RunFonts,
-    RunProps, Section, Settings, Styles, TabStopKind, Theme, Twips, VerticalAlign,
+    Alignment, Anchor, AnchorAlign, Block, Document, EMU_PER_POINT, FirstLineIndent,
+    HorizontalFrom, ImageData, LevelSuffix, LineSpacing, ListCounters, ListLabel, Numbering,
+    PageSize, Paragraph, Placement, ResolvedFonts, ResolvedRunProps, RunContent, RunFonts,
+    RunProps, Section, Settings, Styles, TabStopKind, Theme, Twips, VerticalAlign, VerticalFrom,
+    Wrap,
 };
 
 use crate::fonts::FontLibrary;
@@ -83,6 +85,34 @@ pub struct Page {
     pub lines: Vec<PageLine>,
     /// Заливка ячеек и линии границ таблиц.
     pub shapes: Vec<Shape>,
+    /// Плавающие рисунки в порядке привязки.
+    pub floats: Vec<Float>,
+}
+
+/// Плавающий рисунок на странице. Координаты — пт от левого верхнего
+/// угла листа.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Float {
+    /// Левый край.
+    pub x: f32,
+    /// Верхний край.
+    pub y: f32,
+    /// Ширина.
+    pub width: f32,
+    /// Высота.
+    pub height: f32,
+    /// Картинка (`None` — заглушка).
+    pub image: Option<Arc<ImageData>>,
+    /// Обтекание текстом.
+    pub wrap: Wrap,
+    /// За текстом (рисуется под ним).
+    pub behind: bool,
+    /// Расстояние до текста с каждой стороны, пт.
+    pub distance: Margins,
+    /// Абзац привязки (номер по порядку в документе).
+    pub paragraph: usize,
+    /// Где знак привязки в тексте абзаца, байты.
+    pub at: usize,
 }
 
 /// Прямоугольник на странице: заливка или линия границы. Координаты —
@@ -443,6 +473,71 @@ fn collect_paragraphs<'a>(
     }
 }
 
+/// Где в строке знак с этим смещением, пт от левого поля.
+fn anchor_x(line: &Line, at: usize) -> f32 {
+    line.items
+        .iter()
+        .find_map(|item| match item {
+            LineItem::Object(o) if o.at == at => Some(o.x),
+            _ => None,
+        })
+        .unwrap_or(line.x)
+}
+
+/// Место плавающего рисунка на странице: `line_top` — верх строки
+/// с привязкой, `paragraph_top` — верх абзаца, `char_x` — знак привязки
+/// (пт от края листа).
+fn place_float(
+    spec: &FloatSpec,
+    g: &Geometry,
+    line_top: f32,
+    paragraph_top: f32,
+    char_x: f32,
+    paragraph: usize,
+) -> Float {
+    let m = g.margins;
+    let (h_start, h_size) = match spec.anchor.horizontal.relative {
+        HorizontalFrom::Margin | HorizontalFrom::Column => (m.left, g.text_width()),
+        HorizontalFrom::Page => (0.0, g.width),
+        HorizontalFrom::LeftMargin | HorizontalFrom::InsideMargin => (0.0, m.left),
+        HorizontalFrom::RightMargin | HorizontalFrom::OutsideMargin => (g.width - m.right, m.right),
+        HorizontalFrom::Character => (char_x, 0.0),
+    };
+    let (v_start, v_size) = match spec.anchor.vertical.relative {
+        VerticalFrom::Margin => (m.top, g.height - m.top - m.bottom),
+        VerticalFrom::Page => (0.0, g.height),
+        VerticalFrom::Paragraph => (paragraph_top, 0.0),
+        VerticalFrom::Line => (line_top, 0.0),
+        VerticalFrom::TopMargin | VerticalFrom::InsideMargin => (0.0, m.top),
+        VerticalFrom::BottomMargin | VerticalFrom::OutsideMargin => (g.height - m.bottom, m.bottom),
+    };
+    let points = |emu: i64| emu as f32 / EMU_PER_POINT as f32;
+    let place = |placement: Placement, start: f32, size: f32, length: f32| match placement {
+        Placement::Offset(emu) => start + points(emu),
+        Placement::Align(AnchorAlign::Start | AnchorAlign::Inside) => start,
+        Placement::Align(AnchorAlign::Center) => start + (size - length) / 2.0,
+        Placement::Align(AnchorAlign::End | AnchorAlign::Outside) => start + size - length,
+    };
+    let anchor = &spec.anchor;
+    Float {
+        x: place(anchor.horizontal.placement, h_start, h_size, spec.width),
+        y: place(anchor.vertical.placement, v_start, v_size, spec.height),
+        width: spec.width,
+        height: spec.height,
+        image: spec.image.clone(),
+        wrap: anchor.wrap,
+        behind: anchor.wrap == Wrap::None && anchor.behind_text,
+        distance: Margins {
+            top: points(anchor.distance.top),
+            right: points(anchor.distance.right),
+            bottom: points(anchor.distance.bottom),
+            left: points(anchor.distance.left),
+        },
+        paragraph,
+        at: spec.at,
+    }
+}
+
 /// Размеры листа и полей раздела, пт.
 #[derive(Debug, Clone, Copy)]
 struct Geometry {
@@ -509,6 +604,19 @@ pub(crate) struct Prepared {
     page_break_before: bool,
     widow_control: bool,
     label: Option<Arc<ListMark>>,
+    /// Плавающие рисунки абзаца.
+    floats: Vec<FloatSpec>,
+}
+
+/// Плавающий рисунок абзаца до раскладки по страницам.
+#[derive(Debug, Clone)]
+struct FloatSpec {
+    /// Где знак привязки в тексте абзаца, байты.
+    at: usize,
+    width: f32,
+    height: f32,
+    image: Option<Arc<ImageData>>,
+    anchor: Anchor,
 }
 
 /// Добавляет кусок текста фрагмента: с учётом «все прописные» и разных
@@ -544,6 +652,7 @@ fn prepare(
     let props = doc.resolve_paragraph_in(&paragraph.props, table);
     let mut spans = Vec::new();
     let mut span_props = Vec::new();
+    let mut floats = Vec::new();
     for run in paragraph.runs() {
         let resolved = doc.resolve_run_in(&paragraph.props, &run.props, table);
         let mut text = String::new();
@@ -561,10 +670,20 @@ fn prepare(
                         &std::mem::take(&mut text),
                         &resolved,
                     );
+                    if let Some(anchor) = &picture.anchor {
+                        floats.push(FloatSpec {
+                            at: spans.iter().map(|s: &TextSpan| s.text.len()).sum(),
+                            width: picture.width_points(),
+                            height: picture.height_points(),
+                            image: picture.image.clone(),
+                            anchor: (**anchor).clone(),
+                        });
+                    }
                     let object = InlineObject {
                         width: picture.width_points(),
                         height: picture.height_points(),
                         image: picture.image.clone(),
+                        floating: picture.anchor.is_some(),
                     };
                     let style = text_style(&resolved, &resolved.fonts.h_ansi);
                     spans.push(TextSpan::object(object, style));
@@ -657,6 +776,7 @@ fn prepare(
         page_break_before: props.page_break_before,
         widow_control: props.widow_control,
         label: label.map(|(mark, _)| Arc::new(mark)),
+        floats,
     }
 }
 
@@ -935,6 +1055,9 @@ struct Pager {
     previous_after: f32,
     /// Складывать интервалы между абзацами (иначе — больший из двух).
     add_spacing: bool,
+    /// Верх абзаца на странице (для рисунков «от абзаца»): номер абзаца,
+    /// номер страницы и верх его первой строки на ней.
+    paragraph_top: Option<(usize, usize, f32)>,
 }
 
 impl Pager {
@@ -953,6 +1076,7 @@ impl Pager {
             margins: g.margins,
             lines: Vec::new(),
             shapes: Vec::new(),
+            floats: Vec::new(),
         });
         self.y = g.margins.top;
         self.has_content = false;
@@ -1160,8 +1284,27 @@ impl Pager {
             label: if k == 0 { p.label.clone() } else { None },
             cell: None,
         };
+        let page_index = self.pages.len().saturating_sub(1);
+        if self
+            .paragraph_top
+            .is_none_or(|(p, page, _)| p != paragraph || page != page_index)
+        {
+            self.paragraph_top = Some((paragraph, page_index, top));
+        }
+        let paragraph_top = self.paragraph_top.map_or(top, |(_, _, t)| t);
+        let last = k + 1 == p.lines.len();
+        let anchors: Vec<Float> = p
+            .floats
+            .iter()
+            .filter(|f| line.range.contains(&f.at) || (last && f.at >= line.range.end))
+            .map(|f| {
+                let char_x = g.margins.left + anchor_x(line, f.at);
+                place_float(f, &g, top, paragraph_top, char_x, paragraph)
+            })
+            .collect();
         if let Some(page) = self.pages.last_mut() {
             page.lines.push(placed);
+            page.floats.extend(anchors);
         }
         self.y += height;
         self.has_content = true;
@@ -1288,7 +1431,10 @@ impl Canvas for PageCanvas<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use letter_model::{BreakKind, PageMargins, Run, Section, SectionProps};
+    use letter_model::{AnchorPosition, BreakKind, PageMargins, Run, Section, SectionProps};
+
+    /// Длина знака объекта в байтах.
+    const OBJECT_LEN: usize = letter_model::OBJECT_CHAR.len_utf8();
 
     /// Высота строки Times New Roman 10 пт (шрифт по умолчанию).
     const LINE: f32 = 2355.0 / 2048.0 * 10.0;
@@ -1359,6 +1505,73 @@ mod tests {
         let line = &first.lines[0];
         assert!((line.baseline - (LINE - line.line.descent)).abs() < 1e-3);
         assert_eq!(line.spans.len(), 1);
+    }
+
+    fn floating(
+        horizontal: AnchorPosition<HorizontalFrom>,
+        vertical: AnchorPosition<VerticalFrom>,
+        behind_text: bool,
+    ) -> RunContent {
+        RunContent::Picture(letter_model::Picture {
+            width: 20 * EMU_PER_POINT,
+            height: 10 * EMU_PER_POINT,
+            image: None,
+            relationship: None,
+            raw: None,
+            anchor: Some(Box::new(Anchor {
+                horizontal,
+                vertical,
+                wrap: Wrap::None,
+                behind_text,
+                distance: letter_model::Distance::default(),
+            })),
+        })
+    }
+
+    #[test]
+    fn floating_pictures_are_placed_on_the_page() {
+        let mut anchored = para("ab");
+        if let Some(letter_model::Inline::Run(run)) = anchored.content.first_mut() {
+            run.content.push(floating(
+                AnchorPosition {
+                    relative: HorizontalFrom::Page,
+                    placement: Placement::Offset(50 * EMU_PER_POINT),
+                },
+                AnchorPosition {
+                    relative: VerticalFrom::Paragraph,
+                    placement: Placement::Offset(5 * EMU_PER_POINT),
+                },
+                true,
+            ));
+            run.content.push(RunContent::Text("c".into()));
+            run.content.push(floating(
+                AnchorPosition {
+                    relative: HorizontalFrom::Margin,
+                    placement: Placement::Align(AnchorAlign::Center),
+                },
+                AnchorPosition {
+                    relative: VerticalFrom::Page,
+                    placement: Placement::Align(AnchorAlign::End),
+                },
+                false,
+            ));
+        }
+        let layout = lay(&doc(vec![para("p0"), anchored]));
+        let page = &layout.pages[0];
+        // Плавающий рисунок не занимает места в строке.
+        assert_eq!(pages(&layout), [vec![0, 1]]);
+        assert!((page.lines[1].top - LINE).abs() < 1e-3);
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        let [behind, front] = &page.floats[..] else {
+            panic!("{:?}", page.floats);
+        };
+        assert!(close(behind.x, 50.0) && close(behind.y, LINE + 5.0));
+        assert!(behind.behind && !front.behind);
+        assert_eq!((behind.paragraph, behind.at), (1, 2));
+        assert_eq!(front.at, 2 + OBJECT_LEN + 1);
+        // По центру листа 200 пт и по нижнему краю листа 57,6 пт.
+        assert!(close(front.x, 90.0) && close(front.y, 47.6));
+        assert!(close(front.width, 20.0) && close(front.height, 10.0));
     }
 
     #[test]

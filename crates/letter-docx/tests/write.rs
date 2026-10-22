@@ -26,6 +26,7 @@ const FIXTURES: &[&str] = &[
     "lists.docx",
     "table.docx",
     "image.docx",
+    "floating.docx",
     "header-footer.docx",
     "ru-en.docx",
 ];
@@ -520,6 +521,7 @@ fn pictures_from_another_document_get_their_own_part() {
         image: Some(image.clone()),
         relationship: None,
         raw: None,
+        anchor: None,
     };
     let mut doc = Document::new();
     doc.sections[0].blocks = vec![

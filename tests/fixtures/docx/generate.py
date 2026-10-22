@@ -14,7 +14,9 @@ import sys
 from pathlib import Path
 
 from docx import Document
+from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
+from lxml import etree
 from PIL import Image, ImageDraw
 
 OUT = Path(__file__).resolve().parent
@@ -120,6 +122,69 @@ def image() -> Document:
     return doc
 
 
+def to_anchor(inline, position: str, wrap: str, behind: bool) -> None:
+    """Превращает рисунок в строке (`wp:inline`) в плавающий (`wp:anchor`):
+    `position` — элементы `wp:positionH` и `wp:positionV`, `wrap` —
+    элемент обтекания."""
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    extent = inline.find(qn("wp:extent"))
+    rest = "".join(
+        etree.tostring(child, encoding="unicode")
+        for child in inline
+        if child.tag not in (qn("wp:extent"), qn("wp:effectExtent"))
+    )
+    anchor = parse_xml(
+        f'<wp:anchor {nsdecls("wp", "a", "pic", "r")} distT="0" distB="0" '
+        f'distL="114300" distR="114300" simplePos="0" relativeHeight="1" '
+        f'behindDoc="{int(behind)}" locked="0" layoutInCell="1" allowOverlap="1">'
+        f'<wp:simplePos x="0" y="0"/>{position}'
+        f'<wp:extent cx="{extent.get("cx")}" cy="{extent.get("cy")}"/>'
+        f'<wp:effectExtent l="0" t="0" r="0" b="0"/>{wrap}{rest}</wp:anchor>'
+    )
+    inline.getparent().replace(inline, anchor)
+
+
+def floating() -> Document:
+    """Плавающие рисунки: «вокруг рамки» справа от текста и «за текстом»
+    по центру поля."""
+    doc = new_document("Плавающие рисунки")
+    img = Image.new("RGB", (120, 120), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([10, 10, 110, 110], fill=(0, 150, 80))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    doc.add_paragraph("Floating pictures are anchored to this paragraph.")
+    p = doc.add_paragraph("Square wrap: ")
+    buf.seek(0)
+    run = p.add_run()
+    run.add_picture(buf, width=Inches(1))
+    to_anchor(
+        run._r.find(f".//{qn('wp:inline')}"),
+        '<wp:positionH relativeFrom="page"><wp:posOffset>4572000</wp:posOffset>'
+        "</wp:positionH>"
+        '<wp:positionV relativeFrom="paragraph"><wp:posOffset>127000</wp:posOffset>'
+        "</wp:positionV>",
+        '<wp:wrapSquare wrapText="bothSides"/>',
+        False,
+    )
+    p.add_run(" text after the anchor.")
+    p = doc.add_paragraph("Behind text: ")
+    buf.seek(0)
+    run = p.add_run()
+    run.add_picture(buf, width=Inches(0.5))
+    to_anchor(
+        run._r.find(f".//{qn('wp:inline')}"),
+        '<wp:positionH relativeFrom="margin"><wp:align>center</wp:align></wp:positionH>'
+        '<wp:positionV relativeFrom="margin"><wp:align>bottom</wp:align></wp:positionV>',
+        "<wp:wrapNone/>",
+        True,
+    )
+    doc.add_paragraph("Text after the pictures.")
+    return doc
+
+
 def header_footer() -> Document:
     doc = new_document("Колонтитулы")
     section = doc.sections[0]
@@ -170,6 +235,7 @@ FIXTURES = {
     "lists.docx": lists,
     "table.docx": table,
     "image.docx": image,
+    "floating.docx": floating,
     "header-footer.docx": header_footer,
     "ru-en.docx": mixed_languages,
     "pages.docx": pages,

@@ -28,7 +28,7 @@ pub use lines::{
     TabItem, TabKind, TabLeader, TabStop, TextItem, TextSpan, break_lines,
 };
 pub use pages::{
-    CellArea, DocumentLayout, LayoutCache, Margins, Page, PageLine, Shape, ShapeKind,
+    CellArea, DocumentLayout, Float, LayoutCache, Margins, Page, PageLine, Shape, ShapeKind,
     baseline_rise, layout_document, layout_document_cached,
 };
 pub use shaping::{FontMetrics, ShapedGlyph, ShapedRun, Shaper, TextStyle};

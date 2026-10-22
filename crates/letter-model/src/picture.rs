@@ -8,9 +8,12 @@ use crate::RawXml;
 /// В дюйме 914 400 EMU, в сантиметре — 360 000.
 pub const EMU_PER_POINT: i64 = 12_700;
 
-/// Рисунок, стоящий в строке как буква (`wp:inline` в .docx).
+/// Рисунок: в строке как буква (`wp:inline` в .docx) или плавающий,
+/// со своим местом на странице (`wp:anchor`, см. [`Picture::anchor`]).
 ///
 /// В тексте абзаца рисунок занимает один знак U+FFFC («объект»).
+/// У плавающего рисунка этот знак — только привязка к абзацу: места
+/// в строке он не занимает.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Picture {
     /// Ширина на странице, EMU.
@@ -27,6 +30,128 @@ pub struct Picture {
     /// меняется только размер, а всё остальное (обрезка, эффекты,
     /// замещающий текст) остаётся как было. `None` у нового рисунка.
     pub raw: Option<RawXml>,
+    /// Положение и обтекание плавающего рисунка; `None` — рисунок
+    /// в строке.
+    pub anchor: Option<Box<Anchor>>,
+}
+
+/// Где стоит плавающий рисунок и как его обтекает текст.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Anchor {
+    /// Положение по горизонтали.
+    pub horizontal: AnchorPosition<HorizontalFrom>,
+    /// Положение по вертикали.
+    pub vertical: AnchorPosition<VerticalFrom>,
+    /// Обтекание текстом.
+    pub wrap: Wrap,
+    /// Для обтекания «нет»: рисунок за текстом (иначе — перед ним).
+    pub behind_text: bool,
+    /// Расстояние от текста сверху, снизу, слева и справа, EMU.
+    pub distance: Distance,
+}
+
+/// Положение рисунка по одной оси: от чего отсчитывать и сколько.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnchorPosition<R> {
+    /// От чего отсчитывается положение.
+    pub relative: R,
+    /// Сдвиг или выравнивание.
+    pub placement: Placement,
+}
+
+/// Сдвиг или выравнивание рисунка.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// Сдвиг от начала области, EMU (может быть отрицательным).
+    Offset(i64),
+    /// Выравнивание в области.
+    Align(AnchorAlign),
+}
+
+/// Выравнивание плавающего рисунка в области.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorAlign {
+    /// По левому (верхнему) краю.
+    Start,
+    /// По центру.
+    Center,
+    /// По правому (нижнему) краю.
+    End,
+    /// Внутри (у переплёта; пока как по левому или верхнему краю).
+    Inside,
+    /// Снаружи (пока как по правому или нижнему краю).
+    Outside,
+}
+
+/// От чего отсчитывается положение по горизонтали (`relativeFrom`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HorizontalFrom {
+    /// От левого поля (область — между полями).
+    Margin,
+    /// От края листа.
+    Page,
+    /// От колонки (без колонок — как от поля).
+    Column,
+    /// От знака привязки.
+    Character,
+    /// Область — левое поле.
+    LeftMargin,
+    /// Область — правое поле.
+    RightMargin,
+    /// Область — внутреннее поле.
+    InsideMargin,
+    /// Область — внешнее поле.
+    OutsideMargin,
+}
+
+/// От чего отсчитывается положение по вертикали (`relativeFrom`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerticalFrom {
+    /// От верхнего поля (область — между полями).
+    Margin,
+    /// От края листа.
+    Page,
+    /// От верха абзаца привязки.
+    Paragraph,
+    /// От верха строки привязки.
+    Line,
+    /// Область — верхнее поле.
+    TopMargin,
+    /// Область — нижнее поле.
+    BottomMargin,
+    /// Область — внутреннее поле.
+    InsideMargin,
+    /// Область — внешнее поле.
+    OutsideMargin,
+}
+
+/// Обтекание плавающего рисунка текстом.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Wrap {
+    /// Без обтекания: рисунок за текстом или перед ним.
+    #[default]
+    None,
+    /// Вокруг рамки.
+    Square,
+    /// По контуру (пока как вокруг рамки).
+    Tight,
+    /// Сквозное (пока как вокруг рамки).
+    Through,
+    /// Сверху и снизу: текст только над и под рисунком.
+    TopAndBottom,
+}
+
+/// Расстояния от рисунка до текста, EMU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Distance {
+    /// Сверху.
+    pub top: i64,
+    /// Снизу.
+    pub bottom: i64,
+    /// Слева.
+    pub left: i64,
+    /// Справа.
+    pub right: i64,
 }
 
 impl Picture {
@@ -73,6 +198,7 @@ mod tests {
             image: None,
             relationship: None,
             raw: None,
+            anchor: None,
         };
         assert_eq!(picture.width_points(), 72.0);
         assert_eq!(picture.height_points(), 10.0);

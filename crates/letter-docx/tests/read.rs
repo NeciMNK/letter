@@ -152,6 +152,35 @@ fn inline_image_is_read() {
 }
 
 #[test]
+fn floating_pictures_are_read() {
+    use letter_model::{AnchorAlign, HorizontalFrom, Placement, VerticalFrom, Wrap};
+    let doc = fixture("floating.docx");
+    let anchors: Vec<_> = paragraphs(&doc)
+        .iter()
+        .flat_map(|p| p.runs())
+        .flat_map(|r| &r.content)
+        .filter_map(|c| match c {
+            RunContent::Picture(picture) => picture.anchor.as_deref(),
+            _ => None,
+        })
+        .collect();
+    let [square, behind] = anchors[..] else {
+        panic!("{anchors:?}");
+    };
+    assert_eq!(square.wrap, Wrap::Square);
+    assert_eq!(square.horizontal.relative, HorizontalFrom::Page);
+    assert_eq!(square.horizontal.placement, Placement::Offset(4_572_000));
+    assert_eq!(square.vertical.relative, VerticalFrom::Paragraph);
+    assert_eq!(square.distance.left, 114_300);
+    assert!(!square.behind_text);
+    assert_eq!((behind.wrap, behind.behind_text), (Wrap::None, true));
+    assert_eq!(
+        behind.vertical.placement,
+        Placement::Align(AnchorAlign::End)
+    );
+}
+
+#[test]
 fn header_footer_references_are_kept() {
     let doc = fixture("header-footer.docx");
     let names: Vec<_> = doc.sections[0]

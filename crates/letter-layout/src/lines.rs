@@ -77,6 +77,9 @@ pub struct InlineObject {
     pub height: f32,
     /// Картинка рисунка (`None` — рисовать заглушку).
     pub image: Option<Arc<ImageData>>,
+    /// Плавающий объект: в строке от него только знак привязки без
+    /// ширины и высоты, сам объект ставит раскладка по страницам.
+    pub floating: bool,
 }
 
 /// Выравнивание строк абзаца.
@@ -275,7 +278,7 @@ pub struct ObjectItem {
     pub x: f32,
     /// Ширина, пт.
     pub width: f32,
-    /// Высота, пт.
+    /// Высота, пт (у знака привязки плавающего объекта — 0).
     pub height: f32,
     /// Номер куска [`TextSpan`] с объектом.
     pub span: usize,
@@ -524,7 +527,7 @@ impl<'a> Builder<'a> {
                     self.clusters.push(Cluster {
                         level: levels[span_range.start].number(),
                         range: span_range,
-                        width: object.width,
+                        width: if object.floating { 0.0 } else { object.width },
                         span: index,
                         kind: Kind::Object,
                     });
@@ -842,7 +845,12 @@ impl<'a> Builder<'a> {
                     }));
                 }
                 Kind::Object => {
-                    let object = self.objects.get(cluster.span).cloned().flatten();
+                    let object = self
+                        .objects
+                        .get(cluster.span)
+                        .cloned()
+                        .flatten()
+                        .filter(|o| !o.floating);
                     items.push(LineItem::Object(ObjectItem {
                         at: cluster.range.start,
                         x,
@@ -1314,6 +1322,7 @@ mod tests {
                     width,
                     height: 50.0,
                     image: None,
+                    floating: false,
                 },
                 mono(),
             )
