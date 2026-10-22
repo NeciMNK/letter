@@ -19,12 +19,14 @@ const SQUARE: f32 = 16.0;
 
 /// Подсказки клавиш вкладки «Вставка» (для проверки).
 #[cfg(test)]
-pub const INSERT_KEYTIPS: [&str; 5] = [
+pub const INSERT_KEYTIPS: [&str; 7] = [
     "keytip-insert-table",
     "keytip-insert-picture",
     "keytip-insert-header",
     "keytip-insert-footer",
     "keytip-insert-page-number",
+    "keytip-insert-date-time",
+    "keytip-insert-field",
 ];
 
 /// Подсказки клавиш вкладки «Макет таблицы» (для проверки).
@@ -99,6 +101,7 @@ pub fn insert(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
         });
     });
     crate::headers::insert_group(ui, info, out);
+    crate::fields::text_group(ui, info, out);
 }
 
 /// Сетка выбора размера новой таблицы: клетки до указателя

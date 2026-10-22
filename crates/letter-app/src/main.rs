@@ -9,6 +9,7 @@
 mod backstage;
 mod clipboard;
 mod context_menu;
+mod fields;
 mod files;
 mod find;
 mod font_dialog;

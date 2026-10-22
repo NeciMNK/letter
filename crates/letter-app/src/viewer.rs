@@ -27,14 +27,16 @@ use eframe::egui::{
     Vec2, ViewportCommand, emath::GuiRounding, pos2,
 };
 use letter_editor::{
-    Command, DateTime, FieldContext, History, ListKind, Motion, PictureBox, PictureWrap, Position,
-    RunFormat, Selection, anchor_with_wrap, can_continue_numbering, caret, copy_range, find_all,
-    find_next, formatting_at, hit_test, language_at, list_kind, move_cursor, moved_anchor,
-    paragraph_at, picture_at_point, picture_ref, select_all, selected_picture, selection_rects,
-    word_at,
+    Command, FieldContext, History, ListKind, Motion, PictureBox, PictureWrap, Position, RunFormat,
+    Selection, anchor_with_wrap, can_continue_numbering, caret, copy_range, find_all, find_next,
+    formatting_at, hit_test, language_at, list_kind, move_cursor, moved_anchor, paragraph_at,
+    picture_at_point, picture_ref, select_all, selected_picture, selection_rects, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
-use letter_model::{Alignment, BreakKind, Document, Paragraph, Statistics};
+use letter_model::{
+    Alignment, BreakKind, Document, FieldChar, FieldCharKind, Paragraph, Run, RunContent,
+    Statistics,
+};
 use letter_render::{MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, formatting_marks};
 
 use crate::backstage::{Backstage, BackstageInfo, DocumentInfo, Page};
@@ -342,8 +344,7 @@ impl OpenDocument {
 
     /// Что нужно для обновления полей (F9): время, файл, страницы.
     fn field_context(&self) -> FieldContext {
-        let now = chrono::Local::now();
-        let offset = i64::from(now.offset().local_minus_utc());
+        let (now, offset) = crate::fields::now();
         let (pages, page_of_paragraph) = match &self.story {
             // В колонтитуле все абзацы — на странице, где идёт правка.
             Some(story) => {
@@ -366,7 +367,7 @@ impl OpenDocument {
             }
         };
         FieldContext {
-            now: DateTime::from_unix(now.timestamp(), offset),
+            now,
             utc_offset: offset,
             path: self.path.as_ref().map(|p| p.display().to_string()),
             pages,
@@ -376,6 +377,38 @@ impl OpenDocument {
                 .or_else(|_| std::env::var("USER"))
                 .ok(),
         }
+    }
+
+    /// Кусок документа для вставки: поле с кодом `code` и результатом,
+    /// посчитанным для страницы `page` (с нуля).
+    fn field_fragment(&self, code: &str, page: usize) -> Box<Document> {
+        let item = |content: RunContent| Run {
+            content: vec![content],
+            ..Run::default()
+        };
+        let mark = |kind| item(RunContent::FieldChar(FieldChar::new(kind)));
+        let mut fragment = Document::new();
+        fragment.properties = self.doc.properties.clone();
+        fragment.sections[0].blocks = vec![
+            Paragraph::from_runs([
+                mark(FieldCharKind::Begin),
+                item(RunContent::FieldCode(format!(" {code} "))),
+                mark(FieldCharKind::Separate),
+                mark(FieldCharKind::End),
+            ])
+            .into(),
+        ];
+        let mut context = self.field_context();
+        // Число слов и т. п. — по самому документу, а не по куску.
+        let mut whole = self.doc.clone();
+        whole.sections.push(fragment.sections[0].clone());
+        let last = letter_editor::paragraph_count(&whole) - 1;
+        context.page_of_paragraph = vec![page + 1; last + 1];
+        letter_editor::update_fields(&mut whole, last, last, &context);
+        if let Some(section) = whole.sections.pop() {
+            fragment.sections[0] = section;
+        }
+        Box::new(fragment)
     }
 
     /// Кончает правку колонтитула: изменение — один шаг отмены.
@@ -1625,6 +1658,14 @@ impl Viewer {
                         let context = document.field_context();
                         let command = Command::UpdateFields(Box::new(context));
                         actions.push(Action::Edit(command));
+                    }
+                }
+                RibbonCommand::InsertField(code) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    let page = self.story_page();
+                    if let Some(document) = &self.document {
+                        let fragment = document.field_fragment(&code, page);
+                        actions.push(Action::Edit(Command::Paste(fragment)));
                     }
                 }
                 RibbonCommand::CloseHeaderFooter => {
@@ -3315,6 +3356,30 @@ mod tests {
         let text = blocks[blocks.len() - 1].plain_text();
         assert_eq!(text, format!("{pages} / {pages}"));
         assert!(document.modified());
+    }
+
+    #[test]
+    fn fields_are_inserted_from_the_ribbon() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let pages = viewer.document.as_ref().unwrap().layout.pages.len();
+        let before = viewer.document.as_ref().unwrap().doc.sections[0].blocks[0].plain_text();
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::InsertField("NUMPAGES".into())]);
+        let document = viewer.document.as_ref().unwrap();
+        let Some(letter_model::Block::Paragraph(p)) = document.doc.sections[0].blocks.first()
+        else {
+            panic!("нет абзаца");
+        };
+        assert_eq!(p.plain_text(), format!("{pages}{before}"));
+        let found = letter_model::fields(p);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name(), "NUMPAGES");
+        // Отмена убирает поле целиком.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(document.doc.sections[0].blocks[0].plain_text(), before);
     }
 
     #[test]

@@ -109,6 +109,10 @@ pub enum Icon {
     PageNumber,
     /// Закрыть.
     Close,
+    /// Дата и время: календарь с часами.
+    DateTime,
+    /// Поле: фигурные скобки.
+    Field,
     /// Удалить строки, столбцы или таблицу.
     DeleteTable,
     /// Вставить строку сверху.
@@ -207,6 +211,8 @@ impl Icon {
             Icon::Footer => ("panel-bottom-dashed", '\u{E42E}'),
             Icon::PageNumber => ("hash", '\u{E0EF}'),
             Icon::Close => ("x", '\u{E1B2}'),
+            Icon::DateTime => ("calendar-clock", '\u{E304}'),
+            Icon::Field => ("braces", '\u{E36A}'),
             Icon::DeleteTable => ("grid-2x2-x", '\u{E5E5}'),
             Icon::InsertAbove => ("between-horizontal-start", '\u{E592}'),
             Icon::InsertBelow => ("between-horizontal-end", '\u{E591}'),
@@ -390,7 +396,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 48] = [
+    const ALL: [Icon; 50] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -439,6 +445,8 @@ mod tests {
         Icon::Footer,
         Icon::PageNumber,
         Icon::Close,
+        Icon::DateTime,
+        Icon::Field,
     ];
 
     #[test]
