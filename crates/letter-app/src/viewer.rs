@@ -39,7 +39,7 @@ use crate::files::{self, Autosave, OPEN_FILTERS, Recent, Recovered, SAVE_FILTERS
 use crate::find::{FindAction, FindDialog};
 use crate::icons::{self, Icon};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
-use crate::ruler::{self, RULER_SIZE};
+use crate::ruler::{self, RULER_SIZE, RulerParagraph, RulerState};
 use crate::settings::Settings;
 use crate::view::{
     MAX_ZOOM, MIN_ZOOM, PAGE_GAP, Zoom, anchored_offset, clamp_zoom, current_page, page_width_zoom,
@@ -307,6 +307,8 @@ pub struct Viewer {
     statistics_open: bool,
     /// Лист для линеек (с курсором) и где он на экране в прошлом кадре.
     ruler_page: Option<(usize, Rect)>,
+    /// Горизонтальная линейка: вид новой табуляции, перетаскивание.
+    ruler_state: RulerState,
     /// Шрифты для списка на ленте.
     font_names: Arc<[String]>,
     /// Окно «Найти и заменить».
@@ -435,6 +437,7 @@ impl Viewer {
             show_marks: false,
             statistics_open: false,
             ruler_page: None,
+            ruler_state: RulerState::default(),
         }
     }
 
@@ -1176,7 +1179,6 @@ impl Viewer {
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pages_rect));
         self.pages(&mut child);
 
-        let painter = ui.painter_at(full);
         let top = Rect::from_min_max(
             pos2(pages_rect.left(), full.top()),
             pos2(full.right(), pages_rect.top()),
@@ -1185,32 +1187,59 @@ impl Viewer {
             pos2(full.left(), pages_rect.top()),
             pos2(pages_rect.left(), full.bottom()),
         );
-        painter.rect_filled(
+        ruler::tab_kind_ui(
+            ui,
             Rect::from_min_max(full.min, pages_rect.min),
-            0.0,
-            Color32::from_gray(232),
+            &mut self.ruler_state,
         );
         // Точек экрана egui на пункт документа (как у листов).
         let scale = self.zoom() * SCREEN_PIXELS_PER_POINT;
-        if let (Some((index, rect)), Some(document)) = (self.ruler_page, &self.document)
-            && let Some(page) = document.layout.pages.get(index)
-        {
-            ruler::paint_horizontal(
-                &ui.painter_at(top),
-                top,
-                rect.left(),
-                page.width,
-                page.margins,
-                scale,
-            );
-            ruler::paint_vertical(
-                &ui.painter_at(left),
-                left,
-                rect.top(),
-                page.height,
-                page.margins,
-                scale,
-            );
+        let Some((index, rect)) = self.ruler_page else {
+            return;
+        };
+        let Some(document) = &self.document else {
+            return;
+        };
+        let Some(page) = document.layout.pages.get(index) else {
+            return;
+        };
+        let (width, height, margins) = (page.width, page.height, page.margins);
+        let paragraph = formatting_at(&document.doc, document.cursor)
+            .map(|(props, _)| RulerParagraph::new(&props, document.doc.settings.default_tab_stop));
+        ruler::paint_vertical(
+            &ui.painter_at(left),
+            left,
+            rect.top(),
+            height,
+            margins,
+            scale,
+        );
+        let Some(paragraph) = paragraph else {
+            ruler::paint_horizontal(&ui.painter_at(top), top, rect.left(), width, margins, scale);
+            return;
+        };
+        let (edit, guide) = ruler::horizontal_ui(
+            ui,
+            top,
+            rect.left(),
+            width,
+            margins,
+            scale,
+            &paragraph,
+            &mut self.ruler_state,
+        );
+        if let Some(x) = guide {
+            // Пунктир через лист, пока метку тащат.
+            ui.painter_at(pages_rect).add(egui::Shape::dashed_line(
+                &[pos2(x, pages_rect.top()), pos2(x, pages_rect.bottom())],
+                egui::Stroke::new(1.0, Color32::from_gray(90)),
+                4.0,
+                3.0,
+            ));
+        }
+        if let Some(edit) = edit {
+            let ctx = ui.ctx().clone();
+            self.run_ribbon(&ctx, vec![RibbonCommand::Paragraph(edit)]);
         }
     }
 
