@@ -71,4 +71,4 @@ pub use table::{
 };
 pub use theme::{Theme, ThemeFontSet};
 pub use units::{HalfPoints, Twips};
-pub use watermark::{Watermark, find_watermark};
+pub use watermark::{Watermark, find_watermark, is_watermark};

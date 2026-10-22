@@ -485,6 +485,26 @@ fn page_color_and_borders_survive() {
 }
 
 #[test]
+fn new_watermark_survives() {
+    use letter_model::{Watermark, find_watermark};
+    let mut doc = Document::new();
+    let raw = Watermark::new("ОБРАЗЕЦ").to_raw(1);
+    let header = Paragraph::from_runs([Run {
+        props: RunProps::default(),
+        content: vec![RunContent::Unknown(raw)],
+    }]);
+    doc.sections[0].props.headers.default = Some(HeaderFooter {
+        blocks: vec![header.into()],
+        relationship: None,
+    });
+    let reopened = round_trip(&doc);
+    let header = reopened.sections[0].props.headers.default.clone();
+    let mark = header.and_then(|h| find_watermark(&h.blocks));
+    assert_eq!(mark.map(|m| m.text), Some("ОБРАЗЕЦ".to_string()));
+    assert_eq!(round_trip(&reopened), reopened);
+}
+
+#[test]
 fn styles_are_added_to_a_file_without_them() {
     // empty.docx от python-docx содержит стили; убираем их из пакета,
     // как будто файл пришёл из программы, которая стилей не пишет.

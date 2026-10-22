@@ -30,6 +30,7 @@ pub mod section;
 pub mod selection;
 pub mod table;
 pub mod toc;
+pub mod watermark;
 
 pub use caret::{Caret, CaretStop, caret, hit_test, line_stops, position_in_line};
 pub use clipboard::{copy_range, insert_fragment, insert_plain_text};
@@ -70,3 +71,4 @@ pub use table::{
     insert_rows, insert_table, merge_cells, next_cell, set_cell_borders, set_cell_shading,
 };
 pub use toc::{TOC_CODE, insert_toc, outline_level, update_tocs};
+pub use watermark::set_watermark;
