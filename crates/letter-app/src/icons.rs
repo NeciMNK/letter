@@ -97,6 +97,24 @@ pub enum Icon {
     InsertLeft,
     /// Вставить столбец справа.
     InsertRight,
+    /// Заливка: ведро с краской.
+    Shading,
+    /// Все границы.
+    BordersAll,
+    /// Нет границ.
+    BordersNone,
+    /// Внешние границы.
+    BordersOutside,
+    /// Верхняя граница.
+    BorderTop,
+    /// Нижняя граница.
+    BorderBottom,
+    /// Левая граница.
+    BorderLeft,
+    /// Правая граница.
+    BorderRight,
+    /// Объединить ячейки.
+    MergeCells,
 }
 
 /// Шрифт со значками.
@@ -161,6 +179,15 @@ impl Icon {
             Icon::InsertBelow => ("between-horizontal-end", '\u{E591}'),
             Icon::InsertLeft => ("between-vertical-start", '\u{E594}'),
             Icon::InsertRight => ("between-vertical-end", '\u{E593}'),
+            Icon::Shading => ("paint-bucket", '\u{E2E6}'),
+            Icon::BordersAll => ("grid-2x2", '\u{E4FF}'),
+            Icon::BordersNone => ("square-dashed", '\u{E1CB}'),
+            Icon::BordersOutside => ("square", '\u{E167}'),
+            Icon::BorderTop => ("panel-top", '\u{E435}'),
+            Icon::BorderBottom => ("panel-bottom", '\u{E42C}'),
+            Icon::BorderLeft => ("panel-left", '\u{E12A}'),
+            Icon::BorderRight => ("panel-right", '\u{E431}'),
+            Icon::MergeCells => ("table-cells-merge", '\u{E5C7}'),
         }
     }
 }
