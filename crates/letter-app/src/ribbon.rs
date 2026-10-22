@@ -3,15 +3,16 @@
 //! ничего не делает с документом — она возвращает выбранные команды
 //! ([`RibbonCommand`]), а выполняет их окно.
 //!
-//! Значки пока простые, нарисованные линиями ([`crate::icons`]); набор
-//! значков — задача F4.2.
+//! Вкладка «Главная» — в [`crate::home`].
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use eframe::egui::{self, Align, Color32, CornerRadius, Layout, RichText, Stroke, Ui, vec2};
 use letter_editor::RunFormat;
 
-use crate::icons::{Icon, icon_button, icon_text_button};
+use crate::home::{HomeState, home};
+use crate::icons::{Icon, icon_button};
 use letter_model::Alignment;
 
 /// Высота области с группами команд, точки экрана.
@@ -121,6 +122,18 @@ pub struct RibbonInfo {
     pub italic: bool,
     /// Подчёркивание.
     pub underline: bool,
+    /// Зачёркивание.
+    pub strike: bool,
+    /// Подстрочный знак.
+    pub subscript: bool,
+    /// Надстрочный знак.
+    pub superscript: bool,
+    /// Имя шрифта у курсора.
+    pub font: String,
+    /// Размер шрифта у курсора, полупункты (0 — неизвестен).
+    pub size: u32,
+    /// Шрифты для списка «Шрифт».
+    pub fonts: Arc<[String]>,
     /// Выравнивание абзаца с курсором.
     pub alignment: Option<Alignment>,
     /// Недавние файлы.
@@ -138,6 +151,8 @@ pub struct Ribbon {
     pub tab: Tab,
     /// Лента свёрнута (двойной щелчок по вкладке): видны только вкладки.
     pub collapsed: bool,
+    /// Состояние вкладки «Главная».
+    pub home: HomeState,
 }
 
 impl Ribbon {
@@ -157,7 +172,7 @@ impl Ribbon {
                     ui.set_min_height(BODY_HEIGHT);
                     ui.set_max_height(BODY_HEIGHT);
                     ui.horizontal(|ui| match self.tab {
-                        Tab::Home => home(ui, info, &mut out),
+                        Tab::Home => home(ui, &mut self.home, info, &mut out),
                         Tab::View => view(ui, info, &mut out),
                         _ => {
                             ui.label(
@@ -284,7 +299,7 @@ fn file_menu(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
 
 /// Группа команд: содержимое и подпись снизу по центру, справа —
 /// разделитель. Ширина группы — по содержимому.
-fn group(ui: &mut Ui, caption: &str, content: impl FnOnce(&mut Ui)) {
+pub(crate) fn group(ui: &mut Ui, caption: &str, content: impl FnOnce(&mut Ui)) {
     ui.vertical(|ui| {
         let top = ui.cursor().top();
         ui.scope(content);
@@ -305,120 +320,6 @@ fn group(ui: &mut Ui, caption: &str, content: impl FnOnce(&mut Ui)) {
         );
     });
     ui.separator();
-}
-
-/// Вкладка «Главная».
-fn home(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
-    let doc = info.has_document;
-    group(ui, "Буфер обмена", |ui| {
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                if icon_button(ui, Icon::Paste, "Вставить", vec2(44.0, 34.0), doc, false)
-                    .on_hover_text("Вставить (Ctrl+V)")
-                    .clicked()
-                {
-                    out.push(RibbonCommand::Paste);
-                }
-                ui.label("Вставить");
-            });
-            ui.vertical(|ui| {
-                let selected = doc && info.has_selection;
-                for (icon, name, tip, command) in [
-                    (
-                        Icon::Cut,
-                        "Вырезать",
-                        "Вырезать (Ctrl+X)",
-                        RibbonCommand::Cut,
-                    ),
-                    (
-                        Icon::Copy,
-                        "Копировать",
-                        "Копировать (Ctrl+C)",
-                        RibbonCommand::Copy,
-                    ),
-                ] {
-                    if icon_text_button(ui, icon, name, selected)
-                        .on_hover_text(tip)
-                        .clicked()
-                    {
-                        out.push(command);
-                    }
-                }
-            });
-        });
-    });
-    group(ui, "Шрифт", |ui| {
-        ui.horizontal(|ui| {
-            let mut toggle = |ui: &mut Ui, on: bool, text: RichText, tip: &str, f: RunFormat| {
-                let button = egui::Button::selectable(on, text).min_size(vec2(24.0, 24.0));
-                if ui.add_enabled(doc, button).on_hover_text(tip).clicked() {
-                    out.push(RibbonCommand::Format(f));
-                }
-            };
-            toggle(
-                ui,
-                info.bold,
-                RichText::new("Ж").strong(),
-                "Полужирный (Ctrl+B)",
-                RunFormat::Bold,
-            );
-            toggle(
-                ui,
-                info.italic,
-                RichText::new("К").italics(),
-                "Курсив (Ctrl+I)",
-                RunFormat::Italic,
-            );
-            toggle(
-                ui,
-                info.underline,
-                RichText::new("Ч").underline(),
-                "Подчёркнутый (Ctrl+U)",
-                RunFormat::Underline,
-            );
-            ui.separator();
-            for (icon, name, tip, f) in [
-                (
-                    Icon::Grow,
-                    "Увеличить размер шрифта",
-                    "Увеличить размер шрифта (Ctrl+])",
-                    RunFormat::Grow,
-                ),
-                (
-                    Icon::Shrink,
-                    "Уменьшить размер шрифта",
-                    "Уменьшить размер шрифта (Ctrl+[)",
-                    RunFormat::Shrink,
-                ),
-            ] {
-                if icon_button(ui, icon, name, vec2(26.0, 24.0), doc, false)
-                    .on_hover_text(tip)
-                    .clicked()
-                {
-                    out.push(RibbonCommand::Format(f));
-                }
-            }
-        });
-    });
-    group(ui, "Абзац", |ui| {
-        ui.horizontal(|ui| {
-            for (alignment, tip) in [
-                (Alignment::Left, "Выровнять по левому краю (Ctrl+L)"),
-                (Alignment::Center, "По центру (Ctrl+E)"),
-                (Alignment::Right, "Выровнять по правому краю (Ctrl+R)"),
-                (Alignment::Justify, "По ширине (Ctrl+J)"),
-            ] {
-                let on = info.alignment == Some(alignment);
-                let name = tip.split(" (").next().unwrap_or(tip);
-                if icon_button(ui, Icon::Align(alignment), name, vec2(26.0, 24.0), doc, on)
-                    .on_hover_text(tip)
-                    .clicked()
-                {
-                    out.push(RibbonCommand::Align(alignment));
-                }
-            }
-        });
-    });
 }
 
 /// Вкладка «Вид».
@@ -489,8 +390,64 @@ mod tests {
             has_document: true,
             can_undo: true,
             has_selection: true,
+            font: "Calibri".into(),
+            size: 22,
+            fonts: vec!["Arial".to_string(), "Calibri".to_string()].into(),
             ..RibbonInfo::default()
         }
+    }
+
+    #[test]
+    fn font_group_gives_commands() {
+        let mut h = harness(document());
+        for name in [
+            "Зачёркнутый",
+            "Надстрочный знак",
+            "Цвет текста",
+            "Цвет выделения текста",
+            "Очистить оформление",
+        ] {
+            h.get_by_label(name).click();
+            h.run();
+        }
+        assert_eq!(
+            h.state().out,
+            vec![
+                RibbonCommand::Format(RunFormat::Strike),
+                RibbonCommand::Format(RunFormat::Superscript),
+                RibbonCommand::Format(RunFormat::Color(letter_model::Color::Rgb(255, 0, 0))),
+                RibbonCommand::Format(RunFormat::Highlight(letter_model::Highlight::Yellow)),
+                RibbonCommand::Format(RunFormat::Clear),
+            ]
+        );
+    }
+
+    #[test]
+    fn font_name_and_size_are_chosen() {
+        let mut h = harness(document());
+        let fonts = h.get_by_role(egui::accesskit::Role::ComboBox);
+        assert_eq!(fonts.value().as_deref(), Some("Calibri"));
+        fonts.click();
+        h.run();
+        h.get_by_label("Arial").click();
+        h.run();
+        let size = h.get_by_role(egui::accesskit::Role::TextInput);
+        assert_eq!(size.value().as_deref(), Some("11"));
+        size.focus();
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.get_by_role(egui::accesskit::Role::TextInput)
+            .type_text("10,5");
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(
+            h.state().out,
+            vec![
+                RibbonCommand::Format(RunFormat::Font("Arial".into())),
+                RibbonCommand::Format(RunFormat::Size(letter_model::HalfPoints(21))),
+            ]
+        );
     }
 
     #[test]

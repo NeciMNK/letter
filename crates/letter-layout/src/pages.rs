@@ -29,6 +29,7 @@ use std::sync::Arc;
 use letter_model::{
     Alignment, Block, Document, FirstLineIndent, LineSpacing, PageSize, Paragraph, ResolvedFonts,
     ResolvedRunProps, RunContent, RunProps, Section, Settings, Styles, TabStopKind, Theme, Twips,
+    VerticalAlign,
 };
 
 use crate::fonts::FontLibrary;
@@ -433,10 +434,29 @@ fn prepare(
     }
 }
 
+/// Во сколько раз уменьшается надстрочный и подстрочный знак.
+const SCRIPT_SCALE: f32 = 2.0 / 3.0;
+
+/// Насколько поднят над базовой линией текст с оформлением `props`, пт
+/// (подстрочный — отрицательное число): надстрочный — на треть кегля,
+/// подстрочный опущен на 0,14 кегля. Кегль — до уменьшения.
+pub fn baseline_rise(props: &ResolvedRunProps) -> f32 {
+    let size = props.size.0 as f32 / 2.0;
+    match props.vertical_align {
+        VerticalAlign::Baseline => 0.0,
+        VerticalAlign::Superscript => size / 3.0,
+        VerticalAlign::Subscript => -size * 0.14,
+    }
+}
+
 fn text_style(props: &ResolvedRunProps, family: &str) -> TextStyle {
+    let scale = match props.vertical_align {
+        VerticalAlign::Baseline => 1.0,
+        _ => SCRIPT_SCALE,
+    };
     TextStyle {
         family: family.to_string(),
-        size: props.size.0 as f32 / 2.0,
+        size: props.size.0 as f32 / 2.0 * scale,
         bold: props.bold,
         italic: props.italic,
         kerning: false,

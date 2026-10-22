@@ -17,6 +17,7 @@
 
 use std::path::{Path, PathBuf};
 
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui::{
@@ -258,6 +259,28 @@ pub struct Viewer {
     show_ruler: bool,
     /// Лист для линеек (с курсором) и где он на экране в прошлом кадре.
     ruler_page: Option<(usize, Rect)>,
+    /// Шрифты для списка на ленте.
+    font_names: Arc<[String]>,
+}
+
+/// Шрифты Word, которые заменяются похожими (см. `FontLibrary::find`):
+/// их тоже предлагаем в списке, как Word.
+const WORD_FONTS: [&str; 6] = [
+    "Arial",
+    "Calibri",
+    "Calibri Light",
+    "Cambria",
+    "Courier New",
+    "Times New Roman",
+];
+
+/// Список шрифтов для ленты: установленные и привычные шрифты Word.
+fn font_names(library: &FontLibrary) -> Arc<[String]> {
+    let mut names = library.families();
+    names.extend(WORD_FONTS.iter().map(|s| s.to_string()));
+    names.sort_by_key(|name| name.to_lowercase());
+    names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+    names.into()
 }
 
 impl Viewer {
@@ -283,6 +306,7 @@ impl Viewer {
                 .unwrap_or_default(),
             autosave: autosave_dir.as_deref().and_then(Autosave::start),
             last_autosave: Instant::now(),
+            font_names: font_names(&library),
             library,
             shaper: Shaper::new(),
             painter: PagePainter::new(),
@@ -655,7 +679,8 @@ impl Viewer {
     fn keyboard(&mut self, ctx: &Context) {
         let points = 1.0 / (self.zoom() * SCREEN_PIXELS_PER_POINT);
         let screen = self.view_size.y * points;
-        if self.document.is_none() {
+        // Клавиши достаются полю ввода (например, размер шрифта на ленте).
+        if self.document.is_none() || ctx.egui_wants_keyboard_input() {
             return;
         }
         let actions = ctx.input_mut(|i| {
@@ -784,6 +809,7 @@ impl Viewer {
             recent: self.recent.items().to_vec(),
             page_width: self.zoom == Zoom::PageWidth,
             ruler: self.show_ruler,
+            fonts: self.font_names.clone(),
             ..RibbonInfo::default()
         };
         if let Some(document) = &self.document {
@@ -795,6 +821,11 @@ impl Viewer {
                 info.bold = run.bold;
                 info.italic = run.italic;
                 info.underline = run.underline != letter_model::Underline::None;
+                info.strike = run.strike;
+                info.subscript = run.vertical_align == letter_model::VerticalAlign::Subscript;
+                info.superscript = run.vertical_align == letter_model::VerticalAlign::Superscript;
+                info.font = run.fonts.ascii;
+                info.size = run.size.0;
                 info.alignment = Some(paragraph.alignment);
             }
         }
@@ -1280,6 +1311,7 @@ fn key_action(event: &egui::Event, screen: f32) -> Option<Action> {
                     Key::U => Some(Command::Format(RunFormat::Underline)),
                     Key::CloseBracket => Some(Command::Format(RunFormat::Grow)),
                     Key::OpenBracket => Some(Command::Format(RunFormat::Shrink)),
+                    Key::Space => Some(Command::Format(RunFormat::Clear)),
                     Key::L => Some(Command::Align(Alignment::Left)),
                     Key::E => Some(Command::Align(Alignment::Center)),
                     Key::R => Some(Command::Align(Alignment::Right)),
@@ -2203,6 +2235,26 @@ mod tests {
 
         viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo, RibbonCommand::Undo]);
         assert!(!viewer.ribbon_info().bold);
+
+        viewer.run_ribbon(
+            &ctx,
+            vec![
+                RibbonCommand::Format(RunFormat::Font("Arial".into())),
+                RibbonCommand::Format(RunFormat::Size(letter_model::HalfPoints(28))),
+                RibbonCommand::Format(RunFormat::Superscript),
+            ],
+        );
+        let info = viewer.ribbon_info();
+        assert_eq!((info.font.as_str(), info.size), ("Arial", 28));
+        assert!(info.superscript && !info.subscript);
+        assert!(info.fonts.iter().any(|f| f == "Times New Roman"));
+        // Ctrl+Пробел убирает оформление.
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(Key::Space, Modifiers::COMMAND)]),
+        );
+        assert!(!viewer.ribbon_info().superscript);
 
         viewer.run_ribbon(&ctx, vec![RibbonCommand::ToggleRuler]);
         assert!(!viewer.show_ruler);

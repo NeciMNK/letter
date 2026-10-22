@@ -8,6 +8,7 @@
 
 mod clipboard;
 mod files;
+mod home;
 mod icons;
 mod ribbon;
 mod ruler;

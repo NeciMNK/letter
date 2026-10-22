@@ -83,3 +83,36 @@ fn pages_are_drawn_where_the_text_is() {
     let last = page.lines.last().unwrap();
     assert!(band(last.top, last.top + last.height) > 100);
 }
+
+#[test]
+fn indexes_are_smaller_and_shifted() {
+    use letter_model::{Block, Document, Paragraph, Run, RunProps, VerticalAlign};
+    let library = FontLibrary::embedded_only();
+    let mut cache = GlyphCache::new();
+    let script = |text: &str, align| {
+        Run::text(text).with_props(RunProps {
+            vertical_align: Some(align),
+            ..RunProps::default()
+        })
+    };
+    let mut doc = Document::new();
+    doc.sections[0].blocks = vec![Block::from(Paragraph::from_runs([
+        Run::text("x"),
+        script("y", VerticalAlign::Superscript),
+        script("z", VerticalAlign::Subscript),
+    ]))];
+    let layout = layout_document(&doc, &mut Shaper::new(), &library);
+    let page = &layout.pages[0];
+    let glyphs: Vec<(u32, i32)> = page_scene(page, 1.0, &library, &mut cache)
+        .into_iter()
+        .filter_map(|i| match i {
+            DrawItem::Glyph { key, y, .. } => Some((key.size_64, y)),
+            DrawItem::Rect { .. } => None,
+        })
+        .collect();
+    let [(normal, base), (sup, sup_y), (sub, sub_y)] = glyphs[..] else {
+        panic!("{glyphs:?}");
+    };
+    assert!(sup < normal && sub < normal, "{glyphs:?}");
+    assert!(sup_y < base && sub_y > base, "{glyphs:?}");
+}
