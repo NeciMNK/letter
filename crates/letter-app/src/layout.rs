@@ -1,24 +1,32 @@
 //! Вкладка «Макет»: группа «Параметры страницы» — поля, ориентация,
-//! размер, колонки и разрывы. Всё меняется у разделов выделенного.
+//! размер, колонки, разрывы и расстановка переносов (меняются у разделов
+//! выделенного), и группа «Абзац» — отступы и интервалы выделенных
+//! абзацев.
 
 use eframe::egui::{self, RichText, Ui};
-use letter_editor::{ColumnPreset, Command, PageSetup};
+use letter_editor::{ColumnPreset, Command, PageSetup, ParagraphChanges, ParagraphFormat};
 use letter_model::{BreakKind, Orientation, PageMargins, PageSize, SectionStart, Twips};
 
 use crate::i18n::tr;
 use crate::icons::Icon;
 use crate::insert::menu_button;
+use crate::keytips::{self, Level, TipAction};
 use crate::ribbon::{RibbonCommand, RibbonInfo, group};
+use crate::units::{cm_field, pt_field};
 
 /// Подсказки клавиш вкладки «Макет» (для проверки).
 #[cfg(test)]
-pub const KEYTIPS: [&str; 6] = [
+pub const KEYTIPS: [&str; 10] = [
     "keytip-layout-margins",
     "keytip-layout-orientation",
     "keytip-layout-size",
     "keytip-layout-columns",
     "keytip-layout-breaks",
     "keytip-layout-hyphenation",
+    "keytip-layout-indent-left",
+    "keytip-layout-indent-right",
+    "keytip-layout-space-before",
+    "keytip-layout-space-after",
 ];
 
 /// Готовые поля: имя и поля сверху, справа, снизу, слева (твипы).
@@ -199,6 +207,64 @@ pub fn layout(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
             },
         );
     });
+    paragraph_group(ui, info, out);
+}
+
+/// Группа «Абзац»: отступы слева и справа (см) и интервалы до и после
+/// (пт) абзаца с курсором; новое значение ставится всем выделенным.
+fn paragraph_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+    let enabled = info.has_document;
+    group(ui, tr("paragraph"), |ui| {
+        ui.add_enabled_ui(enabled, |ui| {
+            egui::Grid::new("layout-paragraph")
+                .num_columns(4)
+                .spacing([6.0, 4.0])
+                .show(ui, |ui| {
+                    let mut changes = ParagraphChanges::default();
+                    ui.label(RichText::new(tr("layout-indent")).strong());
+                    ui.end_row();
+                    let mut left = info.indent_left;
+                    let label = ui.label(tr("layout-indent-left"));
+                    let field = cm_field(ui, label.id, &mut left, -50.0, 55.0);
+                    tip(ui, &field, "keytip-layout-indent-left");
+                    if field.changed() {
+                        changes.left = Some(Twips(left));
+                    }
+                    let mut before = info.space_before;
+                    let label = ui.label(tr("layout-space-before"));
+                    let field = pt_field(ui, label.id, &mut before, 0.0, 1584.0, 1.0);
+                    tip(ui, &field, "keytip-layout-space-before");
+                    if field.changed() {
+                        changes.before = Some(Twips(before));
+                    }
+                    ui.end_row();
+                    let mut right = info.indent_right;
+                    let label = ui.label(tr("layout-indent-right"));
+                    let field = cm_field(ui, label.id, &mut right, -50.0, 55.0);
+                    tip(ui, &field, "keytip-layout-indent-right");
+                    if field.changed() {
+                        changes.right = Some(Twips(right));
+                    }
+                    let mut after = info.space_after;
+                    let label = ui.label(tr("layout-space-after"));
+                    let field = pt_field(ui, label.id, &mut after, 0.0, 1584.0, 1.0);
+                    tip(ui, &field, "keytip-layout-space-after");
+                    if field.changed() {
+                        changes.after = Some(Twips(after));
+                    }
+                    ui.end_row();
+                    if changes != ParagraphChanges::default() {
+                        let format = ParagraphFormat::Set(changes);
+                        out.push(RibbonCommand::Paragraph(format));
+                    }
+                });
+        });
+    });
+}
+
+/// Подсказка клавиш поля: ставит в него фокус.
+fn tip(ui: &Ui, field: &egui::Response, key: &str) {
+    keytips::tip(ui, field, Level::Commands, key, TipAction::Focus(field.id));
 }
 
 /// Имя пункта меню «Колонки».
@@ -209,5 +275,54 @@ fn column_label(preset: ColumnPreset) -> &'static str {
         ColumnPreset::Three => "columns-three",
         ColumnPreset::Left => "columns-left",
         ColumnPreset::Right => "columns-right",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    #[test]
+    fn paragraph_fields_set_indents_and_spacing() {
+        let info = RibbonInfo {
+            has_document: true,
+            indent_left: 0,
+            space_after: 160,
+            ..RibbonInfo::default()
+        };
+        let mut h = Harness::new_ui_state(
+            move |ui, out: &mut Vec<RibbonCommand>| paragraph_group(ui, &info, out),
+            Vec::new(),
+        );
+        h.run();
+        let field = h
+            .get_all_by_label("Слева:")
+            .find(|n| n.accesskit_node().role() == egui::accesskit::Role::SpinButton)
+            .expect("нет поля «Слева»");
+        field.focus();
+        h.run();
+        let field = h
+            .get_all_by_label("Слева:")
+            .find(|n| n.accesskit_node().role() == egui::accesskit::Role::SpinButton)
+            .expect("нет поля «Слева»");
+        field.type_text("2");
+        h.key_press(egui::Key::Enter);
+        h.run();
+        let changes: Vec<_> = h
+            .state()
+            .iter()
+            .filter_map(|c| match c {
+                RibbonCommand::Paragraph(ParagraphFormat::Set(c)) => Some(*c),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.left == Some(Twips(1134)) && c.after.is_none()),
+            "{changes:?}"
+        );
     }
 }

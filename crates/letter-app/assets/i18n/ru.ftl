@@ -706,3 +706,14 @@ page-break-hint = Начать следующую страницу в месте
 keytip-insert-cover = ЛТ
 keytip-insert-blank-page = ЛП
 keytip-insert-page-break = ЛР
+
+# Макет: абзац
+layout-indent = Отступ
+layout-indent-left = Слева:
+layout-indent-right = Справа:
+layout-space-before = До:
+layout-space-after = После:
+keytip-layout-indent-left = ВЛ
+keytip-layout-indent-right = ВП
+keytip-layout-space-before = ИД
+keytip-layout-space-after = ИП
