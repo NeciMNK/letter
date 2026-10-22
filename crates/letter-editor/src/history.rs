@@ -22,7 +22,7 @@ use crate::fields::{FieldContext, update_fields};
 use crate::format::{
     ParagraphFormat, RunFormat, align_paragraphs, apply_style, format_paragraphs, format_runs,
 };
-use crate::links::{link_at, set_link};
+use crate::links::{add_bookmark, delete_bookmark, link_at, set_link};
 use crate::lists::{
     ListKind, change_list_level, continue_numbering, multilevel_list, restart_numbering,
     tab_changes_level, toggle_list,
@@ -157,6 +157,11 @@ pub enum Command {
         /// Текст ссылки.
         text: Option<String>,
     },
+    /// Добавить закладку с этим именем на выделенное (закладка с тем же
+    /// именем переносится сюда).
+    AddBookmark(String),
+    /// Удалить закладку с этим именем.
+    DeleteBookmark(String),
     /// Обновить поля в абзацах выделенного (F9).
     UpdateFields(Box<FieldContext>),
     /// «Заменить все»: найденное `query` заменить на `replacement` во
@@ -313,6 +318,8 @@ impl History {
                 | Command::TitlePage { .. }
                 | Command::UpdateFields(_)
                 | Command::Link { text: None, .. }
+                | Command::AddBookmark(_)
+                | Command::DeleteBookmark(_)
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -320,8 +327,10 @@ impl History {
                 (start.paragraph.saturating_sub(1), end.paragraph)
             }
             Command::DeleteForward if !erasing => (start.paragraph, end.paragraph + 1),
-            // Замена может задеть любой абзац.
-            Command::ReplaceAll { .. } => (0, paragraph_count(doc).saturating_sub(1)),
+            // Замена и закладки могут задеть любой абзац.
+            Command::ReplaceAll { .. } | Command::AddBookmark(_) | Command::DeleteBookmark(_) => {
+                (0, paragraph_count(doc).saturating_sub(1))
+            }
             // Новый номер получают и следующие пункты списка.
             Command::RestartNumbering | Command::ContinueNumbering => {
                 (start.paragraph, paragraph_count(doc).saturating_sub(1))
@@ -474,6 +483,14 @@ impl History {
                 set_link(doc, from, to, link.as_deref());
                 Some(selection)
             }
+            Command::AddBookmark(name) => {
+                add_bookmark(doc, name, start, end);
+                Some(selection)
+            }
+            Command::DeleteBookmark(name) => {
+                delete_bookmark(doc, name);
+                Some(selection)
+            }
             Command::UpdateFields(context) => {
                 update_fields(doc, start.paragraph, end.paragraph, context);
                 Some(Selection {
@@ -530,7 +547,9 @@ impl History {
             | Command::HeaderFooter { .. }
             | Command::TitlePage { .. }
             | Command::UpdateFields(_)
-            | Command::Link { text: None, .. } => at,
+            | Command::Link { text: None, .. }
+            | Command::AddBookmark(_)
+            | Command::DeleteBookmark(_) => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
 

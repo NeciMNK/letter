@@ -1,9 +1,9 @@
 //! Гиперссылки и закладки: ссылка у курсора, поставить и снять ссылку,
 //! где закладка.
 
-use letter_model::{Color, Document, Hyperlink, Inline, Paragraph, RunProps, Underline};
+use letter_model::{Bookmark, Color, Document, Hyperlink, Inline, Paragraph, RunProps, Underline};
 
-use crate::edit::{paragraph_count, paragraph_mut, paragraph_ref};
+use crate::edit::{paragraph_count, paragraph_mut, paragraph_ref, split_content, tidy};
 use crate::format::apply;
 use crate::position::Position;
 
@@ -168,16 +168,112 @@ pub fn bookmarks(doc: &Document) -> Vec<(String, Position)> {
 
 /// Где начинается закладка `name` (имена без учёта регистра, как в Word).
 pub fn bookmark_position(doc: &Document, name: &str) -> Option<Position> {
-    bookmarks(doc)
-        .into_iter()
-        .find(|(n, _)| n.eq_ignore_ascii_case(name))
-        .map(|(_, at)| at)
+    bookmark_range(doc, name).map(|(start, _)| start)
+}
+
+/// Начало и конец закладки `name`; без конца — пустая закладка на месте
+/// начала.
+pub fn bookmark_range(doc: &Document, name: &str) -> Option<(Position, Position)> {
+    let mut start = None;
+    for index in 0..paragraph_count(doc) {
+        let Some(paragraph) = paragraph_ref(doc, index) else {
+            continue;
+        };
+        let mut offset = 0;
+        for inline in &paragraph.content {
+            match inline {
+                Inline::Run(run) => {
+                    offset += run.content.iter().map(|c| c.text_len()).sum::<usize>()
+                }
+                Inline::BookmarkStart(b)
+                    if start.is_none() && b.name.eq_ignore_ascii_case(name) =>
+                {
+                    start = Some((b.id.clone(), Position::new(index, offset)));
+                }
+                Inline::BookmarkEnd(id) => {
+                    if let Some((wanted, from)) = &start
+                        && wanted == id
+                    {
+                        return Some((*from, Position::new(index, offset)));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    start.map(|(_, at)| (at, at))
+}
+
+/// Добавляет закладку `name` от `start` до `end`. Закладка с таким же
+/// именем (без учёта регистра) переносится сюда, как в Word.
+pub fn add_bookmark(doc: &mut Document, name: &str, start: Position, end: Position) {
+    let (start, end) = if (start.paragraph, start.offset) <= (end.paragraph, end.offset) {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    delete_bookmark(doc, name);
+    // Новый номер — больше всех номеров закладок документа.
+    let mut next = 0;
+    for index in 0..paragraph_count(doc) {
+        let Some(paragraph) = paragraph_ref(doc, index) else {
+            continue;
+        };
+        for inline in &paragraph.content {
+            let id = match inline {
+                Inline::BookmarkStart(b) => &b.id,
+                Inline::BookmarkEnd(id) => id,
+                _ => continue,
+            };
+            if let Ok(id) = id.parse::<u64>() {
+                next = next.max(id + 1);
+            }
+        }
+    }
+    let id = next.to_string();
+    insert_marker(doc, end, Inline::BookmarkEnd(id.clone()));
+    let bookmark = Bookmark {
+        id,
+        name: name.to_string(),
+    };
+    insert_marker(doc, start, Inline::BookmarkStart(bookmark));
+}
+
+/// Убирает закладку `name` (начало и конец). `false` — такой нет.
+pub fn delete_bookmark(doc: &mut Document, name: &str) -> bool {
+    let mut id = None;
+    for index in 0..paragraph_count(doc) {
+        let Some(paragraph) = paragraph_mut(doc, index) else {
+            continue;
+        };
+        paragraph.content.retain(|inline| match inline {
+            Inline::BookmarkStart(b) if id.is_none() && b.name.eq_ignore_ascii_case(name) => {
+                id = Some(b.id.clone());
+                false
+            }
+            Inline::BookmarkEnd(end) => id.as_ref() != Some(end),
+            _ => true,
+        });
+    }
+    id.is_some()
+}
+
+/// Ставит отметку `marker` в место `at` (перед отметками, которые там
+/// уже есть).
+fn insert_marker(doc: &mut Document, at: Position, marker: Inline) {
+    let Some(paragraph) = paragraph_mut(doc, at.paragraph) else {
+        return;
+    };
+    let tail = split_content(paragraph, at.offset);
+    paragraph.content.push(marker);
+    paragraph.content.extend(tail);
+    tidy(paragraph);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use letter_model::{Bookmark, Run};
+    use letter_model::Run;
 
     fn doc() -> Document {
         let mut doc = Document::new();
@@ -263,6 +359,40 @@ mod tests {
         history.undo(&mut doc);
         history.undo(&mut doc);
         assert_eq!(doc, before);
+    }
+
+    #[test]
+    fn bookmarks_are_added_and_deleted() {
+        let mut doc = doc();
+        doc.sections[0]
+            .blocks
+            .push(Paragraph::text("second line").into());
+        add_bookmark(&mut doc, "Span", Position::new(0, 9), Position::new(1, 6));
+        assert_eq!(
+            bookmark_range(&doc, "span"),
+            Some((Position::new(0, 9), Position::new(1, 6)))
+        );
+        // Новый номер больше прежних.
+        let Some(letter_model::Block::Paragraph(p)) = doc.sections[0].blocks.first() else {
+            panic!();
+        };
+        assert!(
+            p.content
+                .iter()
+                .any(|i| matches!(i, Inline::BookmarkStart(b) if b.id == "2"))
+        );
+        assert_eq!(p.plain_text(), "See site now");
+        // То же имя — закладка переносится.
+        add_bookmark(&mut doc, "SPAN", Position::new(1, 0), Position::new(1, 0));
+        assert_eq!(
+            bookmark_range(&doc, "Span"),
+            Some((Position::new(1, 0), Position::new(1, 0)))
+        );
+        assert_eq!(bookmarks(&doc).len(), 2);
+        assert!(delete_bookmark(&mut doc, "span"));
+        assert!(!delete_bookmark(&mut doc, "span"));
+        assert_eq!(bookmarks(&doc).len(), 1);
+        assert_eq!(doc.sections[0].blocks[1].plain_text(), "second line");
     }
 
     #[test]
