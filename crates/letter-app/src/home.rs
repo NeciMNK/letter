@@ -405,13 +405,13 @@ fn font_group(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut V
                 Icon::Grow,
                 tr("font-grow"),
                 tr("font-grow-hint"),
-                RunFormat::Grow,
+                RunFormat::GrowStep,
             ),
             (
                 Icon::Shrink,
                 tr("font-shrink"),
                 tr("font-shrink-hint"),
-                RunFormat::Shrink,
+                RunFormat::ShrinkStep,
             ),
             (
                 Icon::ClearFormat,
@@ -454,10 +454,11 @@ fn font_group(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut V
                 out.push(RibbonCommand::Format(format));
             }
         }
-        for (icon, on, name, format) in [
+        for (icon, on, name, tip, format) in [
             (
                 Icon::Strike,
                 info.strike,
+                tr("strikethrough"),
                 tr("strikethrough"),
                 RunFormat::Strike,
             ),
@@ -465,17 +466,19 @@ fn font_group(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut V
                 Icon::Subscript,
                 info.subscript,
                 tr("subscript"),
+                tr("subscript-hint"),
                 RunFormat::Subscript,
             ),
             (
                 Icon::Superscript,
                 info.superscript,
                 tr("superscript"),
+                tr("superscript-hint"),
                 RunFormat::Superscript,
             ),
         ] {
             if icon_button(ui, icon, name, button, doc, on)
-                .on_hover_text(name)
+                .on_hover_text(tip)
                 .clicked()
             {
                 out.push(RibbonCommand::Format(format));

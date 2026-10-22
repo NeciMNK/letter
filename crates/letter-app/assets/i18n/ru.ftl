@@ -103,7 +103,7 @@ font-dialog-menu = Шрифт…
 font-double-strike = Двойное зачёркивание
 font-effects = Видоизменение
 font-grow = Увеличить размер шрифта
-font-grow-hint = Увеличить размер шрифта (Ctrl+])
+font-grow-hint = Увеличить размер шрифта (Ctrl+Shift+>)
 font-hidden = Скрытый
 font-kerning = Кернинг для знаков размером
 font-kerning-from = от (пт):
@@ -117,7 +117,7 @@ font-scales = Масштабы
 font-search = Найти шрифт
 font-settings = Параметры шрифта
 font-shrink = Уменьшить размер шрифта
-font-shrink-hint = Уменьшить размер шрифта (Ctrl+[)
+font-shrink-hint = Уменьшить размер шрифта (Ctrl+Shift+<)
 font-size = Размер:
 font-size-box = Размер шрифта
 font-sizes = Размеры шрифта
@@ -360,3 +360,5 @@ zoom-page-width = По ширине страницы
 format-md = Markdown
 filter-md = Markdown (*.md)
 zoom-fit = По ширине
+subscript-hint = Подстрочный знак (Ctrl+=)
+superscript-hint = Надстрочный знак (Ctrl+Shift+=)
