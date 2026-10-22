@@ -32,7 +32,7 @@ pub use lines::{
 };
 pub use pages::{
     CellArea, DocumentLayout, Float, LayoutCache, Margins, Page, PageLine, PageNote, PageStory,
-    Shape, ShapeKind, baseline_rise, layout_document, layout_document_cached,
+    PageWatermark, Shape, ShapeKind, baseline_rise, layout_document, layout_document_cached,
 };
 pub use shaping::{FontMetrics, ShapedGlyph, ShapedRun, Shaper, TextStyle};
 pub use spacing::{

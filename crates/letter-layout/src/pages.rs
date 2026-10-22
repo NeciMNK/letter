@@ -51,7 +51,8 @@ use letter_model::{
     ListCounters, ListLabel, NoteKind, Numbering, PageBorderDisplay, PageBorders, PageSize,
     Paragraph, ParagraphBorders, Placement, ResolvedFonts, ResolvedParagraphProps,
     ResolvedRunProps, RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart,
-    Settings, Styles, TabStopKind, Theme, Twips, VerticalAlign, VerticalFrom, Wrap,
+    Settings, Styles, TabStopKind, Theme, Twips, VerticalAlign, VerticalFrom, Watermark, Wrap,
+    find_watermark,
 };
 
 use crate::fields;
@@ -61,7 +62,7 @@ use crate::lines::{
     TabStop, TextSpan, break_lines, break_lines_around,
 };
 use crate::notes::NoteNumbers;
-use crate::shaping::{Shaper, TextStyle};
+use crate::shaping::{ShapedRun, Shaper, TextStyle};
 use crate::spacing::{LineRule, ParagraphBlock, ParagraphSpacing, effective_spacing, gap_between};
 use crate::table::{BoxLine, Canvas, Ctx, RowBox, TableGeometry, build_rows, draw_row, split_row};
 
@@ -115,6 +116,83 @@ pub struct Page {
     /// Тексты сносок на странице: обычных — внизу, концевых — после
     /// текста документа.
     pub notes: Vec<PageNote>,
+    /// Подложка из верхнего колонтитула страницы.
+    pub watermark: Option<PageWatermark>,
+}
+
+/// Подложка на странице: надпись, повёрнутая вокруг середины области
+/// текста.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageWatermark {
+    /// Глифы надписи; ширины уже растянуты на ширину подложки.
+    pub runs: Vec<ShapedRun>,
+    /// Цвет.
+    pub color: (u8, u8, u8),
+    /// Непрозрачность, 0–255.
+    pub alpha: u8,
+    /// Начало базовой линии, пт от левого верхнего угла листа.
+    pub x: f32,
+    /// Начало базовой линии по вертикали.
+    pub y: f32,
+    /// Поворот по часовой стрелке, градусы.
+    pub rotation: f32,
+}
+
+/// Подложка `mark` по середине области текста страницы.
+fn page_watermark(
+    mark: &Watermark,
+    page: &Page,
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+) -> Option<PageWatermark> {
+    if mark.text.trim().is_empty() || mark.width <= 0.0 || mark.height <= 0.0 {
+        return None;
+    }
+    let probe = shaper.shape(
+        library,
+        &mark.text,
+        &TextStyle::new(mark.font.clone(), 100.0),
+    );
+    let font = probe.first()?.font.id;
+    let metrics = shaper.metrics(library, font)?;
+    let em = (metrics.ascent + metrics.descent).max(0.1);
+    // Как в Word, текст растягивается на прямоугольник подложки: по
+    // высоте — кегль, по ширине — масштаб глифов.
+    let size = mark.height / em;
+    let mut runs = shaper.shape(
+        library,
+        &mark.text,
+        &TextStyle::new(mark.font.clone(), size),
+    );
+    let advance: f32 = runs.iter().map(ShapedRun::width).sum();
+    if advance <= 0.0 {
+        return None;
+    }
+    let stretch = mark.width / advance;
+    for run in &mut runs {
+        run.width_scale *= stretch;
+        for glyph in &mut run.glyphs {
+            glyph.x_advance *= stretch;
+            glyph.x_offset *= stretch;
+        }
+    }
+    let m = page.margins;
+    let cx = m.left + (page.width - m.left - m.right) / 2.0;
+    let cy = m.top + (page.height - m.top - m.bottom) / 2.0;
+    // Начало базовой линии в осях надписи (от её середины) и поворот.
+    let (lx, ly) = (
+        -mark.width / 2.0,
+        -mark.height / 2.0 + metrics.ascent * size,
+    );
+    let (sin, cos) = mark.rotation.to_radians().sin_cos();
+    Some(PageWatermark {
+        runs,
+        color: mark.color,
+        alpha: (mark.opacity * 255.0).round().clamp(0.0, 255.0) as u8,
+        x: cx + lx * cos - ly * sin,
+        y: cy + lx * sin + ly * cos,
+        rotation: mark.rotation,
+    })
 }
 
 /// Текст сноски на странице. Координаты — как у текста страницы;
@@ -938,6 +1016,8 @@ fn place_stories(
             let top = page.height - points(m.footer).max(0.0) - height;
             page.footer = laid.moved(top);
         }
+        let mark = boxes[0][k].as_ref().and_then(|s| find_watermark(s.blocks));
+        page.watermark = mark.and_then(|mark| page_watermark(&mark, page, shaper, library));
     }
 }
 
@@ -2107,6 +2187,7 @@ impl Pager {
             header: PageStory::default(),
             footer: PageStory::default(),
             notes: Vec::new(),
+            watermark: None,
         });
         self.y = top;
         self.has_content = false;
@@ -3359,6 +3440,37 @@ mod tests {
         // «На текущей странице» с другим размером листа — новая страница.
         d.sections[1].props.page_size = Some(PageSize::A4);
         assert_eq!(pages(&lay(&d))[..2], [vec![0], vec![1]]);
+    }
+
+    #[test]
+    fn watermark_stands_in_the_middle_of_the_page() {
+        let mark = r##"<w:pict xmlns:w="w" xmlns:v="v"><v:shape id="PowerPlusWaterMarkObject1" style="position:absolute;width:200pt;height:50pt;rotation:315" fillcolor="#ff0000"><v:fill opacity=".5"/><v:textpath style="font-family:&quot;Liberation Sans&quot;" string="DRAFT"/></v:shape></w:pict>"##;
+        let mut header = para("");
+        if let Some(letter_model::Inline::Run(run)) = header.content.first_mut() {
+            run.content
+                .push(RunContent::Unknown(letter_model::RawXml::new(mark)));
+        }
+        let mut d = doc(singles(40));
+        d.sections[0].props.headers.default = Some(letter_model::HeaderFooter {
+            blocks: vec![header.into()],
+            relationship: None,
+        });
+        let layout = lay(&d);
+        assert!(layout.pages.len() > 1);
+        for page in &layout.pages {
+            let mark = page.watermark.as_ref().expect("подложка");
+            assert_eq!((mark.color, mark.alpha), ((255, 0, 0), 128));
+            // Надпись растянута на 200 пт.
+            let width: f32 = mark.runs.iter().map(ShapedRun::width).sum();
+            assert!((width - 200.0).abs() < 0.1, "{width}");
+            // Начало надписи — левее и ниже середины листа (надпись
+            // идёт вверх вправо), середина надписи — в середине листа.
+            let (sin, cos) = 315f32.to_radians().sin_cos();
+            let mid = (mark.x + 100.0 * cos, mark.y + 100.0 * sin);
+            assert!(mark.x < page.width / 2.0 && mark.y > page.height / 2.0);
+            assert!((mid.0 - page.width / 2.0).abs() < 30.0, "{mid:?}");
+            assert!((mid.1 - page.height / 2.0).abs() < 30.0, "{mid:?}");
+        }
     }
 
     #[test]
