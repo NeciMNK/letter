@@ -5,10 +5,10 @@
 //! [`RawXml`], чтобы при записи вернуть его на место без потерь.
 
 use letter_model::{
-    Block, BreakKind, Color, Document, FirstLineIndent, HalfPoints, Indentation, Inline,
+    Block, BreakKind, Color, Columns, Document, FirstLineIndent, HalfPoints, Indentation, Inline,
     LineSpacing, NumberingRef, Orientation, PageMargins, PageSize, Paragraph, ParagraphProps,
-    RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps, Spacing, TabStop,
-    ThemeColor, Twips, Underline, VerticalAlign,
+    RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Spacing,
+    TabStop, ThemeColor, Twips, Underline, VerticalAlign,
 };
 
 use crate::ReadError;
@@ -419,6 +419,8 @@ fn read_section_props(sect: &Element) -> SectionProps {
             && match child.local.as_str() {
                 "pgSz" => set(&mut props.page_size, read_page_size(child)),
                 "pgMar" => set(&mut props.margins, read_margins(child)),
+                "type" => set(&mut props.start, read_section_start(child)),
+                "cols" => set(&mut props.columns, read_columns(child)),
                 _ => false,
             };
         if !understood {
@@ -426,6 +428,70 @@ fn read_section_props(sect: &Element) -> SectionProps {
         }
     }
     props
+}
+
+/// Начало раздела `w:type`.
+fn read_section_start(element: &Element) -> Option<SectionStart> {
+    if !element.only_attrs(&["val"]) {
+        return None;
+    }
+    Some(match element.w_attr("val") {
+        None | Some("nextPage") => SectionStart::NextPage,
+        Some("continuous") => SectionStart::Continuous,
+        Some("evenPage") => SectionStart::EvenPage,
+        Some("oddPage") => SectionStart::OddPage,
+        Some("nextColumn") => SectionStart::NextColumn,
+        Some(_) => return None,
+    })
+}
+
+/// Колонки `w:cols`. Чего не понимаем — `None`, элемент остаётся как есть.
+fn read_columns(cols: &Element) -> Option<Columns> {
+    if !cols.only_attrs(&["num", "space", "sep", "equalWidth"]) {
+        return None;
+    }
+    let flag = |name: &str| match cols.w_attr(name) {
+        None => Some(None),
+        Some("true" | "1" | "on") => Some(Some(true)),
+        Some("false" | "0" | "off") => Some(Some(false)),
+        Some(_) => None,
+    };
+    let count = match cols.w_attr("num") {
+        Some(n) => n.parse::<u16>().ok()?.max(1),
+        None => 1,
+    };
+    let space = match cols.w_attr("space") {
+        Some(v) => parse_twips(v)?,
+        // Значение по умолчанию по стандарту — полдюйма.
+        None => Twips(720),
+    };
+    let separator = flag("sep")?.unwrap_or(false);
+    let equal = flag("equalWidth")?;
+    let mut widths = Vec::new();
+    for col in cols.elements() {
+        if !col.is_w("col") || !col.only_attrs(&["w", "space"]) {
+            return None;
+        }
+        let width = parse_twips(col.w_attr("w")?)?;
+        let after = match col.w_attr("space") {
+            Some(v) => parse_twips(v)?,
+            None => Twips::ZERO,
+        };
+        widths.push((width, after));
+    }
+    // Ширины колонок без `equalWidth="0"` Word не читает: сохраняем как есть.
+    if !widths.is_empty() && equal != Some(false) {
+        return None;
+    }
+    if equal == Some(false) && widths.is_empty() {
+        return None;
+    }
+    Some(Columns {
+        count,
+        space,
+        separator,
+        widths,
+    })
 }
 
 fn read_page_size(size: &Element) -> Option<PageSize> {
@@ -829,8 +895,49 @@ mod tests {
         assert_eq!(last.page_size, Some(PageSize::A4));
         assert_eq!(last.margins, Some(PageMargins::default()));
         let names: Vec<_> = last.unknown.iter().map(RawXml::local_name).collect();
-        assert_eq!(names, ["headerReference", "cols"]);
+        assert_eq!(names, ["headerReference"]);
+        assert_eq!(
+            last.columns,
+            Some(Columns {
+                space: Twips(708),
+                ..Columns::default()
+            })
+        );
         assert_eq!(doc.plain_text(), "one\n\ntwo");
+    }
+
+    #[test]
+    fn section_start_and_columns() {
+        let read = |sect: &str| {
+            read_body_xml(&format!("<w:sectPr>{sect}</w:sectPr>")).sections[0]
+                .props
+                .clone()
+        };
+        let props =
+            read(r#"<w:type w:val="continuous"/><w:cols w:num="3" w:space="400" w:sep="1"/>"#);
+        assert_eq!(props.start, Some(SectionStart::Continuous));
+        assert_eq!(
+            props.columns,
+            Some(Columns {
+                count: 3,
+                space: Twips(400),
+                separator: true,
+                widths: Vec::new(),
+            })
+        );
+        let uneven = read(
+            r#"<w:cols w:num="2" w:equalWidth="0"><w:col w:w="3000" w:space="500"/><w:col w:w="4000"/></w:cols>"#,
+        );
+        let columns = uneven.columns.unwrap();
+        assert_eq!(
+            columns.widths,
+            [(Twips(3000), Twips(500)), (Twips(4000), Twips::ZERO)]
+        );
+        assert_eq!(columns.space, Twips(720));
+        // Непонятное остаётся как есть.
+        let odd = read(r#"<w:type w:val="weird"/><w:cols w:num="2"><w:col w:w="1"/></w:cols>"#);
+        assert_eq!((odd.start, odd.columns), (None, None));
+        assert_eq!(odd.unknown.len(), 2);
     }
 
     #[test]

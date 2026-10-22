@@ -189,6 +189,51 @@ def floating() -> Document:
     return doc
 
 
+def set_columns(section, count: int, separator: bool) -> None:
+    """Колонки раздела: `w:cols` в его `w:sectPr`."""
+    from docx.oxml import OxmlElement
+
+    sect = section._sectPr
+    for old in sect.findall(qn("w:cols")):
+        sect.remove(old)
+    cols = OxmlElement("w:cols")
+    cols.set(qn("w:num"), str(count))
+    cols.set(qn("w:space"), "708")
+    if separator:
+        cols.set(qn("w:sep"), "1")
+    # w:cols идёт после w:pgMar (порядок CT_SectPr).
+    sect.find(qn("w:pgMar")).addnext(cols)
+
+
+def sections() -> Document:
+    """Разделы: на текущей странице с двумя колонками и линией между
+    ними, альбомный с новой страницы, с нечётной страницы."""
+    from docx.enum.section import WD_ORIENT, WD_SECTION
+
+    doc = new_document("Разделы")
+    doc.add_paragraph("First section: one column across the whole page.")
+    columns = doc.add_section(WD_SECTION.CONTINUOUS)
+    set_columns(columns, 2, True)
+    words = (
+        "Text in two columns flows down the first column and then continues "
+        "at the top of the second one"
+    )
+    for i in range(1, 7):
+        doc.add_paragraph(f"{i}. {words}.")
+    after = doc.add_section(WD_SECTION.CONTINUOUS)
+    set_columns(after, 1, False)
+    doc.add_paragraph("Back to one column below the balanced columns.")
+    wide = doc.add_section(WD_SECTION.NEW_PAGE)
+    wide.orientation = WD_ORIENT.LANDSCAPE
+    wide.page_width, wide.page_height = wide.page_height, wide.page_width
+    doc.add_paragraph("A landscape page.")
+    odd = doc.add_section(WD_SECTION.ODD_PAGE)
+    odd.orientation = WD_ORIENT.PORTRAIT
+    odd.page_width, odd.page_height = odd.page_height, odd.page_width
+    doc.add_paragraph("This section starts on an odd page.")
+    return doc
+
+
 def header_footer() -> Document:
     doc = new_document("Колонтитулы")
     section = doc.sections[0]
@@ -240,6 +285,7 @@ FIXTURES = {
     "table.docx": table,
     "image.docx": image,
     "floating.docx": floating,
+    "sections.docx": sections,
     "header-footer.docx": header_footer,
     "ru-en.docx": mixed_languages,
     "pages.docx": pages,

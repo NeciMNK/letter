@@ -731,7 +731,7 @@ fn page_layout(el: &Element) -> SectionProps {
             orientation,
         }),
         margins: Some(margins),
-        unknown: Vec::new(),
+        ..SectionProps::default()
     }
 }
 

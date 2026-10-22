@@ -90,7 +90,7 @@ pub fn formatting_marks(page: &Page) -> Vec<Mark> {
         let last = match line.line.end {
             LineEnd::Paragraph => Some(MarkKind::Paragraph),
             LineEnd::Break => Some(MarkKind::LineBreak),
-            LineEnd::Wrap | LineEnd::Page => None,
+            LineEnd::Wrap | LineEnd::Page | LineEnd::Column => None,
         };
         if let Some(kind) = last {
             marks.push(mark(kind, end, size));

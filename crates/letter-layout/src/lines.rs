@@ -34,7 +34,7 @@ const EPSILON: f32 = 0.01;
 
 /// Кусок текста абзаца с одним оформлением. `'\t'` в тексте —
 /// табуляция, `'\n'` — разрыв строки (Shift+Enter), `'\u{c}'` — разрыв
-/// страницы (Ctrl+Enter).
+/// страницы (Ctrl+Enter), `'\u{b}'` — разрыв колонки.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextSpan {
     /// Текст.
@@ -206,6 +206,9 @@ pub enum LineEnd {
     Break,
     /// Разрыв страницы (Ctrl+Enter): следующая строка — на новой странице.
     Page,
+    /// Разрыв колонки (Ctrl+Shift+Enter): следующая строка — в следующей
+    /// колонке (или на новой странице, если колонка последняя).
+    Column,
     /// Конец абзаца.
     Paragraph,
 }
@@ -474,7 +477,7 @@ pub fn break_lines_around(
         first = false;
         let finished = start >= builder.clusters.len();
         // После разрыва в самом конце абзаца — ещё одна пустая строка.
-        if finished && !matches!(kind, LineEnd::Break | LineEnd::Page) {
+        if finished && !matches!(kind, LineEnd::Break | LineEnd::Page | LineEnd::Column) {
             break;
         }
         if finished {
@@ -571,6 +574,7 @@ impl<'a> Builder<'a> {
                     '\t' => Some(Kind::Tab),
                     '\n' => Some(Kind::Break(LineEnd::Break)),
                     '\u{c}' => Some(Kind::Break(LineEnd::Page)),
+                    '\u{b}' => Some(Kind::Break(LineEnd::Column)),
                     _ => None,
                 };
                 let level_changes = at > piece_start && levels[at] != levels[at - 1];
@@ -1028,7 +1032,7 @@ fn is_hanging_space(c: char) -> bool {
     c.is_whitespace()
         && !matches!(
             c,
-            '\u{a0}' | '\u{202f}' | '\u{2007}' | '\t' | '\n' | '\u{c}'
+            '\u{a0}' | '\u{202f}' | '\u{2007}' | '\t' | '\n' | '\u{c}' | '\u{b}'
         )
 }
 

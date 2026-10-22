@@ -6,9 +6,9 @@
 //! вместе, а потом упорядочиваются по таблицам ниже.
 
 use letter_model::{
-    Block, BreakKind, Color, Document, FirstLineIndent, Inline, LineSpacing, Orientation,
+    Block, BreakKind, Color, Columns, Document, FirstLineIndent, Inline, LineSpacing, Orientation,
     Paragraph, ParagraphProps, RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps,
-    Style, StyleKind, Styles, VerticalAlign,
+    SectionStart, Style, StyleKind, Styles, VerticalAlign,
 };
 
 use crate::document::{W_NS, is_w_ns};
@@ -520,8 +520,50 @@ fn section_props(props: &SectionProps) -> String {
         .map(|(name, value)| (name, value.0.to_string()));
         children.push("pgMar", empty("w:pgMar", &attrs));
     }
+    if let Some(start) = props.start {
+        let name = match start {
+            SectionStart::NextPage => "nextPage",
+            SectionStart::Continuous => "continuous",
+            SectionStart::EvenPage => "evenPage",
+            SectionStart::OddPage => "oddPage",
+            SectionStart::NextColumn => "nextColumn",
+        };
+        children.push("type", val("w:type", name));
+    }
+    if let Some(columns) = &props.columns {
+        children.push("cols", columns_xml(columns));
+    }
     children.raw(&props.unknown);
     element("w:sectPr", &children.finish())
+}
+
+/// Колонки раздела `w:cols`.
+fn columns_xml(columns: &Columns) -> String {
+    let mut attrs = vec![
+        ("w:num".to_string(), columns.count.max(1).to_string()),
+        ("w:space".to_string(), columns.space.0.to_string()),
+    ];
+    if columns.separator {
+        attrs.push(("w:sep".to_string(), "1".to_string()));
+    }
+    if columns.widths.is_empty() {
+        return element_with("w:cols", &attrs, "");
+    }
+    attrs.push(("w:equalWidth".to_string(), "0".to_string()));
+    let content: String = columns
+        .widths
+        .iter()
+        .map(|(width, space)| {
+            empty(
+                "w:col",
+                &[
+                    ("w:w", width.0.to_string()),
+                    ("w:space", space.0.to_string()),
+                ],
+            )
+        })
+        .collect();
+    element_with("w:cols", &attrs, &content)
 }
 
 /// Часть стилей (`word/styles.xml`).

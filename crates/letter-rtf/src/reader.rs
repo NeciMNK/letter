@@ -1260,6 +1260,6 @@ fn section_props(page: Page) -> SectionProps {
             footer: Twips(page.footer),
             gutter: Twips(page.gutter),
         }),
-        unknown: Vec::new(),
+        ..SectionProps::default()
     }
 }
