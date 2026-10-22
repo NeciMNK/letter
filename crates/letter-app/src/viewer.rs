@@ -26,9 +26,9 @@ use eframe::egui::{
     Vec2, ViewportCommand, emath::GuiRounding, pos2,
 };
 use letter_editor::{
-    Command, History, Motion, Position, RunFormat, Selection, caret, copy_range, find_all,
-    find_next, formatting_at, hit_test, language_at, list_kind, move_cursor, paragraph_at,
-    select_all, selection_rects, word_at,
+    Command, History, ListKind, Motion, Position, RunFormat, Selection, can_continue_numbering,
+    caret, copy_range, find_all, find_next, formatting_at, hit_test, language_at, list_kind,
+    move_cursor, paragraph_at, select_all, selection_rects, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
 use letter_model::{Alignment, Document, Statistics};
@@ -1277,6 +1277,15 @@ impl Viewer {
                     actions.push(Action::Edit(Command::Paragraph(format)));
                 }
                 RibbonCommand::List(kind) => actions.push(Action::Edit(Command::List(kind))),
+                RibbonCommand::MultilevelList => {
+                    actions.push(Action::Edit(Command::MultilevelList));
+                }
+                RibbonCommand::RestartNumbering => {
+                    actions.push(Action::Edit(Command::RestartNumbering));
+                }
+                RibbonCommand::ContinueNumbering => {
+                    actions.push(Action::Edit(Command::ContinueNumbering));
+                }
                 RibbonCommand::Style(id) => actions.push(Action::Edit(Command::Style(id))),
                 RibbonCommand::BuiltInStyle(name) => {
                     if let Some(id) = self
@@ -1670,8 +1679,11 @@ impl Viewer {
                 }
             }
             let has_selection = document.anchor != document.cursor;
+            let paragraph = document.cursor.paragraph;
+            let numbered = (list_kind(&document.doc, paragraph) == Some(ListKind::Numbered))
+                .then(|| can_continue_numbering(&document.doc, paragraph));
             response.context_menu(|ui| {
-                crate::context_menu::context_menu(ui, has_selection, &mut menu);
+                crate::context_menu::context_menu(ui, has_selection, numbered, &mut menu);
             });
 
             // Тень листа выходит за его края: рисуем и чуть невидимые.

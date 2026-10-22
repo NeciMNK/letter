@@ -16,8 +16,15 @@ const PASTE_OPTIONS: [(Icon, &str, PasteMode); 3] = [
 ];
 
 /// Содержимое меню. `has_selection` — что-то выделено (иначе вырезать
-/// и копировать нечего). Выбранное добавляется в `out`.
-pub fn context_menu(ui: &mut Ui, has_selection: bool, out: &mut Vec<RibbonCommand>) {
+/// и копировать нечего). `numbered` — курсор в нумерованном списке
+/// (`true` — выше есть список, который можно продолжить). Выбранное
+/// добавляется в `out`.
+pub fn context_menu(
+    ui: &mut Ui,
+    has_selection: bool,
+    numbered: Option<bool>,
+    out: &mut Vec<RibbonCommand>,
+) {
     ui.set_min_width(200.0);
     let mut item = |ui: &mut Ui, icon, name: &str, enabled, command| {
         if icon_text_button(ui, icon, name, enabled).clicked() {
@@ -55,6 +62,21 @@ pub fn context_menu(ui: &mut Ui, has_selection: bool, out: &mut Vec<RibbonComman
         out.push(RibbonCommand::ParagraphDialog);
         ui.close();
     }
+    if let Some(can_continue) = numbered {
+        ui.separator();
+        if ui.button(tr("restart-numbering")).clicked() {
+            out.push(RibbonCommand::RestartNumbering);
+            ui.close();
+        }
+        let continued = ui.add_enabled(
+            can_continue,
+            eframe::egui::Button::new(tr("continue-numbering")),
+        );
+        if continued.clicked() {
+            out.push(RibbonCommand::ContinueNumbering);
+            ui.close();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -67,7 +89,7 @@ mod tests {
     fn items_give_commands() {
         let mut h = Harness::new_ui_state(
             |ui, state: &mut (bool, Vec<RibbonCommand>)| {
-                context_menu(ui, state.0, &mut state.1);
+                context_menu(ui, state.0, Some(false), &mut state.1);
             },
             (false, Vec::new()),
         );
@@ -84,12 +106,18 @@ mod tests {
         h.run();
         h.get_by_label("Абзац…").click();
         h.run();
+        // Продолжать нечего — пункт не работает.
+        h.get_by_label("Продолжить нумерацию").click();
+        h.run();
+        h.get_by_label("Начать заново с 1").click();
+        h.run();
         assert_eq!(
             h.state().1,
             [
                 RibbonCommand::Copy,
                 RibbonCommand::PasteSpecial(PasteMode::TextOnly),
-                RibbonCommand::ParagraphDialog
+                RibbonCommand::ParagraphDialog,
+                RibbonCommand::RestartNumbering,
             ]
         );
     }

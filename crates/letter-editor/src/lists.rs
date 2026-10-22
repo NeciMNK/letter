@@ -2,8 +2,9 @@
 //! выход из списка.
 
 use letter_model::{
-    AbstractNumbering, Alignment, Document, FirstLineIndent, Indentation, LevelSuffix, ListLevel,
-    NumberFormat, NumberingInstance, NumberingRef, ParagraphProps, RunFonts, RunProps, Twips,
+    AbstractNumbering, Alignment, Document, FirstLineIndent, Indentation, LevelOverride,
+    LevelSuffix, ListLevel, NumberFormat, NumberingInstance, NumberingRef, ParagraphProps,
+    RunFonts, RunProps, Twips,
 };
 
 use crate::edit::{paragraph_mut, paragraph_ref};
@@ -77,15 +78,108 @@ pub fn toggle_list(doc: &mut Document, start: Position, end: Position, kind: Lis
     };
     for &i in &paragraphs {
         let level = list_item(doc, i).map_or(0, |(_, level)| level);
-        if let Some(p) = paragraph_mut(doc, i) {
-            p.props.numbering = Some(NumberingRef {
-                id: Some(id),
-                level: Some(level),
-            });
-            // Отступы берутся из уровня списка.
-            p.props.indentation.left = None;
-            p.props.indentation.first_line = None;
+        set_item(doc, i, id, level);
+    }
+}
+
+/// Кнопка «Многоуровневый список»: абзацы от `start` до `end` становятся
+/// пунктами нового списка «1.», «1.1.», «1.1.1.»…; уровень пунктов
+/// сохраняется.
+pub fn multilevel_list(doc: &mut Document, start: Position, end: Position) {
+    let (first, last) = ordered(start, end);
+    let paragraphs: Vec<usize> = (first..=last)
+        .filter(|&i| paragraph_ref(doc, i).is_some())
+        .collect();
+    if paragraphs.is_empty() {
+        return;
+    }
+    let levels = (0..LEVELS).map(multilevel_level).collect();
+    let id = add_list(doc, levels);
+    for &i in &paragraphs {
+        let level = list_item(doc, i).map_or(0, |(_, level)| level);
+        set_item(doc, i, id, level);
+    }
+}
+
+/// «Начать заново с 1»: пункт `paragraph` и следующие пункты того же
+/// списка переходят в новый список с тем же определением, который
+/// начинает счёт уровня пункта заново.
+pub fn restart_numbering(doc: &mut Document, paragraph: usize) {
+    let Some((id, level)) = list_item(doc, paragraph) else {
+        return;
+    };
+    let Some(abstract_id) = doc.numbering.instance(id).map(|n| n.abstract_id) else {
+        return;
+    };
+    let start = doc
+        .numbering
+        .level(id, level)
+        .and_then(|l| l.start)
+        .unwrap_or(1);
+    let new_id = doc.numbering.next_instance_id();
+    doc.numbering.instances.push(NumberingInstance {
+        id: new_id,
+        abstract_id,
+        overrides: vec![LevelOverride {
+            level,
+            start: Some(start),
+            ..LevelOverride::default()
+        }],
+        ..NumberingInstance::default()
+    });
+    move_items(doc, paragraph, id, new_id);
+}
+
+/// «Продолжить нумерацию»: пункт `paragraph` и следующие пункты его
+/// списка продолжают ближайший список того же вида выше. Ничего не
+/// делает, если такого нет (см. [`can_continue_numbering`]).
+pub fn continue_numbering(doc: &mut Document, paragraph: usize) {
+    let Some((id, _)) = list_item(doc, paragraph) else {
+        return;
+    };
+    if let Some(previous) = previous_list(doc, paragraph) {
+        move_items(doc, paragraph, id, previous);
+    }
+}
+
+/// Можно ли «Продолжить нумерацию»: выше есть другой список того же вида.
+pub fn can_continue_numbering(doc: &Document, paragraph: usize) -> bool {
+    previous_list(doc, paragraph).is_some()
+}
+
+/// Ближайший список выше абзаца того же вида, но другой.
+fn previous_list(doc: &Document, paragraph: usize) -> Option<u32> {
+    let (id, _) = list_item(doc, paragraph)?;
+    let kind = list_kind(doc, paragraph)?;
+    (0..paragraph).rev().find_map(|i| {
+        let (other, _) = list_item(doc, i)?;
+        (other != id && list_kind(doc, i) == Some(kind)).then_some(other)
+    })
+}
+
+/// Пункты списка `from`, начиная с абзаца `paragraph`, переходят в список
+/// `to` с прежними уровнями.
+fn move_items(doc: &mut Document, paragraph: usize, from: u32, to: u32) {
+    let mut i = paragraph;
+    while paragraph_ref(doc, i).is_some() {
+        if let Some((id, level)) = list_item(doc, i)
+            && id == from
+        {
+            set_item(doc, i, to, level);
         }
+        i += 1;
+    }
+}
+
+/// Делает абзац пунктом списка `id` уровня `level`; отступы — из уровня.
+fn set_item(doc: &mut Document, paragraph: usize, id: u32, level: u8) {
+    if let Some(p) = paragraph_mut(doc, paragraph) {
+        p.props.numbering = Some(NumberingRef {
+            id: Some(id),
+            level: Some(level),
+        });
+        p.props.indentation.left = None;
+        p.props.indentation.first_line = None;
     }
 }
 
@@ -128,14 +222,7 @@ pub fn change_list_level(doc: &mut Document, start: Position, end: Position, del
             continue;
         };
         let level = (i16::from(level) + i16::from(delta)).clamp(0, i16::from(LEVELS - 1)) as u8;
-        if let Some(p) = paragraph_mut(doc, i) {
-            p.props.numbering = Some(NumberingRef {
-                id: Some(id),
-                level: Some(level),
-            });
-            p.props.indentation.left = None;
-            p.props.indentation.first_line = None;
-        }
+        set_item(doc, i, id, level);
     }
 }
 
@@ -151,11 +238,16 @@ pub fn tab_changes_level(doc: &Document, start: Position, end: Position) -> bool
 /// Новый список вида `kind` с уровнями, как у Word по умолчанию;
 /// возвращает его номер.
 fn new_list(doc: &mut Document, kind: ListKind) -> u32 {
-    let abstract_id = doc.numbering.next_abstract_id();
-    let id = doc.numbering.next_instance_id();
     let levels = (0..LEVELS)
         .map(|level| default_level(kind, level))
         .collect();
+    add_list(doc, levels)
+}
+
+/// Новый список с такими уровнями; возвращает его номер.
+fn add_list(doc: &mut Document, levels: Vec<ListLevel>) -> u32 {
+    let abstract_id = doc.numbering.next_abstract_id();
+    let id = doc.numbering.next_instance_id();
     doc.numbering.abstracts.push(AbstractNumbering {
         id: abstract_id,
         attributes: Vec::new(),
@@ -241,6 +333,41 @@ fn default_level(kind: ListKind, level: u8) -> ListLevel {
             ..ParagraphProps::default()
         },
         run,
+        ..ListLevel::default()
+    }
+}
+
+/// Уровень многоуровневого списка Word по умолчанию: «1.», «1.1.»…
+/// с отступами, растущими вместе с длиной номера.
+fn multilevel_level(level: u8) -> ListLevel {
+    const INDENTS: [(i32, i32); 9] = [
+        (360, 360),
+        (792, 432),
+        (1224, 504),
+        (1728, 648),
+        (2232, 792),
+        (2736, 936),
+        (3240, 1080),
+        (3744, 1224),
+        (4320, 1440),
+    ];
+    let (left, hanging) = INDENTS[usize::from(level.min(LEVELS - 1))];
+    let text: String = (1..=level + 1).map(|n| format!("%{n}.")).collect();
+    ListLevel {
+        level,
+        start: Some(1),
+        format: Some(NumberFormat::Decimal),
+        text: Some(text),
+        suffix: Some(LevelSuffix::Tab),
+        alignment: Some(Alignment::Left),
+        paragraph: ParagraphProps {
+            indentation: Indentation {
+                left: Some(Twips(left)),
+                first_line: Some(FirstLineIndent::Hanging(Twips(hanging))),
+                ..Indentation::default()
+            },
+            ..ParagraphProps::default()
+        },
         ..ListLevel::default()
     }
 }
@@ -380,5 +507,48 @@ mod tests {
         // Отмена возвращает пункт.
         history.undo(&mut d);
         assert!(list_item(&d, 0).is_some());
+    }
+
+    #[test]
+    fn multilevel_numbers() {
+        let mut d = doc(&["a", "b", "c"]);
+        multilevel_list(&mut d, at(0), at(2));
+        change_list_level(&mut d, at(1), at(2), 1);
+        change_list_level(&mut d, at(2), at(2), 1);
+        assert_eq!(
+            labels(&d),
+            [
+                Some("1.".into()),
+                Some("1.1.".into()),
+                Some("1.1.1.".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn restart_and_continue() {
+        let mut d = doc(&["a", "b", "c", "d"]);
+        toggle_list(&mut d, at(0), at(3), ListKind::Numbered);
+        assert!(!can_continue_numbering(&d, 2));
+        restart_numbering(&mut d, 2);
+        let restarted = [
+            Some("1.".into()),
+            Some("2.".into()),
+            Some("1.".into()),
+            Some("2.".into()),
+        ];
+        assert_eq!(labels(&d), restarted);
+        // Продолжить — пункты снова в первом списке.
+        assert!(can_continue_numbering(&d, 2));
+        continue_numbering(&mut d, 2);
+        assert_eq!(
+            labels(&d),
+            [
+                Some("1.".into()),
+                Some("2.".into()),
+                Some("3.".into()),
+                Some("4.".into()),
+            ]
+        );
     }
 }

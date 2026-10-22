@@ -83,6 +83,8 @@ pub enum Icon {
     Bullets,
     /// Нумерованный список.
     Numbering,
+    /// Многоуровневый список.
+    Multilevel,
 }
 
 /// Шрифт со значками.
@@ -140,6 +142,7 @@ impl Icon {
             Icon::PasteText => ("clipboard-type", '\u{E309}'),
             Icon::Bullets => ("list", '\u{E106}'),
             Icon::Numbering => ("list-ordered", '\u{E1D1}'),
+            Icon::Multilevel => ("list-tree", '\u{E408}'),
         }
     }
 }
