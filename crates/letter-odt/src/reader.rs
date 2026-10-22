@@ -5,8 +5,8 @@ use std::io::{Cursor, Read};
 
 use letter_model::{
     Block, BreakKind, Document, HalfPoints, Inline, Orientation, PageMargins, PageSize, Paragraph,
-    ParagraphProps, RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps, Style,
-    StyleKind, Table, TableCell, TableRow, Twips,
+    ParagraphProps, Run, RunContent, RunFonts, RunProps, Section, SectionProps, Style, StyleKind,
+    Table, TableCell, TableRow, Twips,
 };
 use zip::ZipArchive;
 
@@ -17,15 +17,13 @@ use crate::toggles;
 use crate::units::parse_length;
 use crate::xml::{self, Element, Node};
 
+/// Глубина вложенности элементов, которую обходим.
+const MAX_DEPTH: usize = 200;
 /// Самая большая часть, которую мы согласны распаковать (512 МБ).
 const MAX_PART_SIZE: u64 = 512 * 1024 * 1024;
 /// Больше стольких повторов строки или ячейки (`number-*-repeated`) не
 /// разворачиваем: защита от файлов, раздувающихся в памяти.
 const MAX_REPEAT: usize = 1000;
-/// Пространство имён WordprocessingML (для свойств ячеек).
-const WORD_NS: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-/// Глубина вложенности элементов, которую обходим.
-const MAX_DEPTH: usize = 200;
 
 /// Части документа: разобранные XML.
 struct Parts {
@@ -452,18 +450,14 @@ impl<'a> Reader<'a> {
             if blocks.is_empty() {
                 blocks.push(Paragraph::default().into());
             }
-            // Объединение по горизонтали хранится, как в .docx, пока
-            // свойства ячеек не разбираются (задача F5.2).
             let span = repeat(cell_el, "table:number-columns-spanned");
-            let raw_props = if span > 1 {
-                vec![RawXml::new(format!(
-                    "<w:tcPr xmlns:w=\"{WORD_NS}\"><w:gridSpan w:val=\"{}\"/></w:tcPr>",
-                    span.min(63)
-                ))]
-            } else {
-                Vec::new()
+            let mut cell = TableCell {
+                blocks,
+                ..TableCell::default()
             };
-            let cell = TableCell { raw_props, blocks };
+            if span > 1 {
+                cell.props.grid_span = Some(span.min(63) as u32);
+            }
             for _ in 0..repeat(cell_el, "table:number-columns-repeated") {
                 row.cells.push(cell.clone());
             }

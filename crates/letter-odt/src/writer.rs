@@ -794,20 +794,9 @@ impl Text {
     }
 }
 
-/// Сколько столбцов сетки занимает ячейка (`w:gridSpan` из свойств
-/// ячейки .docx; разбирать их целиком начнёт задача F5.2).
+/// Сколько столбцов сетки занимает ячейка (`w:gridSpan`).
 fn grid_span(cell: &TableCell) -> usize {
-    cell.raw_props
-        .iter()
-        .find_map(|raw| {
-            let s = raw.as_str();
-            let rest = &s[s.find("gridSpan")?..];
-            let rest = &rest[rest.find("val=")? + 5..];
-            let end = rest.find(|c: char| !c.is_ascii_digit())?;
-            rest[..end].parse::<usize>().ok()
-        })
-        .unwrap_or(1)
-        .clamp(1, MAX_SPAN)
+    cell.span().clamp(1, MAX_SPAN)
 }
 
 /// LibreOffice хранит интервалы до и после абзаца одним свойством, а

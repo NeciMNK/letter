@@ -776,9 +776,12 @@ mod tests {
     #[test]
     fn deleting_across_a_table_keeps_its_cells() {
         let table = Table {
+            grid: Vec::new(),
             raw_props: Vec::new(),
+            props: Default::default(),
             rows: vec![TableRow {
                 raw_props: Vec::new(),
+                props: Default::default(),
                 cells: vec![TableCell::text("A"), TableCell::text("B")],
             }],
         };
@@ -795,9 +798,12 @@ mod tests {
     #[test]
     fn tables_and_unknown_content() {
         let table = Table {
+            grid: Vec::new(),
             raw_props: Vec::new(),
+            props: Default::default(),
             rows: vec![TableRow {
                 raw_props: Vec::new(),
+                props: Default::default(),
                 cells: vec![TableCell::text("A"), TableCell::text("B")],
             }],
         };

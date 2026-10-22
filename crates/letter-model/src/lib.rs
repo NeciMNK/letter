@@ -17,6 +17,7 @@
 //! То, что программа пока не понимает, хранится как [`RawXml`] и при
 //! сохранении записывается обратно без изменений.
 
+mod border;
 mod document;
 mod numbering;
 mod package;
@@ -31,6 +32,7 @@ mod table;
 mod theme;
 mod units;
 
+pub use border::{Border, Borders, Shading};
 pub use document::{Document, Settings};
 pub use numbering::{
     AbstractNumbering, LevelOverride, LevelSuffix, ListCounters, ListLabel, ListLevel,
@@ -50,6 +52,9 @@ pub use run::{
 };
 pub use section::{Orientation, PageMargins, PageSize, Section, SectionProps};
 pub use style::{DocDefaults, Style, StyleKind, Styles};
-pub use table::{Block, Table, TableCell, TableRow};
+pub use table::{
+    Block, CellMargins, CellProps, CellVerticalAlign, HeightRule, RowHeight, RowProps, Table,
+    TableCell, TableLayout, TableProps, TableRow, TableWidth, VerticalMerge,
+};
 pub use theme::{Theme, ThemeFontSet};
 pub use units::{HalfPoints, Twips};

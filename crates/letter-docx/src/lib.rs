@@ -24,6 +24,7 @@ mod properties;
 mod serialize;
 mod settings;
 mod styles;
+mod table;
 mod theme;
 mod write;
 mod xml;

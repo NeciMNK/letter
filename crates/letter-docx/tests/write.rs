@@ -10,11 +10,12 @@ use std::path::PathBuf;
 
 use letter_docx::{read_bytes, write_bytes};
 use letter_model::{
-    Alignment, Block, BreakKind, Color, DocDefaults, Document, FirstLineIndent, HalfPoints,
-    Highlight, Indentation, Inline, LineSpacing, PageMargins, PageSize, Paragraph, ParagraphProps,
-    RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps, Spacing, Style, StyleKind,
-    Styles, TabLeader, TabStop, TabStopKind, Table, TableCell, TableRow, ThemeColor, ThemeFont,
-    Twips, Underline, VerticalAlign,
+    Alignment, Block, Border, Borders, BreakKind, CellMargins, CellProps, CellVerticalAlign, Color,
+    DocDefaults, Document, FirstLineIndent, HalfPoints, HeightRule, Highlight, Indentation, Inline,
+    LineSpacing, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, RowHeight, RowProps,
+    Run, RunContent, RunFonts, RunProps, Section, SectionProps, Shading, Spacing, Style, StyleKind,
+    Styles, TabLeader, TabStop, TabStopKind, Table, TableCell, TableLayout, TableProps, TableRow,
+    TableWidth, ThemeColor, ThemeFont, Twips, Underline, VerticalAlign, VerticalMerge,
 };
 
 const FIXTURES: &[&str] = &[
@@ -260,13 +261,82 @@ fn everything() -> Document {
             }
             .into(),
             Table {
-                raw_props: vec![RawXml::new(
-                    r#"<w:tblPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:tblW w:w="0" w:type="auto"/></w:tblPr>"#,
-                )],
-                rows: vec![TableRow {
-                    raw_props: Vec::new(),
-                    cells: vec![TableCell::text("a"), TableCell::text("b")],
-                }],
+                props: Box::new(TableProps {
+                    style: Some("TableGrid".into()),
+                    width: Some(TableWidth::Percent(5000)),
+                    alignment: Some(Alignment::Center),
+                    indent: Some(TableWidth::Twips(Twips(108))),
+                    borders: Some(Borders::all(Border::single(4))),
+                    shading: Some(Shading::fill(Color::Rgb(0xEE, 0xEE, 0xEE))),
+                    layout: Some(TableLayout::Fixed),
+                    cell_margins: Some(CellMargins {
+                        left: Some(TableWidth::Twips(Twips(108))),
+                        right: Some(TableWidth::Twips(Twips(108))),
+                        ..CellMargins::default()
+                    }),
+                    unknown: Vec::new(),
+                }),
+                grid: vec![Twips(2000), Twips(3000)],
+                raw_props: Vec::new(),
+                rows: vec![
+                    TableRow {
+                        raw_props: Vec::new(),
+                        props: RowProps {
+                            height: Some(RowHeight {
+                                value: Twips(400),
+                                rule: HeightRule::Exact,
+                            }),
+                            header: Some(true),
+                            cant_split: Some(true),
+                            unknown: Vec::new(),
+                        },
+                        cells: vec![
+                            TableCell {
+                                props: CellProps {
+                                    width: Some(TableWidth::Twips(Twips(2000))),
+                                    v_merge: Some(VerticalMerge::Restart),
+                                    v_align: Some(CellVerticalAlign::Bottom),
+                                    borders: Some(Borders {
+                                        top: Some(Border {
+                                            style: "nil".into(),
+                                            size: None,
+                                            space: None,
+                                            color: None,
+                                        }),
+                                        ..Borders::default()
+                                    }),
+                                    ..CellProps::default()
+                                },
+                                ..TableCell::text("a")
+                            },
+                            TableCell::text("b"),
+                        ],
+                    },
+                    TableRow {
+                        cells: vec![
+                            TableCell {
+                                props: CellProps {
+                                    v_merge: Some(VerticalMerge::Continue),
+                                    ..CellProps::default()
+                                },
+                                blocks: vec![Paragraph::default().into()],
+                                ..TableCell::default()
+                            },
+                            TableCell {
+                                props: CellProps {
+                                    grid_span: Some(1),
+                                    margins: Some(CellMargins {
+                                        top: Some(TableWidth::Nil),
+                                        ..CellMargins::default()
+                                    }),
+                                    ..CellProps::default()
+                                },
+                                ..TableCell::text("c")
+                            },
+                        ],
+                        ..TableRow::default()
+                    },
+                ],
             }
             .into(),
             Paragraph::text("последний абзац первого раздела").into(),
