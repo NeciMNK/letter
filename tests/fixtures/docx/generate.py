@@ -169,7 +169,10 @@ def floating() -> Document:
         '<wp:wrapSquare wrapText="bothSides"/>',
         False,
     )
-    p.add_run(" text after the anchor.")
+    p.add_run(
+        " text after the anchor flows around the picture on its left side"
+        " until the lines pass below it." * 4
+    )
     p = doc.add_paragraph("Behind text: ")
     buf.seek(0)
     run = p.add_run()
@@ -181,6 +184,7 @@ def floating() -> Document:
         "<wp:wrapNone/>",
         True,
     )
+    p.add_run(" text over the picture.")
     doc.add_paragraph("Text after the pictures.")
     return doc
 

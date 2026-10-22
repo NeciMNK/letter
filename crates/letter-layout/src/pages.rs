@@ -41,8 +41,8 @@ use letter_model::{
 
 use crate::fonts::FontLibrary;
 use crate::lines::{
-    Align, InlineObject, Line, LineEnd, LineItem, ParagraphFormat, TabKind, TabLeader, TabStop,
-    TextSpan, break_lines,
+    Align, InlineObject, Line, LineEnd, LineItem, LineRoom, ParagraphFormat, TabKind, TabLeader,
+    TabStop, TextSpan, break_lines, break_lines_around,
 };
 use crate::shaping::{Shaper, TextStyle};
 use crate::spacing::{LineRule, ParagraphBlock, ParagraphSpacing, effective_spacing, gap_between};
@@ -404,7 +404,7 @@ pub fn layout_document_cached(
                         })
                         .collect();
                     for j in 0..group.len() {
-                        pager.place(group, &spacing, j, first + j);
+                        pager.place(group, &spacing, j, first + j, shaper, library);
                     }
                     i += span;
                 }
@@ -606,6 +606,76 @@ pub(crate) struct Prepared {
     label: Option<Arc<ListMark>>,
     /// Плавающие рисунки абзаца.
     floats: Vec<FloatSpec>,
+    /// Из чего заново разбить абзац на строки вокруг плавающих рисунков.
+    source: Arc<LineSource>,
+    /// Пропуск над каждой строкой, пт (строка ушла ниже рисунка, рядом
+    /// с которым ей не хватило места). Пусто — пропусков нет.
+    gaps: Vec<f32>,
+}
+
+/// Текст и оформление абзаца для разбиения на строки.
+#[derive(Debug)]
+struct LineSource {
+    spans: Vec<TextSpan>,
+    mark_style: TextStyle,
+    format: ParagraphFormat,
+    /// Высота строки номера списка: подъём, спуск и интерлиньяж.
+    label: Option<(f32, f32, f32)>,
+}
+
+/// Место, которое занимает плавающий рисунок с обтеканием, вместе
+/// с расстоянием до текста; пт от угла листа.
+#[derive(Debug, Clone, Copy)]
+struct Obstacle {
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+    /// Обтекание «сверху и снизу»: рядом с рисунком текста нет.
+    whole_width: bool,
+}
+
+impl Obstacle {
+    fn of(float: &Float) -> Option<Obstacle> {
+        let d = float.distance;
+        (float.wrap != Wrap::None).then_some(Obstacle {
+            left: float.x - d.left,
+            right: float.x + float.width + d.right,
+            top: float.y - d.top,
+            bottom: float.y + float.height + d.bottom,
+            whole_width: float.wrap == Wrap::TopAndBottom,
+        })
+    }
+}
+
+/// Самое узкое место рядом с рисунком, в которое ещё ставится текст, пт.
+const MIN_ROOM: f32 = 18.0;
+
+/// Самый широкий свободный от `obstacles` отрезок внутри `from..to`.
+fn widest_gap(from: f32, to: f32, obstacles: &[&Obstacle]) -> (f32, f32) {
+    let mut blocked: Vec<(f32, f32)> = obstacles
+        .iter()
+        .map(|o| {
+            if o.whole_width {
+                (from, to)
+            } else {
+                (o.left, o.right)
+            }
+        })
+        .collect();
+    blocked.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut best = (from, from);
+    let mut x = from;
+    for (left, right) in blocked {
+        if left > x && left.min(to) - x > best.1 - best.0 {
+            best = (x, left.min(to));
+        }
+        x = x.max(right);
+    }
+    if to - x > best.1 - best.0 {
+        best = (x, to);
+    }
+    best
 }
 
 /// Плавающий рисунок абзаца до раскладки по страницам.
@@ -754,12 +824,10 @@ fn prepare(
     let label =
         label.map(|label| list_mark(doc, paragraph, label, table, &mut format, shaper, library));
     let mut broken = break_lines(shaper, library, &spans, &mark_style, &format);
-    // Номер другим шрифтом может сделать первую строку выше.
-    if let (Some((_, height)), Some(first)) = (&label, broken.lines.first_mut()) {
-        first.ascent = first.ascent.max(height.ascent);
-        first.descent = first.descent.max(height.descent);
-        first.leading = first.leading.max(height.leading);
-    }
+    let label_height = label
+        .as_ref()
+        .map(|(_, l)| (l.ascent, l.descent, l.leading));
+    raise_first_line(&mut broken.lines, label_height);
     Prepared {
         text: broken.text.into(),
         heights: broken
@@ -777,6 +845,22 @@ fn prepare(
         widow_control: props.widow_control,
         label: label.map(|(mark, _)| Arc::new(mark)),
         floats,
+        source: Arc::new(LineSource {
+            spans,
+            mark_style,
+            format,
+            label: label_height,
+        }),
+        gaps: Vec::new(),
+    }
+}
+
+/// Номер другим шрифтом может сделать первую строку выше.
+fn raise_first_line(lines: &mut [Line], label: Option<(f32, f32, f32)>) {
+    if let (Some((ascent, descent, leading)), Some(first)) = (label, lines.first_mut()) {
+        first.ascent = first.ascent.max(ascent);
+        first.descent = first.descent.max(descent);
+        first.leading = first.leading.max(leading);
     }
 }
 
@@ -1149,6 +1233,8 @@ impl Pager {
         blocks: &[ParagraphBlock<'_>],
         i: usize,
         paragraph_index: usize,
+        shaper: &mut Shaper,
+        library: &FontLibrary,
     ) {
         let Some(p) = prepared.get(i) else {
             return;
@@ -1169,7 +1255,6 @@ impl Pager {
             }
         }
 
-        let heights = &p.heights;
         // Куски абзаца между разрывами страницы.
         let mut segments = Vec::new();
         let mut start = 0;
@@ -1195,11 +1280,15 @@ impl Pager {
             ends_with_break = true;
         }
 
+        // Обтекание рисунков — только у абзацев без разрывов страницы.
+        let wraps = segments.len() == 1 && !ends_with_break;
+        let mut current = Arc::clone(p);
         let mut first_segment = true;
         for (s, segment) in segments.iter().enumerate() {
             if s > 0 {
                 self.new_page(false);
             }
+            let mut segment = segment.clone();
             let mut next = segment.start;
             while next < segment.end {
                 let before_now = if first_segment && next == segment.start {
@@ -1207,6 +1296,14 @@ impl Pager {
                 } else {
                     0.0
                 };
+                if wraps && next == segment.start {
+                    let top = self.y + before_now;
+                    current = self
+                        .wrap(p, top, paragraph_index, shaper, library)
+                        .map_or_else(|| Arc::clone(p), Arc::new);
+                    segment.end = current.lines.len();
+                }
+                let heights = &current.heights;
                 let available = self.bottom() - self.y - before_now;
                 let remaining = segment.end - next;
                 let mut fit = 0;
@@ -1250,7 +1347,7 @@ impl Pager {
                 }
                 self.y += before_now;
                 for k in next..next + fit {
-                    self.push_line(p, k, paragraph_index);
+                    self.push_line(&current, k, paragraph_index);
                 }
                 next += fit;
                 if next < segment.end {
@@ -1265,13 +1362,110 @@ impl Pager {
         self.break_pending = ends_with_break;
     }
 
+    /// Абзац `p`, разбитый на строки заново вокруг плавающих рисунков
+    /// с обтеканием, если он начнётся на высоте `top`; `None` — рисунки
+    /// ему не мешают. Мешают рисунки, уже стоящие на странице, и рисунки
+    /// самого абзаца. Строки, ушедшие на следующую страницу, рисунки не
+    /// сужают.
+    fn wrap(
+        &self,
+        p: &Prepared,
+        top: f32,
+        paragraph: usize,
+        shaper: &mut Shaper,
+        library: &FontLibrary,
+    ) -> Option<Prepared> {
+        let g = self.geometry?;
+        let mut obstacles: Vec<Obstacle> = self
+            .pages
+            .last()
+            .map(|page| page.floats.iter().filter_map(Obstacle::of).collect())
+            .unwrap_or_default();
+        obstacles.extend(p.floats.iter().filter_map(|f| {
+            Obstacle::of(&place_float(f, &g, top, top, g.margins.left, paragraph))
+        }));
+        let bottom = self.bottom();
+        obstacles.retain(|o| o.bottom > top + EPSILON && o.top < bottom);
+        if obstacles.is_empty() {
+            return None;
+        }
+        let source = &p.source;
+        let rule = p.spacing.line;
+        let (from, to) = (g.margins.left, g.width - g.margins.right);
+        let fallback = source.mark_style.size * 1.2;
+        let mut gaps: Vec<f32> = Vec::new();
+        let mut y = top;
+        let mut room = |lines: &[Line]| -> Option<LineRoom> {
+            if let Some(last) = lines.last() {
+                y += gaps.last().copied().unwrap_or(0.0) + rule.height(last);
+            }
+            let estimate = lines.last().map_or(fallback, |l| rule.height(l));
+            let mut gap = 0.0;
+            loop {
+                let (line_top, line_bottom) = (y + gap, y + gap + estimate);
+                let hits: Vec<&Obstacle> = obstacles
+                    .iter()
+                    .filter(|o| o.top < line_bottom && o.bottom > line_top)
+                    .collect();
+                if hits.is_empty() || line_bottom > bottom + EPSILON {
+                    gaps.push(gap);
+                    return None;
+                }
+                let (left, right) = widest_gap(from, to, &hits);
+                if right - left >= MIN_ROOM {
+                    gaps.push(gap);
+                    return Some(LineRoom {
+                        left: left - from,
+                        right: right - from,
+                    });
+                }
+                // Рядом с рисунком места нет: строка уходит под него.
+                let below = hits.iter().map(|o| o.bottom).fold(line_top, f32::max);
+                gap = below - y;
+            }
+        };
+        let mut broken = break_lines_around(
+            shaper,
+            library,
+            &source.spans,
+            &source.mark_style,
+            &source.format,
+            &mut room,
+        );
+        raise_first_line(&mut broken.lines, source.label);
+        let heights = broken
+            .lines
+            .iter()
+            .zip(&gaps)
+            .map(|(line, gap)| gap + rule.height(line))
+            .collect();
+        Some(Prepared {
+            text: broken.text.into(),
+            lines: broken.lines.into_iter().map(Arc::new).collect(),
+            heights,
+            spans: p.spans.clone(),
+            spacing: p.spacing,
+            style: p.style.clone(),
+            keep_next: p.keep_next,
+            keep_lines: p.keep_lines,
+            page_break_before: p.page_break_before,
+            widow_control: p.widow_control,
+            label: p.label.clone(),
+            floats: p.floats.clone(),
+            source: Arc::clone(&p.source),
+            gaps,
+        })
+    }
+
     fn push_line(&mut self, p: &Prepared, k: usize, paragraph: usize) {
         let (Some(line), Some(&height), Some(g)) =
             (p.lines.get(k), p.heights.get(k), self.geometry)
         else {
             return;
         };
-        let top = self.y;
+        let gap = p.gaps.get(k).copied().unwrap_or(0.0);
+        let (above, top, full_height) = (self.y, self.y + gap, height);
+        let height = full_height - gap;
         let placed = PageLine {
             line: Arc::clone(line),
             x: g.margins.left,
@@ -1289,7 +1483,7 @@ impl Pager {
             .paragraph_top
             .is_none_or(|(p, page, _)| p != paragraph || page != page_index)
         {
-            self.paragraph_top = Some((paragraph, page_index, top));
+            self.paragraph_top = Some((paragraph, page_index, above));
         }
         let paragraph_top = self.paragraph_top.map_or(top, |(_, _, t)| t);
         let last = k + 1 == p.lines.len();
@@ -1306,7 +1500,7 @@ impl Pager {
             page.lines.push(placed);
             page.floats.extend(anchors);
         }
-        self.y += height;
+        self.y += full_height;
         self.has_content = true;
     }
 
@@ -1526,6 +1720,116 @@ mod tests {
                 distance: letter_model::Distance::default(),
             })),
         })
+    }
+
+    /// Рисунок `width` × `height` пт с обтеканием `wrap` в точке `x`, `y`
+    /// от угла листа.
+    fn wrapped(wrap: Wrap, x: i64, y: i64, width: i64, height: i64) -> RunContent {
+        let at = |pt: i64| Placement::Offset(pt * EMU_PER_POINT);
+        RunContent::Picture(letter_model::Picture {
+            width: width * EMU_PER_POINT,
+            height: height * EMU_PER_POINT,
+            image: None,
+            relationship: None,
+            raw: None,
+            anchor: Some(Box::new(Anchor {
+                horizontal: AnchorPosition {
+                    relative: HorizontalFrom::Page,
+                    placement: at(x),
+                },
+                vertical: AnchorPosition {
+                    relative: VerticalFrom::Page,
+                    placement: at(y),
+                },
+                wrap,
+                behind_text: false,
+                distance: letter_model::Distance::default(),
+            })),
+        })
+    }
+
+    /// Лист 200 × 200 пт без полей; первый абзац привязывает `picture`,
+    /// дальше — длинный текст.
+    fn around(picture: RunContent) -> DocumentLayout {
+        let mut anchor = para("");
+        if let Some(letter_model::Inline::Run(run)) = anchor.content.first_mut() {
+            run.content.push(picture);
+        }
+        let words = vec!["word"; 60].join(" ");
+        let mut d = doc(vec![anchor, para(&words)]);
+        d.sections[0].props.page_size = Some(PageSize {
+            width: Twips(4000),
+            height: Twips(4000),
+            orientation: Default::default(),
+        });
+        lay(&d)
+    }
+
+    #[test]
+    fn text_wraps_around_a_square_picture() {
+        let layout = around(wrapped(Wrap::Square, 0, 0, 60, 30));
+        let page = &layout.pages[0];
+        let text: Vec<&PageLine> = page.lines.iter().filter(|l| l.paragraph == 1).collect();
+        assert!(text.len() > 3);
+        for line in &text {
+            let left = line.x + line.line.x;
+            if line.top < 30.0 {
+                assert!(left >= 60.0 - 1e-3, "{} {}", line.top, left);
+                assert!(line.line.width <= 140.0 + 1e-3);
+            } else {
+                assert!(left.abs() < 1e-3, "{} {}", line.top, left);
+            }
+        }
+        assert!(text.iter().any(|l| l.top < 30.0));
+        // Рисунок справа: строки рядом с ним кончаются до него.
+        let layout = around(wrapped(Wrap::Square, 140, 0, 60, 30));
+        let line = layout.pages[0]
+            .lines
+            .iter()
+            .find(|l| l.paragraph == 1)
+            .unwrap();
+        assert!(line.line.x.abs() < 1e-3);
+        assert!(line.line.x + line.line.width <= 140.0 + 1e-3);
+    }
+
+    #[test]
+    fn text_goes_below_a_top_and_bottom_picture() {
+        let layout = around(wrapped(Wrap::TopAndBottom, 50, 0, 60, 30));
+        let page = &layout.pages[0];
+        let first = page.lines.iter().find(|l| l.paragraph == 1).unwrap();
+        assert!(first.top >= 30.0 - 1e-3, "{}", first.top);
+        assert!(first.line.x.abs() < 1e-3);
+        // Без обтекания рисунок тексту не мешает.
+        let layout = around(wrapped(Wrap::None, 50, 0, 60, 30));
+        let first = layout.pages[0]
+            .lines
+            .iter()
+            .find(|l| l.paragraph == 1)
+            .unwrap();
+        assert!(first.top < 30.0);
+    }
+
+    #[test]
+    fn widest_gap_is_found() {
+        let o = |left, right| Obstacle {
+            left,
+            right,
+            top: 0.0,
+            bottom: 1.0,
+            whole_width: false,
+        };
+        assert_eq!(widest_gap(0.0, 100.0, &[&o(10.0, 30.0)]), (30.0, 100.0));
+        assert_eq!(widest_gap(0.0, 100.0, &[&o(60.0, 120.0)]), (0.0, 60.0));
+        assert_eq!(
+            widest_gap(0.0, 100.0, &[&o(70.0, 90.0), &o(10.0, 20.0)]),
+            (20.0, 70.0)
+        );
+        let all = Obstacle {
+            whole_width: true,
+            ..o(40.0, 50.0)
+        };
+        let (left, right) = widest_gap(0.0, 100.0, &[&all]);
+        assert!(right - left < 1e-3);
     }
 
     #[test]
