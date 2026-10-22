@@ -438,31 +438,41 @@ pub fn table_design(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>
     });
 }
 
-/// Меню «Заливка»: без цвета, стандартные цвета и серые.
+/// Меню «Заливка» ячеек.
 fn shading_menu(ui: &mut Ui, out: &mut Vec<RibbonCommand>) {
-    let mut pick = |color: Option<Color>, ui: &mut Ui| {
+    shading_palette(ui, |fill| {
+        let color = fill.map(|(r, g, b)| Color::Rgb(r, g, b));
         out.push(RibbonCommand::Edit(Command::CellShading(color)));
-        ui.close();
-    };
+    });
+}
+
+/// Палитра «Заливка»: без цвета, стандартные цвета и серые. `pick`
+/// получает выбранный цвет (`None` — «Нет цвета»), меню закрывается.
+pub(crate) fn shading_palette(ui: &mut Ui, mut pick: impl FnMut(Option<(u8, u8, u8)>)) {
     if ui.button(tr("shading-none")).clicked() {
-        pick(None, ui);
+        pick(None);
+        ui.close();
     }
     ui.label(egui::RichText::new(tr("color-standard")).small());
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        for (name, rgb) in crate::home::STANDARD_COLORS {
-            if crate::home::swatch(ui, crate::home::color32(rgb), tr(name)).clicked() {
-                pick(Some(Color::Rgb(rgb.0, rgb.1, rgb.2)), ui);
+    for colors in [
+        &crate::home::STANDARD_COLORS.map(|(_, rgb)| rgb)[..],
+        &GRAYS[..],
+    ] {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for &rgb in colors {
+                let name = crate::home::STANDARD_COLORS
+                    .iter()
+                    .find(|(_, c)| *c == rgb)
+                    .map_or_else(
+                        || format!("#{:02X}{:02X}{:02X}", rgb.0, rgb.1, rgb.2),
+                        |(name, _)| tr(name).to_string(),
+                    );
+                if crate::home::swatch(ui, crate::home::color32(rgb), &name).clicked() {
+                    pick(Some(rgb));
+                    ui.close();
+                }
             }
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        for rgb in GRAYS {
-            let name = format!("#{:02X}{:02X}{:02X}", rgb.0, rgb.1, rgb.2);
-            if crate::home::swatch(ui, crate::home::color32(rgb), &name).clicked() {
-                pick(Some(Color::Rgb(rgb.0, rgb.1, rgb.2)), ui);
-            }
-        }
-    });
+        });
+    }
 }

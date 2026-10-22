@@ -5,9 +5,10 @@
 //! Ctrl+R, Ctrl+J).
 
 use letter_model::{
-    Alignment, Color, Document, FirstLineIndent, HalfPoints, Highlight, Inline, LineSpacing,
-    Paragraph, ResolvedParagraphProps, ResolvedRunProps, Run, RunProps, StyleKind, TabLeader,
-    TabStop, TabStopKind, Twips, Underline, VerticalAlign,
+    Alignment, Border, Color, Document, FirstLineIndent, HalfPoints, Highlight, Inline,
+    LineSpacing, Paragraph, ParagraphBorders, ParagraphProps, ResolvedParagraphProps,
+    ResolvedRunProps, Run, RunProps, Shading, StyleKind, TabLeader, TabStop, TabStopKind, Twips,
+    Underline, VerticalAlign,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -374,6 +375,116 @@ pub enum ParagraphFormat {
     Reset,
     /// Изменения из окна «Абзац».
     Set(ParagraphChanges),
+    /// «Заливка»: цвет фона абзаца; `None` — «Нет цвета».
+    Shading(Option<(u8, u8, u8)>),
+    /// «Границы»: поставить или убрать линии.
+    Border(BorderEdge),
+}
+
+/// Пункт меню «Границы» для абзацев. Линия ставится, если её ещё нет
+/// у первого абзаца, иначе убирается, как в Word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BorderEdge {
+    /// «Нижняя граница».
+    Bottom,
+    /// «Верхняя граница».
+    Top,
+    /// «Левая граница».
+    Left,
+    /// «Правая граница».
+    Right,
+    /// «Нет границы»: убрать все линии.
+    None,
+    /// «Все границы»: рамка и линии между абзацами.
+    All,
+    /// «Внешние границы»: рамка вокруг абзацев.
+    Outside,
+    /// «Внутренние границы»: линии между абзацами.
+    Inside,
+}
+
+impl BorderEdge {
+    /// Все пункты в порядке меню Word.
+    pub const ALL: [BorderEdge; 8] = [
+        BorderEdge::Bottom,
+        BorderEdge::Top,
+        BorderEdge::Left,
+        BorderEdge::Right,
+        BorderEdge::None,
+        BorderEdge::All,
+        BorderEdge::Outside,
+        BorderEdge::Inside,
+    ];
+
+    /// Стороны, которые меняет пункт: сверху, слева, снизу, справа,
+    /// между абзацами.
+    fn sides(self) -> [bool; 5] {
+        match self {
+            BorderEdge::Top => [true, false, false, false, false],
+            BorderEdge::Left => [false, true, false, false, false],
+            BorderEdge::Bottom => [false, false, true, false, false],
+            BorderEdge::Right => [false, false, false, true, false],
+            BorderEdge::Inside => [false, false, false, false, true],
+            BorderEdge::Outside => [true, true, true, true, false],
+            BorderEdge::None | BorderEdge::All => [true; 5],
+        }
+    }
+
+    /// Линии стоят у абзаца с границами `borders`.
+    pub fn is_set(self, borders: &ParagraphBorders) -> bool {
+        self != BorderEdge::None
+            && sides_of(borders)
+                .iter()
+                .zip(self.sides())
+                .filter(|(_, used)| *used)
+                .all(|(side, _)| ParagraphBorders::visible(side).is_some())
+    }
+}
+
+/// Стороны границ абзаца по порядку [`BorderEdge::sides`].
+fn sides_of(b: &ParagraphBorders) -> [&Option<Border>; 5] {
+    [&b.top, &b.left, &b.bottom, &b.right, &b.between]
+}
+
+/// Линия, которую ставит кнопка «Границы»: сплошная 0,5 пт цвета
+/// «Авто», от текста на 1 пт сверху и снизу и на 4 пт сбоку.
+fn default_border(side: usize) -> Border {
+    Border {
+        space: Some(if side == 1 || side == 3 { 4 } else { 1 }),
+        ..Border::single(4)
+    }
+}
+
+/// Ставит (`on`) или убирает линии `edge` в прямом оформлении абзаца;
+/// убранная линия, которая есть в стиле, записывается видом `nil`.
+fn set_borders(props: &mut ParagraphProps, style: &ParagraphBorders, edge: BorderEdge, on: bool) {
+    let mut borders = props.borders.take().unwrap_or_default();
+    let styled = sides_of(style).map(|s| ParagraphBorders::visible(s).is_some());
+    let slots = [
+        &mut borders.top,
+        &mut borders.left,
+        &mut borders.bottom,
+        &mut borders.right,
+        &mut borders.between,
+    ];
+    for (k, (slot, used)) in slots.into_iter().zip(edge.sides()).enumerate() {
+        if !used {
+            continue;
+        }
+        *slot = if on {
+            Some(default_border(k))
+        } else if styled[k] {
+            Some(Border {
+                style: "nil".into(),
+                size: None,
+                space: None,
+                color: None,
+            })
+        } else {
+            None
+        };
+    }
+    props.borders = (!borders.is_empty()).then_some(borders);
 }
 
 /// Изменения из окна «Абзац»: `None` — поле не трогали, у абзацев
@@ -426,12 +537,26 @@ pub fn format_paragraphs(
     // Ctrl+0 смотрит на первый абзац: есть интервал — убрать у всех.
     let had_space_before = paragraph_ref(doc, first.paragraph)
         .is_some_and(|p| doc.resolve_paragraph(&p.props).space_before.0 > 0);
+    // «Границы» ставят линии, если у первого абзаца их нет.
+    let borders_on = match format {
+        ParagraphFormat::Border(BorderEdge::None) => false,
+        ParagraphFormat::Border(edge) => !paragraph_ref(doc, first.paragraph)
+            .is_some_and(|p| edge.is_set(&doc.resolve_paragraph(&p.props).borders)),
+        _ => false,
+    };
     for index in first.paragraph..=last.paragraph {
         let Some(resolved) = paragraph_ref(doc, index).map(|p| doc.resolve_paragraph(&p.props))
         else {
             continue;
         };
         let left = resolved.indent_left.0;
+        // Оформление стиля без прямого оформления абзаца.
+        let styled = paragraph_ref(doc, index).map(|p| {
+            doc.resolve_paragraph(&ParagraphProps {
+                style: p.props.style.clone(),
+                ..ParagraphProps::default()
+            })
+        });
         let Some(paragraph) = paragraph_mut(doc, index) else {
             continue;
         };
@@ -469,7 +594,7 @@ pub fn format_paragraphs(
                 props.spacing.before = Some(Twips(if had_space_before { 0 } else { 240 }));
             }
             ParagraphFormat::Reset => {
-                // Список и непонятые нами свойства (границы) не трогаем.
+                // Список и непонятые нами свойства не трогаем.
                 let style = props.style.take();
                 let numbering = props.numbering.take();
                 let unknown = std::mem::take(&mut props.unknown);
@@ -528,6 +653,18 @@ pub fn format_paragraphs(
                 set(&mut props.keep_next, changes.keep_next);
                 set(&mut props.keep_lines, changes.keep_lines);
                 set(&mut props.page_break_before, changes.page_break_before);
+            }
+            ParagraphFormat::Shading(fill) => {
+                let in_style = styled.as_ref().is_some_and(|s| s.shading.is_some());
+                props.shading = match fill {
+                    Some((r, g, b)) => Some(Shading::fill(Color::Rgb(r, g, b))),
+                    None if in_style => Some(Shading::fill(Color::Auto)),
+                    None => None,
+                };
+            }
+            ParagraphFormat::Border(edge) => {
+                let style = styled.map(|s| s.borders).unwrap_or_default();
+                set_borders(props, &style, edge, borders_on);
             }
         }
     }
@@ -1321,6 +1458,56 @@ mod tests {
         let before = d.clone();
         apply_style(&mut d, Position::new(0, 0), Position::new(1, 0), "Missing");
         assert_eq!(d, before);
+    }
+
+    #[test]
+    fn borders_and_shading_toggle() {
+        let mut d = doc(vec![Paragraph::text("a"), Paragraph::text("b")]);
+        let (start, end) = (Position::new(0, 0), Position::new(1, 0));
+        let border = |edge| ParagraphFormat::Border(edge);
+        format_paragraphs(&mut d, start, end, border(BorderEdge::Bottom));
+        for i in 0..2 {
+            let b = para(&d, i).props.borders.clone().unwrap_or_default();
+            assert_eq!(b.bottom.as_ref().map(|b| b.style.as_str()), Some("single"));
+            assert!(b.top.is_none());
+        }
+        // Второй раз — убрать.
+        format_paragraphs(&mut d, start, end, border(BorderEdge::Bottom));
+        assert_eq!(para(&d, 0).props.borders, None);
+        format_paragraphs(&mut d, start, end, border(BorderEdge::All));
+        let all = para(&d, 1).props.borders.clone().unwrap_or_default();
+        assert!(BorderEdge::All.is_set(&all) && BorderEdge::Inside.is_set(&all));
+        assert_eq!(all.left.and_then(|b| b.space), Some(4));
+        format_paragraphs(&mut d, start, end, border(BorderEdge::None));
+        assert_eq!(para(&d, 1).props.borders, None);
+
+        // Линия из стиля убирается видом «nil».
+        let mut style = Style::new("Boxed", StyleKind::Paragraph);
+        style.paragraph.borders = Some(ParagraphBorders::frame(Border::single(4)));
+        style.paragraph.shading = Some(Shading::fill(Color::Rgb(1, 2, 3)));
+        d.styles.styles.push(style);
+        para_mut(&mut d, 0).props.style = Some("Boxed".into());
+        format_paragraphs(&mut d, start, start, border(BorderEdge::Top));
+        let top = para(&d, 0).props.borders.clone().and_then(|b| b.top);
+        assert_eq!(top.map(|b| b.style), Some("nil".to_string()));
+        let resolved = d.resolve_paragraph(&para(&d, 0).props);
+        assert!(!BorderEdge::Top.is_set(&resolved.borders));
+        assert!(BorderEdge::Bottom.is_set(&resolved.borders));
+
+        let shade = |fill| ParagraphFormat::Shading(fill);
+        format_paragraphs(&mut d, start, end, shade(Some((255, 0, 0))));
+        assert_eq!(
+            para(&d, 1)
+                .props
+                .shading
+                .as_ref()
+                .and_then(Shading::background),
+            Some((255, 0, 0))
+        );
+        format_paragraphs(&mut d, start, end, shade(None));
+        assert_eq!(para(&d, 1).props.shading, None);
+        let styled = d.resolve_paragraph(&para(&d, 0).props);
+        assert_eq!(styled.shading.and_then(|s| s.background()), None);
     }
 
     #[test]
