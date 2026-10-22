@@ -34,7 +34,7 @@ use letter_model::{Alignment, Document, Statistics};
 use letter_render::{DESK_COLOR, MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, formatting_marks};
 
 use crate::backstage::{Backstage, BackstageInfo, DocumentInfo, Page};
-use crate::clipboard::{Clipboard, SystemBuffer};
+use crate::clipboard::{Clipboard, PasteMode, SystemBuffer};
 use crate::files::{self, Autosave, OPEN_FILTERS, Recent, Recovered, SAVE_FILTERS};
 use crate::find::{FindAction, FindDialog};
 use crate::font_dialog::{FontDialog, FontValues};
@@ -273,7 +273,7 @@ enum Action {
     Copy,
     Cut,
     /// Вставить; система передала текст из буфера.
-    Paste(String),
+    Paste(String, PasteMode),
 }
 
 /// Что сделать, когда пользователь ответит, сохранять ли изменения.
@@ -1031,10 +1031,10 @@ impl Viewer {
                     document.set_selection(select_all(&document.layout));
                     document.history.seal();
                 }
-                Action::Copy | Action::Cut | Action::Paste(_) => {
+                Action::Copy | Action::Cut | Action::Paste(..) => {
                     let selection = document.selection();
                     let command = match action {
-                        Action::Paste(text) => self.clipboard.paste(&text),
+                        Action::Paste(text, mode) => self.clipboard.paste_as(&text, mode),
                         _ if selection.is_empty() => continue,
                         _ => {
                             let (start, end) = (selection.start(), selection.end());
@@ -1216,7 +1216,12 @@ impl Viewer {
                 RibbonCommand::Copy => actions.push(Action::Copy),
                 RibbonCommand::Paste => {
                     if let Some(text) = self.clipboard.text() {
-                        actions.push(Action::Paste(text));
+                        actions.push(Action::Paste(text, PasteMode::KeepSource));
+                    }
+                }
+                RibbonCommand::PasteSpecial(mode) => {
+                    if let Some(text) = self.clipboard.text() {
+                        actions.push(Action::Paste(text, mode));
                     }
                 }
                 RibbonCommand::Format(format) => {
@@ -1527,6 +1532,7 @@ impl Viewer {
             area = area.scroll_offset(offset);
         }
         let mut ruler_page = None;
+        let mut menu = Vec::new();
         let output = area.show_viewport(ui, |ui, viewport| {
             let origin = ui.max_rect().min;
             let response = ui
@@ -1588,7 +1594,25 @@ impl Viewer {
                     document.cursor = picked.focus;
                     document.goal_x = None;
                 }
+                // Правая кнопка вне выделения переносит курсор, как в Word.
+                let secondary = ui.input(|i| i.pointer.secondary_pressed());
+                let selection = Selection::new(document.anchor, document.cursor);
+                let key = |p: Position| (p.paragraph, p.offset);
+                let inside = !selection.is_empty()
+                    && key(position) >= key(selection.start())
+                    && key(position) <= key(selection.end());
+                if secondary && response.hovered() && !inside {
+                    document.cursor = position;
+                    document.anchor = position;
+                    document.history.seal();
+                    document.cursor_since = now;
+                    document.goal_x = None;
+                }
             }
+            let has_selection = document.anchor != document.cursor;
+            response.context_menu(|ui| {
+                crate::context_menu::context_menu(ui, has_selection, &mut menu);
+            });
 
             // Тень листа выходит за его края: рисуем и чуть невидимые.
             let visible = viewport.expand(PAGE_GAP);
@@ -1658,6 +1682,10 @@ impl Viewer {
             }
         });
         self.ruler_page = ruler_page;
+        if !menu.is_empty() {
+            let ctx = ui.ctx().clone();
+            self.run_ribbon(&ctx, menu);
+        }
         self.offset = output.state.clamped_offset();
         self.view_size = output.inner_rect.size();
         self.current_page = current_page(&placement, self.offset.y, self.view_size.y);
@@ -1789,7 +1817,7 @@ fn key_action(event: &egui::Event, screen: f32) -> Option<Action> {
         // управляющие знаки отсюда выбрасываем.
         Event::Copy => Some(Action::Copy),
         Event::Cut => Some(Action::Cut),
-        Event::Paste(text) => Some(Action::Paste(text.clone())),
+        Event::Paste(text) => Some(Action::Paste(text.clone(), PasteMode::KeepSource)),
         Event::Text(text) | Event::Ime(ImeEvent::Commit(text)) => {
             let text: String = text.chars().filter(|c| !c.is_control()).collect();
             (!text.is_empty()).then_some(Action::Edit(Command::Type(text)))
@@ -2861,6 +2889,9 @@ mod tests {
         *fake.content.borrow_mut() = ("слово".into(), None);
         viewer.run_ribbon(&ctx, vec![RibbonCommand::Paste]);
         assert_eq!(first_text(&mut viewer), "слово");
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::PasteSpecial(PasteMode::TextOnly)]);
+        assert_eq!(first_text(&mut viewer), "словослово");
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
         let info = viewer.ribbon_info();
         assert!(info.can_undo && !info.bold && !info.has_selection);
 

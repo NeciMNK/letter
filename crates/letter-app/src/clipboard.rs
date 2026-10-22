@@ -8,7 +8,21 @@
 //! берётся HTML, затем RTF (если текст — это RTF), затем простой текст.
 
 use letter_editor::Command;
-use letter_model::Document;
+use letter_model::{Block, Document, Inline, ParagraphProps, RunProps};
+
+/// Как вставить («Параметры вставки» Word).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PasteMode {
+    /// «Сохранить исходное форматирование».
+    #[default]
+    KeepSource,
+    /// «Объединить форматирование»: остаются только полужирный, курсив,
+    /// подчёркивание, зачёркивание и индексы; шрифт, размер, цвет и стили
+    /// берутся из места вставки.
+    Merge,
+    /// «Сохранить только текст».
+    TextOnly,
+}
 
 /// Системный буфер обмена. Отдельный тип, чтобы тесты не трогали
 /// настоящий буфер.
@@ -79,6 +93,21 @@ impl Clipboard {
         self.system.text().filter(|t| !t.is_empty())
     }
 
+    /// Что вставить способом `mode`, если система передала текст `text`.
+    pub fn paste_as(&mut self, text: &str, mode: PasteMode) -> Command {
+        match mode {
+            PasteMode::KeepSource => self.paste(text),
+            PasteMode::TextOnly => Command::PasteText(text.to_owned()),
+            PasteMode::Merge => match self.paste(text) {
+                Command::Paste(mut fragment) => {
+                    merge_formatting(&mut fragment);
+                    Command::Paste(fragment)
+                }
+                other => other,
+            },
+        }
+    }
+
     /// Что вставить, если система передала текст `text` (Ctrl+V).
     pub fn paste(&mut self, text: &str) -> Command {
         if let Some((own, fragment)) = &self.own
@@ -96,6 +125,42 @@ impl Clipboard {
             return Command::Paste(Box::new(fragment));
         }
         Command::PasteText(text.to_owned())
+    }
+}
+
+/// «Объединить форматирование»: у абзацев и фрагментов остаётся только
+/// начертание (полужирный, курсив, подчёркивание, зачёркивание, индексы).
+fn merge_formatting(fragment: &mut Document) {
+    fn strip(blocks: &mut [Block]) {
+        for block in blocks {
+            match block {
+                Block::Paragraph(p) => {
+                    p.props = ParagraphProps::default();
+                    for inline in &mut p.content {
+                        let Inline::Run(run) = inline else { continue };
+                        let old = std::mem::take(&mut run.props);
+                        run.props = RunProps {
+                            bold: old.bold,
+                            italic: old.italic,
+                            underline: old.underline,
+                            strike: old.strike,
+                            double_strike: old.double_strike,
+                            vertical_align: old.vertical_align,
+                            ..RunProps::default()
+                        };
+                    }
+                }
+                Block::Table(table) => {
+                    for cell in table.rows.iter_mut().flat_map(|r| &mut r.cells) {
+                        strip(&mut cell.blocks);
+                    }
+                }
+                Block::Unknown(_) => {}
+            }
+        }
+    }
+    for section in &mut fragment.sections {
+        strip(&mut section.blocks);
     }
 }
 
@@ -202,5 +267,38 @@ pub mod tests {
         };
         assert_eq!(fragment.plain_text().trim(), "RTF");
         assert_eq!(clipboard.paste("plain"), Command::PasteText("plain".into()));
+    }
+
+    #[test]
+    fn paste_options() {
+        let fake = FakeBuffer::default();
+        let mut clipboard = Clipboard::new(Box::new(fake.clone()));
+        let mut doc = bold_doc();
+        if let Some(Block::Paragraph(p)) = doc.sections[0].blocks.first_mut() {
+            p.props.style = Some("Heading1".into());
+            if let Some(Inline::Run(run)) = p.content.first_mut() {
+                run.props.size = Some(letter_model::HalfPoints(40));
+            }
+        }
+        let part = copy_range(&doc, Position::new(0, 0), Position::new(1, 3));
+        clipboard.copy(part.clone());
+        assert_eq!(
+            clipboard.paste_as("bold\nsec", PasteMode::KeepSource),
+            Command::Paste(Box::new(part))
+        );
+        assert_eq!(
+            clipboard.paste_as("bold\nsec", PasteMode::TextOnly),
+            Command::PasteText("bold\nsec".into())
+        );
+        let Command::Paste(merged) = clipboard.paste_as("bold\nsec", PasteMode::Merge) else {
+            panic!("ждали кусок");
+        };
+        let Some(Block::Paragraph(p)) = merged.sections[0].blocks.first() else {
+            panic!()
+        };
+        // Полужирный остался, размер и стиль абзаца — нет.
+        assert_eq!(p.props.style, None);
+        let run = p.runs().next().unwrap();
+        assert_eq!((run.props.bold, run.props.size), (Some(true), None));
     }
 }
