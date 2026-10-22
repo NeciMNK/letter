@@ -16,6 +16,7 @@
 pub mod caret;
 pub mod clipboard;
 pub mod edit;
+pub mod fields;
 pub mod format;
 pub mod history;
 pub mod lists;
@@ -30,9 +31,10 @@ pub mod table;
 pub use caret::{Caret, CaretStop, caret, hit_test, line_stops, position_in_line};
 pub use clipboard::{copy_range, insert_fragment, insert_plain_text};
 pub use edit::{
-    delete_backward, delete_forward, delete_range, insert_line_break, insert_text, paragraph_mut,
-    split_paragraph,
+    delete_backward, delete_forward, delete_range, insert_line_break, insert_text, paragraph_count,
+    paragraph_mut, split_paragraph,
 };
+pub use fields::{DateTime, FieldContext, format_date, update_fields};
 pub use format::{
     ParagraphChanges, ParagraphFormat, RunChanges, RunFormat, align_paragraphs, apply_style,
     format_paragraphs, format_runs, formatting_at, language_at,

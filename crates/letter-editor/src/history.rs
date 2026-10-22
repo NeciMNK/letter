@@ -18,6 +18,7 @@ use crate::edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, split_paragraph,
     top_level,
 };
+use crate::fields::{FieldContext, update_fields};
 use crate::format::{
     ParagraphFormat, RunFormat, align_paragraphs, apply_style, format_paragraphs, format_runs,
 };
@@ -146,6 +147,8 @@ pub enum Command {
         /// Включить.
         on: bool,
     },
+    /// Обновить поля в абзацах выделенного (F9).
+    UpdateFields(Box<FieldContext>),
     /// «Заменить все»: найденное `query` заменить на `replacement` во
     /// всём документе. Курсор остаётся в том же абзаце (выделение
     /// снимается).
@@ -298,6 +301,7 @@ impl History {
                 | Command::PageSetup(_)
                 | Command::HeaderFooter { .. }
                 | Command::TitlePage { .. }
+                | Command::UpdateFields(_)
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -451,6 +455,13 @@ impl History {
                 set_title_page(doc, *section, *on);
                 Some(selection)
             }
+            Command::UpdateFields(context) => {
+                update_fields(doc, start.paragraph, end.paragraph, context);
+                Some(Selection {
+                    anchor: clamp(doc, selection.anchor),
+                    focus: clamp(doc, selection.focus),
+                })
+            }
             _ => None,
         };
         let focus = match &command {
@@ -490,7 +501,8 @@ impl History {
             | Command::PictureAnchor(_)
             | Command::PageSetup(_)
             | Command::HeaderFooter { .. }
-            | Command::TitlePage { .. } => at,
+            | Command::TitlePage { .. }
+            | Command::UpdateFields(_) => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
 

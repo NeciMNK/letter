@@ -18,6 +18,8 @@ path = "src/main.rs"
 [dependencies]
 # Системный буфер обмена с HTML (уже приходит вместе с eframe).
 arboard = { version = "3.7", default-features = false }
+# Местное время и часовой пояс для полей DATE и TIME.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 eframe.workspace = true
 # Переводы интерфейса (Project Fluent, файлы assets/i18n/*.ftl).
 fluent-bundle = "0.16"

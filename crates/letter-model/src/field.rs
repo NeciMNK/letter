@@ -75,6 +75,103 @@ impl Field {
         let at = arguments.iter().position(|a| a == switch)?;
         arguments.get(at + 1).cloned()
     }
+
+    /// Ключи вида `\* формат` по порядку, кроме `MERGEFORMAT` и
+    /// `CHARFORMAT` (они про оформление результата).
+    fn formats(&self) -> Vec<String> {
+        let arguments = self.arguments();
+        arguments
+            .windows(2)
+            .filter(|w| w[0] == "\\*")
+            .map(|w| w[1].clone())
+            .filter(|f| {
+                !f.eq_ignore_ascii_case("MERGEFORMAT") && !f.eq_ignore_ascii_case("CHARFORMAT")
+            })
+            .collect()
+    }
+
+    /// Число `n` в виде, который задаёт ключ `\*`: `roman`, `ROMAN`,
+    /// `alphabetic`, `ALPHABETIC`, `ArabicDash`; иначе арабскими цифрами.
+    pub fn format_number(&self, n: usize) -> String {
+        let mut out = n.to_string();
+        for format in self.formats() {
+            out = match format.as_str() {
+                "roman" => roman(n).to_lowercase(),
+                "ROMAN" | "Roman" => roman(n),
+                "alphabetic" => alphabetic(n).to_lowercase(),
+                "ALPHABETIC" | "Alphabetic" => alphabetic(n),
+                "ArabicDash" => format!("- {n} -"),
+                _ => out,
+            };
+        }
+        self.format_text(&out)
+    }
+
+    /// Текст в виде, который задаёт ключ `\*`: `Upper` (прописные),
+    /// `Lower` (строчные), `Caps` (каждое слово с прописной), `FirstCap`
+    /// (первая буква прописная).
+    pub fn format_text(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        for format in self.formats() {
+            out = match format.to_ascii_lowercase().as_str() {
+                "upper" => out.to_uppercase(),
+                "lower" => out.to_lowercase(),
+                "caps" => out
+                    .split(' ')
+                    .map(capitalized)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                "firstcap" => capitalized(&out),
+                _ => out,
+            };
+        }
+        out
+    }
+}
+
+/// Слово с первой буквой прописной.
+fn capitalized(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// Римская запись числа (0 — пусто).
+pub fn roman(mut n: usize) -> String {
+    const DIGITS: [(usize, &str); 13] = [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+    let mut out = String::new();
+    for (value, digit) in DIGITS {
+        while n >= value {
+            out.push_str(digit);
+            n -= value;
+        }
+    }
+    out
+}
+
+/// Буквенная запись, как в Word: A…Z, потом AA…ZZ, AAA…
+pub fn alphabetic(n: usize) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    let letter = char::from(b'A' + ((n - 1) % 26) as u8);
+    letter.to_string().repeat((n - 1) / 26 + 1)
 }
 
 /// Поля абзаца по порядку их начала (вложенные — после внешних).
@@ -281,6 +378,37 @@ mod tests {
         assert_eq!(p.plain_text(), "Date: 22.10.2026, page 3");
         assert_eq!(fields(&p).len(), 2);
         assert!(!set_field_result(&mut p, 2, "x"));
+    }
+
+    fn field(code: &str) -> Field {
+        Field {
+            code: code.into(),
+            result: 0..0,
+            depth: 0,
+            dirty: false,
+            locked: false,
+        }
+    }
+
+    #[test]
+    fn formats() {
+        assert_eq!(field("PAGE \\* roman").format_number(14), "xiv");
+        assert_eq!(
+            field("PAGE \\* ROMAN \\* MERGEFORMAT").format_number(4),
+            "IV"
+        );
+        assert_eq!(field("PAGE \\* ALPHABETIC").format_number(28), "BB");
+        assert_eq!(field("PAGE \\* ArabicDash").format_number(2), "- 2 -");
+        assert_eq!(field("PAGE").format_number(5), "5");
+        assert_eq!(field("TITLE \\* Upper").format_text("Отчёт"), "ОТЧЁТ");
+        assert_eq!(
+            field("TITLE \\* Caps").format_text("годовой отчёт"),
+            "Годовой Отчёт"
+        );
+        assert_eq!(
+            field("TITLE \\* FirstCap").format_text("годовой отчёт"),
+            "Годовой отчёт"
+        );
     }
 
     #[test]
