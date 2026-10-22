@@ -9,6 +9,7 @@
 //! - [`history`] — команды правки, отмена и повтор;
 //! - [`clipboard`] — копирование и вставка;
 //! - [`format`] — оформление выделенного;
+//! - [`lists`] — списки: маркеры, нумерация, уровни;
 //! - [`search`] — поиск и замена.
 
 pub mod caret;
@@ -16,6 +17,7 @@ pub mod clipboard;
 pub mod edit;
 pub mod format;
 pub mod history;
+pub mod lists;
 pub mod navigation;
 pub mod position;
 pub mod search;
@@ -32,6 +34,10 @@ pub use format::{
     format_paragraphs, format_runs, formatting_at, language_at,
 };
 pub use history::{Command, History};
+pub use lists::{
+    ListKind, change_list_level, list_item, list_kind, remove_from_list, tab_changes_level,
+    toggle_list,
+};
 pub use navigation::{Motion, Moved, move_cursor};
 pub use position::{Affinity, Position};
 pub use search::{Found, SearchOptions, find_all, find_next, replace_all};

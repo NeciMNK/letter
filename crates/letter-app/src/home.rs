@@ -4,7 +4,7 @@
 
 use crate::i18n::tr;
 use eframe::egui::{self, Color32, Key, RichText, TextEdit, Ui, vec2};
-use letter_editor::{ParagraphFormat, RunFormat};
+use letter_editor::{ListKind, ParagraphFormat, RunFormat};
 use letter_model::{Alignment, Color, HalfPoints, Highlight, LineSpacing, Twips};
 
 use crate::icons::{self, Icon, color_button, icon_button, icon_text_button};
@@ -114,7 +114,7 @@ fn font_color32(color: Color) -> Color32 {
 /// Подсказки клавиш вкладки «Главная» (имена в файлах перевода) — для
 /// проверки, что они не мешают друг другу.
 #[cfg(test)]
-pub const KEYTIPS: [&str; 30] = [
+pub const KEYTIPS: [&str; 32] = [
     "keytip-home-paste",
     "keytip-home-cut",
     "keytip-home-copy",
@@ -132,6 +132,8 @@ pub const KEYTIPS: [&str; 30] = [
     "keytip-home-highlight",
     "keytip-home-font-color",
     "keytip-home-font-dialog",
+    "keytip-home-bullets",
+    "keytip-home-numbering",
     "keytip-home-indent-less",
     "keytip-home-indent-more",
     "keytip-home-marks",
@@ -377,6 +379,29 @@ fn paragraph_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>)
     let doc = info.has_document;
     let button = vec2(26.0, 24.0);
     ui.horizontal(|ui| {
+        for (icon, name, tip, key, kind) in [
+            (
+                Icon::Bullets,
+                tr("bullets"),
+                tr("bullets-hint"),
+                "keytip-home-bullets",
+                ListKind::Bullet,
+            ),
+            (
+                Icon::Numbering,
+                tr("numbering"),
+                tr("numbering-hint"),
+                "keytip-home-numbering",
+                ListKind::Numbered,
+            ),
+        ] {
+            let on = info.list == Some(kind);
+            let response = icon_button(ui, icon, name, button, doc, on).on_hover_text(tip);
+            keytip(ui, &response, key, RibbonCommand::List(kind));
+            if response.clicked() {
+                out.push(RibbonCommand::List(kind));
+            }
+        }
         for (icon, name, key, format) in [
             (
                 Icon::IndentLess,

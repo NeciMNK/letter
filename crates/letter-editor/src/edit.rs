@@ -8,6 +8,7 @@
 use letter_model::{Block, BreakKind, Document, Inline, Paragraph, Run, RunContent};
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::lists::{list_item, remove_from_list};
 use crate::position::Position;
 
 /// Вставляет текст на место курсора. Знак `\t` становится табуляцией,
@@ -54,10 +55,17 @@ pub fn insert_line_break(doc: &mut Document, at: Position) -> Position {
 /// Enter: делит абзац на два. Новый абзац получает оформление прежнего,
 /// а если Enter нажат в конце абзаца со стилем, у которого задан
 /// «стиль следующего абзаца» (после заголовка — «Обычный»), — этот стиль.
+/// Новый пункт списка продолжает список; Enter в пустом пункте
+/// заканчивает список.
 pub fn split_paragraph(doc: &mut Document, at: Position) -> Position {
     let Some(path) = find(doc, at.paragraph) else {
         return at;
     };
+    let empty = paragraph_ref(doc, at.paragraph).is_some_and(|p| text_len(p) == 0);
+    if empty && list_item(doc, at.paragraph).is_some() {
+        remove_from_list(doc, at.paragraph, false);
+        return at;
+    }
     let next_style = {
         let Some(paragraph) = paragraph_mut(doc, at.paragraph) else {
             return at;
@@ -99,6 +107,14 @@ pub fn delete_backward(doc: &mut Document, at: Position) -> Position {
         return at;
     };
     let offset = clamp_offset(paragraph, at.offset);
+    // В начале пункта списка Backspace сначала убирает номер.
+    if offset == 0 && list_item(doc, at.paragraph).is_some() {
+        remove_from_list(doc, at.paragraph, true);
+        return at;
+    }
+    let Some(paragraph) = paragraph_mut(doc, at.paragraph) else {
+        return at;
+    };
     if offset > 0 {
         let text = plain_text(paragraph);
         let start = text[..offset]

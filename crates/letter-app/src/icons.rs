@@ -79,6 +79,10 @@ pub enum Icon {
     PasteMerge,
     /// Вставить только текст.
     PasteText,
+    /// Маркированный список.
+    Bullets,
+    /// Нумерованный список.
+    Numbering,
 }
 
 /// Шрифт со значками.
@@ -134,6 +138,8 @@ impl Icon {
             Icon::PasteKeep => ("clipboard-pen-line", '\u{E308}'),
             Icon::PasteMerge => ("clipboard-list", '\u{E086}'),
             Icon::PasteText => ("clipboard-type", '\u{E309}'),
+            Icon::Bullets => ("list", '\u{E106}'),
+            Icon::Numbering => ("list-ordered", '\u{E1D1}'),
         }
     }
 }

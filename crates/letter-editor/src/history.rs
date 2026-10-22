@@ -18,6 +18,7 @@ use crate::edit::{
 use crate::format::{
     ParagraphFormat, RunFormat, align_paragraphs, apply_style, format_paragraphs, format_runs,
 };
+use crate::lists::{ListKind, change_list_level, tab_changes_level, toggle_list};
 use crate::search::{SearchOptions, clamp, replace_all};
 use crate::selection::Selection;
 
@@ -46,6 +47,16 @@ pub enum Command {
     Paragraph(ParagraphFormat),
     /// Применить стиль с этим идентификатором.
     Style(String),
+    /// Кнопка «Маркеры» или «Нумерация».
+    List(ListKind),
+    /// Уровень пунктов списка глубже (+1) или выше (−1).
+    ListLevel(i8),
+    /// Tab (`shift` — Shift+Tab): в начале пункта списка меняет уровень,
+    /// иначе Tab вставляет табуляцию, а Shift+Tab ничего не делает.
+    Tab {
+        /// С Shift.
+        shift: bool,
+    },
     /// «Заменить все»: найденное `query` заменить на `replacement` во
     /// всём документе. Курсор остаётся в том же абзаце (выделение
     /// снимается).
@@ -153,6 +164,14 @@ impl History {
     /// выделение (пустое — курсор).
     pub fn run(&mut self, doc: &mut Document, selection: Selection, command: Command) -> Selection {
         let (start, end) = (selection.start(), selection.end());
+        let command = match command {
+            Command::Tab { shift } if tab_changes_level(doc, start, end) => {
+                Command::ListLevel(if shift { -1 } else { 1 })
+            }
+            Command::Tab { shift: true } => return selection,
+            Command::Tab { shift: false } => Command::Type("\t".into()),
+            command => command,
+        };
         // Какие абзацы правка может задеть: Backspace и Delete на краю
         // абзаца соединяют его с соседним.
         // Оформление меняет выделенное, а не заменяет его.
@@ -162,6 +181,8 @@ impl History {
                 | Command::Align(_)
                 | Command::Paragraph(_)
                 | Command::Style(_)
+                | Command::List(_)
+                | Command::ListLevel(_)
                 | Command::ReplaceAll { .. }
         );
         let erasing = !selection.is_empty() && !formatting;
@@ -209,6 +230,14 @@ impl History {
                 apply_style(doc, start, end, id);
                 Some(selection)
             }
+            Command::List(kind) => {
+                toggle_list(doc, start, end, *kind);
+                Some(selection)
+            }
+            Command::ListLevel(delta) => {
+                change_list_level(doc, start, end, *delta);
+                Some(selection)
+            }
             Command::ReplaceAll {
                 query,
                 replacement,
@@ -233,6 +262,9 @@ impl History {
             | Command::Align(_)
             | Command::Paragraph(_)
             | Command::Style(_)
+            | Command::List(_)
+            | Command::ListLevel(_)
+            | Command::Tab { .. }
             | Command::ReplaceAll { .. } => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
