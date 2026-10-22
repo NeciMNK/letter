@@ -3,8 +3,8 @@
 //! в пикселях. Список одинаков для экрана и для картинки.
 
 use letter_layout::{
-    Float, FontLibrary, LineItem, Page, PageLine, ShapeKind, TabItem, TabLeader, TextItem,
-    baseline_rise,
+    Float, FontLibrary, LineItem, Page, PageLine, PageStory, ShapeKind, TabItem, TabLeader,
+    TextItem, baseline_rise,
 };
 use std::sync::Arc;
 
@@ -76,7 +76,10 @@ pub fn page_scene(
     let mut pictures = Vec::new();
     let mut glyphs = Vec::new();
     let mut lines = Vec::new();
-    let stories = [&page.header, &page.footer];
+    let stories: Vec<&PageStory> = [&page.header, &page.footer]
+        .into_iter()
+        .chain(page.notes.iter().map(|n| &n.story))
+        .collect();
     let shapes = stories.iter().flat_map(|s| &s.shapes).chain(&page.shapes);
     for shape in shapes {
         let (r, g, b) = shape.color;

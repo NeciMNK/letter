@@ -30,17 +30,22 @@
 //!   страниц) верстаются отдельно и ставятся на расстоянии от края листа;
 //!   высокий колонтитул отодвигает текст.
 //!
-//! Пока не учитываются: сноски, поля (номер страницы), гиперссылки
-//! и другие непонятые элементы внутри абзаца.
+//! - сноски: текст сноски стоит внизу той страницы, где ссылка на неё,
+//!   под короткой чертой (место под него отнимается у текста); концевые
+//!   сноски — после текста документа.
+//!
+//! Пока не учитываются: деление длинной сноски между страницами и
+//! непонятые элементы внутри абзаца.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use letter_model::{
     Alignment, Anchor, AnchorAlign, Block, Document, EMU_PER_POINT, FirstLineIndent, HeaderFooter,
     HeaderFooterKind, HorizontalFrom, ImageData, LevelSuffix, LineSpacing, ListCounters, ListLabel,
-    Numbering, PageSize, Paragraph, Placement, ResolvedFonts, ResolvedRunProps, RunContent,
-    RunFonts, RunProps, Section, SectionProps, SectionStart, Settings, Styles, TabStopKind, Theme,
-    Twips, VerticalAlign, VerticalFrom, Wrap,
+    NoteKind, Numbering, PageSize, Paragraph, Placement, ResolvedFonts, ResolvedRunProps,
+    RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Settings, Styles,
+    TabStopKind, Theme, Twips, VerticalAlign, VerticalFrom, Wrap,
 };
 
 use crate::fields;
@@ -101,6 +106,21 @@ pub struct Page {
     pub header: PageStory,
     /// Нижний колонтитул.
     pub footer: PageStory,
+    /// Тексты сносок на странице: обычных — внизу, концевых — после
+    /// текста документа.
+    pub notes: Vec<PageNote>,
+}
+
+/// Текст сноски на странице. Координаты — как у текста страницы;
+/// [`PageLine::paragraph`] — номер абзаца в тексте сноски.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageNote {
+    /// Обычная или концевая.
+    pub kind: NoteKind,
+    /// Номер сноски в документе ([`letter_model::Note::id`]).
+    pub id: String,
+    /// Строки текста сноски.
+    pub story: PageStory,
 }
 
 /// Колонтитул на странице. Координаты, как у текста страницы, — пт
@@ -350,12 +370,16 @@ pub fn layout_document_cached(
 
     // Все абзацы документа с шириной текста: раздела или ячейки.
     let mut all: Vec<Item<'_>> = Vec::new();
+    // С какого абзаца начинается каждый раздел.
+    let mut section_starts = Vec::with_capacity(doc.sections.len() + 1);
     for section in &doc.sections {
         let width = section_columns(section, &Geometry::of(section))
             .first()
             .map_or(0.0, |c| c.1);
+        section_starts.push(all.len());
         collect_paragraphs(doc, &section.blocks, width, None, &mut all);
     }
+    section_starts.push(all.len());
     let labels = list_labels(doc, &all);
     let numbers = NoteNumbers::of(doc);
     let marks: Vec<Vec<String>> = all
@@ -426,6 +450,7 @@ pub fn layout_document_cached(
 
     let mut pager = Pager {
         add_spacing: doc.settings.add_paragraph_spacing,
+        paragraph_notes: entries.iter().map(|e| e.prepared.notes.clone()).collect(),
         ..Pager::default()
     };
     let prepared: Vec<Arc<Prepared>> = entries.iter().map(|e| Arc::clone(&e.prepared)).collect();
@@ -443,6 +468,24 @@ pub fn layout_document_cached(
         let columns = section_columns(section, &geometry);
         let column_width = columns.first().map_or(0.0, |c| c.1);
         pager.section = index;
+        // Сноски, ссылки на которые в разделе, — по ширине его текста.
+        let paragraphs = section_starts[index]..section_starts[index + 1];
+        let ids = pager.paragraph_notes[paragraphs]
+            .iter()
+            .flatten()
+            .map(|(_, id)| id.clone())
+            .collect::<Vec<_>>();
+        let (notes, separator) = lay_notes(
+            doc,
+            NoteKind::Footnote,
+            ids.iter().map(String::as_str),
+            &numbers,
+            &geometry,
+            shaper,
+            library,
+        );
+        pager.notes = notes.into_iter().collect();
+        pager.note_separator = separator;
         pager.bands = bands(
             section,
             &geometry,
@@ -465,7 +508,20 @@ pub fn layout_document_cached(
         let columns = section_columns(&section, &geometry);
         pager.start_section(geometry, &section.props, columns);
     }
+    if let Some(geometry) = pager.geometry {
+        let (endnotes, separator) = lay_notes(
+            doc,
+            NoteKind::Endnote,
+            numbers.referenced(NoteKind::Endnote),
+            &numbers,
+            &geometry,
+            shaper,
+            library,
+        );
+        pager.place_endnotes(endnotes, separator);
+    }
     pager.close_columns();
+    pager.finish_notes();
     cache.entries = entries;
     cache.rebuilt = rebuilt;
     let mut pages = pager.pages;
@@ -588,6 +644,26 @@ fn lay_story(
     shaper: &mut Shaper,
     library: &FontLibrary,
 ) -> (PageStory, f32) {
+    lay_story_with(
+        doc,
+        blocks,
+        g,
+        (&NoteNumbers::default(), None),
+        shaper,
+        library,
+    )
+}
+
+/// Верстает колонтитул или текст сноски по ширине текста раздела;
+/// `notes` — номера сносок и номер самой сноски (для её знака в тексте).
+fn lay_story_with(
+    doc: &Document,
+    blocks: &[Block],
+    g: &Geometry,
+    notes: (&NoteNumbers, Option<&str>),
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+) -> (PageStory, f32) {
     let width = g.text_width();
     let mut items = Vec::new();
     collect_paragraphs(doc, blocks, width, None, &mut items);
@@ -600,7 +676,7 @@ fn lay_story(
                 doc,
                 item.paragraph,
                 label.as_ref(),
-                &NoteNumbers::default().marks(item.paragraph, None),
+                &notes.0.marks(item.paragraph, notes.1),
                 item.table.as_deref(),
                 item.width,
                 shaper,
@@ -644,6 +720,56 @@ fn lay_story(
         .fold(0.0, f32::max);
     (story, height)
 }
+
+/// Текст сноски, свёрстанный от своего верха.
+#[derive(Debug, Clone, Default)]
+struct NoteBox {
+    story: PageStory,
+    height: f32,
+}
+
+/// Сноски вида `kind` с номерами `ids`, свёрстанные по ширине текста
+/// раздела, и высота черты над ними (служебная сноска-черта документа
+/// или строка по умолчанию).
+fn lay_notes<'i>(
+    doc: &Document,
+    kind: NoteKind,
+    ids: impl IntoIterator<Item = &'i str>,
+    numbers: &NoteNumbers,
+    g: &Geometry,
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+) -> (Vec<(String, NoteBox)>, f32) {
+    let all = match kind {
+        NoteKind::Footnote => &doc.footnotes,
+        NoteKind::Endnote => &doc.endnotes,
+    };
+    let mut out: Vec<(String, NoteBox)> = Vec::new();
+    for id in ids {
+        if out.iter().any(|(known, _)| known == id) {
+            continue;
+        }
+        let Some(note) = all.iter().find(|n| n.id == id && n.is_regular()) else {
+            continue;
+        };
+        let own = numbers.number(kind, id).unwrap_or("");
+        let (story, height) =
+            lay_story_with(doc, &note.blocks, g, (numbers, Some(own)), shaper, library);
+        out.push((id.to_string(), NoteBox { story, height }));
+    }
+    let separator = all
+        .iter()
+        .find(|n| n.special.as_deref() == Some("separator"))
+        .map(|n| lay_story(doc, &n.blocks, g, shaper, library).1)
+        .filter(|h| *h > EPSILON)
+        .unwrap_or(DEFAULT_NOTE_SEPARATOR);
+    (out, separator)
+}
+
+/// Высота строки с чертой над сносками, если в документе её нет, пт.
+const DEFAULT_NOTE_SEPARATOR: f32 = 12.0;
+/// Длина черты над сносками, пт (как в Word — 2 дюйма).
+const NOTE_RULE_LENGTH: f32 = 144.0;
 
 /// Место колонтитулов раздела. Колонтитул, который не влезает в поле,
 /// отодвигает текст (если поле не отрицательное).
@@ -914,6 +1040,8 @@ pub(crate) struct Prepared {
     /// Пропуск над каждой строкой, пт (строка ушла ниже рисунка, рядом
     /// с которым ей не хватило места). Пусто — пропусков нет.
     gaps: Vec<f32>,
+    /// Ссылки на обычные сноски: место в тексте (байты) и номер сноски.
+    notes: Vec<(usize, String)>,
 }
 
 /// Текст и оформление абзаца для разбиения на строки.
@@ -1041,6 +1169,7 @@ fn prepare(
     let mut spans = Vec::new();
     let mut span_props = Vec::new();
     let mut floats = Vec::new();
+    let mut notes = Vec::new();
     for run in paragraph.runs() {
         let resolved = doc.resolve_run_in(&paragraph.props, &run.props, table);
         let mut text = String::new();
@@ -1089,16 +1218,30 @@ fn prepare(
                         &std::mem::take(&mut text),
                         &resolved,
                     );
+                    if let RunContent::NoteReference(r) = item
+                        && r.kind == NoteKind::Footnote
+                    {
+                        notes.push((spans.iter().map(|s| s.text.len()).sum(), r.id.clone()));
+                    }
                     let number = marks.next().map_or("?", String::as_str);
                     let style = text_style(&resolved, &resolved.fonts.h_ansi);
                     spans.push(TextSpan::label(number, style));
                     span_props.push(resolved.clone());
                 }
+                // Свой знак сноски — обычный текст после ссылки.
+                RunContent::NoteReference(r) => {
+                    if r.kind == NoteKind::Footnote {
+                        push_text(
+                            &mut spans,
+                            &mut span_props,
+                            &std::mem::take(&mut text),
+                            &resolved,
+                        );
+                        notes.push((spans.iter().map(|s| s.text.len()).sum(), r.id.clone()));
+                    }
+                }
                 // Код поля не виден, видно только его результат.
-                RunContent::NoteReference(_)
-                | RunContent::FieldChar(_)
-                | RunContent::FieldCode(_)
-                | RunContent::Unknown(_) => {}
+                RunContent::FieldChar(_) | RunContent::FieldCode(_) | RunContent::Unknown(_) => {}
             }
         }
         push_text(&mut spans, &mut span_props, &text, &resolved);
@@ -1191,6 +1334,7 @@ fn prepare(
             label: label_height,
         }),
         gaps: Vec::new(),
+        notes,
     }
 }
 
@@ -1506,6 +1650,16 @@ struct Pager {
     /// Верх и низ текста на текущей странице (с колонтитулами).
     page_top: Option<f32>,
     page_bottom: Option<f32>,
+    /// Сноски текущего раздела, свёрстанные по ширине его текста.
+    notes: HashMap<String, NoteBox>,
+    /// Высота строки с чертой над сносками текущего раздела.
+    note_separator: f32,
+    /// Ссылки на сноски в абзацах документа (по номеру абзаца).
+    paragraph_notes: Vec<Vec<(usize, String)>>,
+    /// Сноски, ссылки на которые уже стоят на текущей странице.
+    page_notes: Vec<(String, NoteBox)>,
+    /// Место под сноски внизу текущей страницы (с чертой), пт.
+    notes_height: f32,
 }
 
 /// Сколько места занимают колонтитулы раздела: для каждого вида страниц
@@ -1727,6 +1881,7 @@ impl Pager {
             return;
         };
         self.close_columns();
+        self.finish_notes();
         self.column = 0;
         self.column_top = g.margins.top;
         self.column_bottom = g.margins.top;
@@ -1759,6 +1914,7 @@ impl Pager {
             kind,
             header: PageStory::default(),
             footer: PageStory::default(),
+            notes: Vec::new(),
         });
         self.y = top;
         self.has_content = false;
@@ -1774,11 +1930,174 @@ impl Pager {
             .unwrap_or(0.0)
     }
 
-    /// Низ текста на странице: нижнее поле или верх колонтитула.
+    /// Низ текста на странице: нижнее поле или верх колонтитула, выше
+    /// — сноски страницы.
     fn bottom(&self) -> f32 {
+        self.area_bottom() - self.notes_height
+    }
+
+    /// Низ места для текста и сносок: нижнее поле или верх колонтитула.
+    fn area_bottom(&self) -> f32 {
         self.page_bottom
             .or(self.geometry.map(|g| g.height - g.margins.bottom))
             .unwrap_or(f32::INFINITY)
+    }
+
+    /// Номера сносок, ссылки на которые в строке `k` абзаца `notes`.
+    fn line_notes<'n>(
+        notes: &'n [(usize, String)],
+        lines: &[Arc<Line>],
+        k: usize,
+    ) -> impl Iterator<Item = &'n str> {
+        let range = lines.get(k).map(|l| l.range.clone());
+        let last = k + 1 == lines.len();
+        notes
+            .iter()
+            .filter(move |(at, _)| {
+                range
+                    .as_ref()
+                    .is_some_and(|r| r.contains(at) || (last && *at >= r.end))
+            })
+            .map(|(_, id)| id.as_str())
+    }
+
+    /// Сколько места внизу страницы займут новые сноски строки `k`
+    /// абзаца `p` (те, что ещё не на странице и не в `seen`).
+    fn note_room(&self, p: &Prepared, k: usize, seen: &mut Vec<String>) -> f32 {
+        let mut room = 0.0;
+        for id in Self::line_notes(&p.notes, &p.lines, k) {
+            let Some(note) = self.notes.get(id) else {
+                continue;
+            };
+            if self.page_notes.iter().any(|(known, _)| known == id)
+                || seen.iter().any(|known| known == id)
+            {
+                continue;
+            }
+            if self.page_notes.is_empty() && seen.is_empty() {
+                room += self.note_separator;
+            }
+            room += note.height;
+            seen.push(id.to_string());
+        }
+        room
+    }
+
+    /// Ставит на текущую страницу сноски строк, стоящих на ней с номера
+    /// `from`.
+    fn add_line_notes(&mut self, from: usize) {
+        let Some(page) = self.pages.last() else {
+            return;
+        };
+        let mut ids: Vec<String> = Vec::new();
+        for line in &page.lines[from.min(page.lines.len())..] {
+            let Some(notes) = self.paragraph_notes.get(line.paragraph) else {
+                continue;
+            };
+            let range = &line.line.range;
+            for (at, id) in notes {
+                if range.contains(at) && !ids.contains(id) {
+                    ids.push(id.clone());
+                }
+            }
+        }
+        self.add_notes(ids);
+    }
+
+    /// Ставит сноски `ids` на текущую страницу (если их там ещё нет).
+    fn add_notes(&mut self, ids: impl IntoIterator<Item = String>) {
+        for id in ids {
+            if self.page_notes.iter().any(|(known, _)| *known == id) {
+                continue;
+            }
+            let Some(note) = self.notes.get(&id).cloned() else {
+                continue;
+            };
+            if self.page_notes.is_empty() {
+                self.notes_height += self.note_separator;
+            }
+            self.notes_height += note.height;
+            self.page_notes.push((id, note));
+        }
+    }
+
+    /// Черта над сносками на высоте `top` (верх её строки высотой
+    /// `height`).
+    fn note_rule(&self, top: f32, height: f32) -> Shape {
+        Shape {
+            x: self.column_x(),
+            y: top + height / 2.0 - SEPARATOR_WIDTH / 2.0,
+            width: NOTE_RULE_LENGTH.min(self.column_width()),
+            height: SEPARATOR_WIDTH,
+            color: (0, 0, 0),
+            kind: ShapeKind::Rule,
+        }
+    }
+
+    /// Выводит сноски текущей страницы внизу неё: черта, под ней тексты
+    /// сносок по порядку ссылок; низ последней — у нижнего поля.
+    fn finish_notes(&mut self) {
+        let notes = std::mem::take(&mut self.page_notes);
+        let height = std::mem::take(&mut self.notes_height);
+        if notes.is_empty() {
+            return;
+        }
+        let mut y = self.area_bottom() - height;
+        let rule = self.note_rule(y, self.note_separator);
+        y += self.note_separator;
+        let Some(page) = self.pages.last_mut() else {
+            return;
+        };
+        page.shapes.push(rule);
+        for (id, note) in notes {
+            page.notes.push(PageNote {
+                kind: NoteKind::Footnote,
+                id,
+                story: note.story.moved(y),
+            });
+            y += note.height;
+        }
+    }
+
+    /// Ставит концевые сноски после текста документа: черта, под ней
+    /// сноски целиком; сноска, которая не влезает, начинает новую
+    /// страницу.
+    fn place_endnotes(&mut self, notes: Vec<(String, NoteBox)>, separator: f32) {
+        if notes.is_empty() {
+            return;
+        }
+        if (self.break_pending || self.column_pending) && self.has_content {
+            self.new_page(true);
+        }
+        let mut first = true;
+        for (id, note) in notes {
+            let need = note.height + if first { separator } else { 0.0 };
+            if self.y + need > self.bottom() + EPSILON && self.has_content {
+                self.next_column_or_page(true);
+            }
+            if first {
+                let rule = self.note_rule(self.y, separator);
+                if let Some(page) = self.pages.last_mut() {
+                    page.shapes.push(rule);
+                }
+                self.y += separator;
+                first = false;
+            }
+            let dx = self.column_x() - self.geometry.map_or(0.0, |g| g.margins.left);
+            let mut story = note.story.moved(self.y);
+            for line in &mut story.lines {
+                line.x += dx;
+            }
+            if let Some(page) = self.pages.last_mut() {
+                page.notes.push(PageNote {
+                    kind: NoteKind::Endnote,
+                    id,
+                    story,
+                });
+            }
+            self.y += note.height;
+            self.has_content = true;
+        }
     }
 
     /// Высота области текста.
@@ -1933,11 +2252,15 @@ impl Pager {
                 let remaining = segment.end - next;
                 let mut fit = 0;
                 let mut used = 0.0;
-                for h in &heights[next..segment.end] {
-                    if used + h > available + EPSILON {
+                // Сноски строк, которые встанут на страницу, занимают
+                // место внизу неё.
+                let mut seen = Vec::new();
+                for (k, h) in heights[next..segment.end].iter().enumerate() {
+                    let notes = self.note_room(&current, next + k, &mut seen);
+                    if used + h + notes > available + EPSILON {
                         break;
                     }
-                    used += h;
+                    used += h + notes;
                     fit += 1;
                 }
                 if fit < remaining {
@@ -2081,6 +2404,7 @@ impl Pager {
             floats: p.floats.clone(),
             source: Arc::clone(&p.source),
             gaps,
+            notes: p.notes.clone(),
         })
     }
 
@@ -2128,6 +2452,10 @@ impl Pager {
             page.lines.push(placed);
             page.floats.extend(anchors);
         }
+        let notes: Vec<String> = Self::line_notes(&p.notes, &p.lines, k)
+            .map(str::to_string)
+            .collect();
+        self.add_notes(notes);
         self.y += full_height;
         self.has_content = true;
     }
@@ -2207,10 +2535,12 @@ impl Pager {
     fn draw(&mut self, row: &RowBox, top_edge: bool, bottom_edge: bool) {
         let left = self.column_x();
         let top = self.y;
+        let from = self.pages.last().map_or(0, |p| p.lines.len());
         let mut canvas = PageCanvas {
             page: self.pages.last_mut(),
         };
         draw_row(row, left, top, top_edge, bottom_edge, &mut canvas);
+        self.add_line_notes(from);
         self.y += row.height;
         self.has_content = true;
     }
@@ -2314,6 +2644,68 @@ mod tests {
 
     fn singles(n: usize) -> Vec<Paragraph> {
         (0..n).map(|i| para(&format!("p{i}"))).collect()
+    }
+
+    /// Абзац `text` со ссылкой на сноску `id` в конце.
+    fn noted(text: &str, kind: letter_model::NoteKind, id: &str) -> Paragraph {
+        let reference = Run {
+            content: vec![RunContent::NoteReference(letter_model::NoteReference {
+                kind,
+                id: id.into(),
+                custom_mark: false,
+            })],
+            ..Run::default()
+        };
+        let text = Run {
+            content: vec![RunContent::Text(text.into())],
+            ..Run::default()
+        };
+        Paragraph::from_runs([text, reference])
+    }
+
+    fn note(id: &str, text: &str) -> letter_model::Note {
+        letter_model::Note {
+            id: id.into(),
+            special: None,
+            blocks: vec![para(text).into()],
+        }
+    }
+
+    #[test]
+    fn footnotes_stand_at_the_bottom_of_their_page() {
+        let mut paragraphs = singles(12);
+        paragraphs[1] = noted("p1", NoteKind::Footnote, "7");
+        let mut doc = doc(paragraphs);
+        // Лист на 10 строк.
+        if let Some(size) = &mut doc.sections[0].props.page_size {
+            size.height = Twips(2304);
+        }
+        doc.footnotes = vec![note("7", "note")];
+        let layout = lay(&doc);
+        // Сноска и строка с чертой занимают место двух строк с лишним.
+        assert_eq!(pages(&layout)[0], [0, 1, 2, 3, 4, 5, 6]);
+        let page = &layout.pages[0];
+        assert_eq!(page.notes.len(), 1);
+        assert_eq!(page.notes[0].id, "7");
+        let line = &page.notes[0].story.lines[0];
+        assert!((line.top + line.height - page.height).abs() < 1e-3);
+        assert!(line.text.contains("note"));
+        let rule = page.shapes.last().map(|s| s.y);
+        assert!(rule.is_some_and(|y| y < line.top && y > page.lines[6].top));
+        assert!(layout.pages[1].notes.is_empty());
+    }
+
+    #[test]
+    fn endnotes_follow_the_text() {
+        let mut doc = doc(vec![noted("p0", NoteKind::Endnote, "1"), para("p1")]);
+        doc.endnotes = vec![note("1", "end"), note("2", "unused")];
+        let layout = lay(&doc);
+        let page = &layout.pages[0];
+        assert_eq!(page.notes.len(), 1);
+        assert_eq!(page.notes[0].kind, NoteKind::Endnote);
+        let line = &page.notes[0].story.lines[0];
+        // Под текстом: строка с чертой, потом сноска.
+        assert!((line.top - (2.0 * LINE + DEFAULT_NOTE_SEPARATOR)).abs() < 1e-3);
     }
 
     #[test]

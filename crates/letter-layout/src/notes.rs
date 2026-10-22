@@ -10,6 +10,8 @@ use letter_model::{Block, Document, NoteKind, NoteReference, Paragraph, RunConte
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct NoteNumbers {
     numbers: HashMap<(NoteKind, String), String>,
+    /// Сноски, на которые есть ссылки, в порядке первых ссылок.
+    referenced: Vec<(NoteKind, String)>,
 }
 
 impl NoteNumbers {
@@ -32,6 +34,9 @@ impl NoteNumbers {
                             continue;
                         };
                         let key = (r.kind, r.id.clone());
+                        if !self.referenced.contains(&key) {
+                            self.referenced.push(key.clone());
+                        }
                         if r.custom_mark || self.numbers.contains_key(&key) {
                             continue;
                         }
@@ -55,6 +60,14 @@ impl NoteNumbers {
         self.numbers
             .get(&(kind, id.to_string()))
             .map(String::as_str)
+    }
+
+    /// Сноски вида `kind`, на которые есть ссылки, в порядке ссылок.
+    pub fn referenced(&self, kind: NoteKind) -> impl Iterator<Item = &str> {
+        self.referenced
+            .iter()
+            .filter(move |(k, _)| *k == kind)
+            .map(|(_, id)| id.as_str())
     }
 
     /// Надписи ссылок на сноски и номеров сносок в абзаце по порядку.
@@ -118,5 +131,7 @@ mod tests {
         assert_eq!(numbers.number(NoteKind::Footnote, "2"), None);
         assert_eq!(numbers.number(NoteKind::Endnote, "2"), Some("ii"));
         assert_eq!(numbers.marks(&p, None), ["1", "i", "2", "ii"]);
+        let footnotes: Vec<&str> = numbers.referenced(NoteKind::Footnote).collect();
+        assert_eq!(footnotes, ["5", "2", "3"]);
     }
 }
