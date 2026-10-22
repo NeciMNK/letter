@@ -15,6 +15,7 @@ mod font_dialog;
 mod home;
 mod i18n;
 mod icons;
+mod keytips;
 mod language;
 mod paragraph_dialog;
 mod ribbon;

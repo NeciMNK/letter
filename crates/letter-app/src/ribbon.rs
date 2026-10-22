@@ -6,6 +6,7 @@
 //! Вкладка «Главная» — в [`crate::home`].
 
 use crate::i18n::tr;
+use crate::keytips::{self, KeyTips, Level, Outcome, TipAction};
 use crate::theme::Palette;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -53,6 +54,18 @@ impl Tab {
         Tab::Review,
         Tab::View,
     ];
+
+    /// Подсказка клавиш вкладки (имя в файлах перевода).
+    pub fn keytip(self) -> &'static str {
+        match self {
+            Tab::Home => "keytip-tab-home",
+            Tab::Insert => "keytip-tab-insert",
+            Tab::Layout => "keytip-tab-layout",
+            Tab::References => "keytip-tab-references",
+            Tab::Review => "keytip-tab-review",
+            Tab::View => "keytip-tab-view",
+        }
+    }
 
     /// Название на вкладке.
     pub fn title(self) -> &'static str {
@@ -142,6 +155,10 @@ pub enum RibbonCommand {
     Insert(&'static str),
     /// Встроенный стиль Word по имени (`heading 1`).
     BuiltInStyle(&'static str),
+    /// Открыть список или меню на ленте (подсказки клавиш).
+    OpenPopup(egui::Id),
+    /// Поставить фокус в поле ввода на ленте (подсказки клавиш).
+    Focus(egui::Id),
 }
 
 /// Что лента показывает о документе.
@@ -202,12 +219,31 @@ pub struct Ribbon {
     pub collapsed: bool,
     /// Состояние вкладки «Главная».
     pub home: HomeState,
+    /// Подсказки клавиш по Alt.
+    pub keytips: KeyTips,
 }
 
 impl Ribbon {
+    /// Клавиши для подсказок по Alt (до остальной клавиатуры).
+    pub fn handle_keys(&mut self, ctx: &egui::Context) -> Vec<RibbonCommand> {
+        let tips = keytips::collected(ctx);
+        let mut commands = Vec::new();
+        for outcome in self.keytips.handle(ctx, &tips) {
+            match outcome {
+                Outcome::Tab(tab) => {
+                    self.tab = tab;
+                    self.collapsed = false;
+                }
+                Outcome::Command(command) => commands.push(command),
+            }
+        }
+        commands
+    }
+
     /// Рисует ленту целиком и возвращает выбранные команды.
     pub fn ui(&mut self, ui: &mut Ui, info: &RibbonInfo) -> Vec<RibbonCommand> {
         let mut out = Vec::new();
+        keytips::begin(ui.ctx(), self.keytips.level);
         ui.spacing_mut().item_spacing.x = 2.0;
         quick_access(ui, info, &mut out);
         self.tabs(ui, &mut out);
@@ -230,6 +266,9 @@ impl Ribbon {
                     });
                 });
         }
+        if self.keytips.active() {
+            keytips::paint(ui.ctx(), &keytips::collected(ui.ctx()), &self.keytips.typed);
+        }
         out
     }
 
@@ -240,7 +279,15 @@ impl Ribbon {
                 .fill(ACCENT)
                 .corner_radius(CornerRadius::same(2))
                 .min_size(vec2(52.0, 0.0));
-            if ui.add(file).on_hover_text(tr("tab-file-hint")).clicked() {
+            let response = ui.add(file).on_hover_text(tr("tab-file-hint"));
+            keytips::tip(
+                ui,
+                &response,
+                Level::Tabs,
+                "keytip-file",
+                TipAction::Command(RibbonCommand::Backstage),
+            );
+            if response.clicked() {
                 out.push(RibbonCommand::Backstage);
             }
             for tab in Tab::ALL {
@@ -253,6 +300,13 @@ impl Ribbon {
                     RichText::new(tab.title())
                 };
                 let response = ui.add(egui::Button::selectable(selected, text));
+                keytips::tip(
+                    ui,
+                    &response,
+                    Level::Tabs,
+                    tab.keytip(),
+                    TipAction::Tab(tab),
+                );
                 if response.double_clicked() {
                     self.collapsed = !self.collapsed;
                     self.tab = tab;
@@ -271,11 +325,12 @@ impl Ribbon {
 fn quick_access(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     ui.horizontal(|ui| {
         let size = vec2(24.0, 20.0);
-        for (icon, name, tip, enabled, command) in [
+        for (icon, name, tip, key, enabled, command) in [
             (
                 Icon::Save,
                 tr("save"),
                 tr("save-hint"),
+                "keytip-save",
                 info.has_document,
                 RibbonCommand::Save,
             ),
@@ -283,6 +338,7 @@ fn quick_access(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 Icon::Undo,
                 tr("undo"),
                 tr("undo-hint"),
+                "keytip-undo",
                 info.can_undo,
                 RibbonCommand::Undo,
             ),
@@ -290,14 +346,15 @@ fn quick_access(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 Icon::Redo,
                 tr("redo"),
                 tr("redo-hint"),
+                "keytip-redo",
                 info.can_redo,
                 RibbonCommand::Redo,
             ),
         ] {
-            if icon_button(ui, icon, name, size, enabled, false)
-                .on_hover_text(tip)
-                .clicked()
-            {
+            let response = icon_button(ui, icon, name, size, enabled, false).on_hover_text(tip);
+            let action = TipAction::Command(command.clone());
+            keytips::tip(ui, &response, Level::Tabs, key, action);
+            if response.clicked() {
                 out.push(command);
             }
         }
@@ -311,12 +368,12 @@ pub(crate) fn group(ui: &mut Ui, caption: &str, content: impl FnOnce(&mut Ui)) {
 }
 
 /// Группа ленты с кнопкой-стрелкой у подписи, которая открывает окно
-/// группы (как «Шрифт» и «Абзац» в Word); `launcher` — название окна.
-/// Возвращает, нажата ли кнопка.
+/// группы (как «Шрифт» и «Абзац» в Word); `launcher` — название окна,
+/// подсказка клавиш и команда для неё. Возвращает, нажата ли кнопка.
 pub(crate) fn group_with_launcher(
     ui: &mut Ui,
     caption: &str,
-    launcher: Option<&str>,
+    launcher: Option<(&str, &str, RibbonCommand)>,
     content: impl FnOnce(&mut Ui),
 ) -> bool {
     let mut clicked = false;
@@ -346,7 +403,7 @@ pub(crate) fn group_with_launcher(
                 );
             },
         );
-        if let Some(name) = launcher {
+        if let Some((name, keytip, command)) = launcher {
             let rect = ui.min_rect();
             let at = Rect::from_min_size(
                 pos2(
@@ -367,6 +424,13 @@ pub(crate) fn group_with_launcher(
                     )
                 })
                 .on_hover_text(name);
+            keytips::tip(
+                ui,
+                &response,
+                keytips::Level::Commands,
+                keytip,
+                keytips::TipAction::Command(command),
+            );
             clicked = response.clicked();
         }
     });
@@ -374,36 +438,86 @@ pub(crate) fn group_with_launcher(
     clicked
 }
 
+/// Подсказки клавиш вкладки «Вид» (для проверки).
+#[cfg(test)]
+pub const VIEW_KEYTIPS: [&str; 5] = [
+    "keytip-view-ruler",
+    "keytip-view-zoom-in",
+    "keytip-view-zoom-out",
+    "keytip-view-100",
+    "keytip-view-page-width",
+];
+
+/// Кнопка с подсказкой клавиш: нажата ли.
+fn command_button(
+    ui: &mut Ui,
+    response: egui::Response,
+    keytip: &str,
+    command: RibbonCommand,
+    out: &mut Vec<RibbonCommand>,
+) {
+    keytips::tip(
+        ui,
+        &response,
+        Level::Commands,
+        keytip,
+        TipAction::Command(command.clone()),
+    );
+    if response.clicked() {
+        out.push(command);
+    }
+}
+
 /// Вкладка «Вид».
 fn view(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     group(ui, tr("group-show"), |ui| {
         let mut ruler = info.ruler;
-        if ui.checkbox(&mut ruler, tr("ruler")).changed() {
+        let response = ui.checkbox(&mut ruler, tr("ruler"));
+        keytips::tip(
+            ui,
+            &response,
+            Level::Commands,
+            "keytip-view-ruler",
+            TipAction::Command(RibbonCommand::ToggleRuler),
+        );
+        if response.changed() {
             out.push(RibbonCommand::ToggleRuler);
         }
     });
     group(ui, tr("zoom"), |ui| {
         ui.horizontal(|ui| {
-            if ui.button(tr("zoom-in")).on_hover_text("Ctrl+=").clicked() {
-                out.push(RibbonCommand::ZoomIn);
-            }
-            if ui.button(tr("zoom-out")).on_hover_text("Ctrl+-").clicked() {
-                out.push(RibbonCommand::ZoomOut);
-            }
+            let response = ui.button(tr("zoom-in"));
+            command_button(
+                ui,
+                response,
+                "keytip-view-zoom-in",
+                RibbonCommand::ZoomIn,
+                out,
+            );
+            let response = ui.button(tr("zoom-out"));
+            command_button(
+                ui,
+                response,
+                "keytip-view-zoom-out",
+                RibbonCommand::ZoomOut,
+                out,
+            );
         });
         ui.horizontal(|ui| {
-            if ui.button("100 %").on_hover_text("Ctrl+0").clicked() {
-                out.push(RibbonCommand::ZoomReset);
-            }
-            if ui
-                .add(egui::Button::selectable(
-                    info.page_width,
-                    tr("zoom-page-width"),
-                ))
-                .clicked()
-            {
-                out.push(RibbonCommand::PageWidth);
-            }
+            let response = ui.button("100 %");
+            command_button(
+                ui,
+                response,
+                "keytip-view-100",
+                RibbonCommand::ZoomReset,
+                out,
+            );
+            let response = ui.add(egui::Button::selectable(
+                info.page_width,
+                tr("zoom-page-width"),
+            ));
+            let command = RibbonCommand::PageWidth;
+            command_button(ui, response, "keytip-view-page-width", command, out);
         });
     });
 }
