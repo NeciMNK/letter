@@ -363,6 +363,8 @@ impl Writer {
                     RunContent::Picture(_)
                     | RunContent::FieldChar(_)
                     | RunContent::FieldCode(_)
+                    | RunContent::NoteReference(_)
+                    | RunContent::NoteMark(_)
                     | RunContent::Unknown(_) => {}
                 }
             }

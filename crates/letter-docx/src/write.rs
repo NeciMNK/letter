@@ -11,8 +11,8 @@ use std::io::{Seek, Write};
 use std::sync::Arc;
 
 use letter_model::{
-    AppProperties, Block, CoreProperties, Document, HeaderFooterKind, ImageData, Inline, Picture,
-    RunContent, SourcePackage, Styles,
+    AppProperties, Block, CoreProperties, Document, HeaderFooterKind, ImageData, Inline, NoteKind,
+    Picture, RunContent, SourcePackage, Styles,
 };
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
@@ -46,6 +46,14 @@ const REL_FOOTER: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer";
 const REL_HYPERLINK: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
+const REL_FOOTNOTES: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes";
+const REL_ENDNOTES: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes";
+const CT_FOOTNOTES: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml";
+const CT_ENDNOTES: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml";
 const CT_HEADER: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml";
 const CT_FOOTER: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml";
 const REL_IMAGE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
@@ -96,6 +104,34 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
             .map(|(_, attributes)| attributes.as_slice());
         let xml = serialize::header_footer_xml(&blocks, header, root);
         let content_type = if header { CT_HEADER } else { CT_FOOTER };
+        ensure_override(&mut overrides, &name, content_type);
+        replaced.push(name.clone());
+        parts.push((name, Cow::Owned(xml.into_bytes())));
+    }
+    // Сноски: часть строится заново из модели (новая — если сносок
+    // раньше не было).
+    let base = main.rsplit_once('/').map_or("", |(dir, _)| dir);
+    for (kind, notes, source_part) in [
+        (NoteKind::Footnote, &doc.footnotes, &source.footnotes_part),
+        (NoteKind::Endnote, &doc.endnotes, &source.endnotes_part),
+    ] {
+        let (rel, suffix, file, content_type) = match kind {
+            NoteKind::Footnote => (REL_FOOTNOTES, "/footnotes", "footnotes.xml", CT_FOOTNOTES),
+            NoteKind::Endnote => (REL_ENDNOTES, "/endnotes", "endnotes.xml", CT_ENDNOTES),
+        };
+        let (name, root) = match source_part {
+            Some((name, root)) => (name.clone(), Some(root.as_slice())),
+            None if !notes.is_empty() => {
+                let name = links.find_or_add(&main, rel, &[suffix], &join(base, file), false);
+                (name, None)
+            }
+            None => continue,
+        };
+        let mut notes = notes.clone();
+        for note in &mut notes {
+            link_hyperlinks(&mut note.blocks, &name, &mut links);
+        }
+        let xml = serialize::notes_xml(&notes, kind, root);
         ensure_override(&mut overrides, &name, content_type);
         replaced.push(name.clone());
         parts.push((name, Cow::Owned(xml.into_bytes())));

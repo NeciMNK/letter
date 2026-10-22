@@ -49,6 +49,7 @@ use crate::lines::{
     Align, InlineObject, Line, LineEnd, LineItem, LineRoom, ParagraphFormat, TabKind, TabLeader,
     TabStop, TextSpan, break_lines, break_lines_around,
 };
+use crate::notes::NoteNumbers;
 use crate::shaping::{Shaper, TextStyle};
 use crate::spacing::{LineRule, ParagraphBlock, ParagraphSpacing, effective_spacing, gap_between};
 use crate::table::{BoxLine, Canvas, Ctx, RowBox, TableGeometry, build_rows, draw_row, split_row};
@@ -303,6 +304,8 @@ struct Entry {
     width: u32,
     /// Номер пункта списка: зависит от абзацев выше.
     label: Option<ListLabel>,
+    /// Номера сносок в абзаце: тоже зависят от текста выше.
+    marks: Vec<String>,
     /// Стиль таблицы, если абзац в ячейке.
     table: Option<String>,
     prepared: Arc<Prepared>,
@@ -354,6 +357,11 @@ pub fn layout_document_cached(
         collect_paragraphs(doc, &section.blocks, width, None, &mut all);
     }
     let labels = list_labels(doc, &all);
+    let numbers = NoteNumbers::of(doc);
+    let marks: Vec<Vec<String>> = all
+        .iter()
+        .map(|item| numbers.marks(item.paragraph, None))
+        .collect();
 
     // Совпадающие начало и конец со старой вёрсткой.
     let old = std::mem::take(&mut cache.entries);
@@ -362,6 +370,7 @@ pub fn layout_document_cached(
         entry.width == item.width.to_bits()
             && entry.paragraph == *item.paragraph
             && entry.label == labels[k]
+            && entry.marks == marks[k]
             && entry.table == item.table
     };
     let prefix = old
@@ -397,6 +406,7 @@ pub fn layout_document_cached(
                 doc,
                 item.paragraph,
                 label.as_ref(),
+                &marks[k],
                 table,
                 item.width,
                 shaper,
@@ -406,6 +416,7 @@ pub fn layout_document_cached(
                 paragraph: item.paragraph.clone(),
                 width: item.width.to_bits(),
                 label,
+                marks: marks[k].clone(),
                 table: item.table.clone(),
                 prepared: Arc::new(prepared),
             }
@@ -589,6 +600,7 @@ fn lay_story(
                 doc,
                 item.paragraph,
                 label.as_ref(),
+                &NoteNumbers::default().marks(item.paragraph, None),
                 item.table.as_deref(),
                 item.width,
                 shaper,
@@ -1013,15 +1025,18 @@ fn push_text(
 }
 
 /// Переводит абзац модели в типы вёрстки и разбивает на строки.
+#[allow(clippy::too_many_arguments)]
 fn prepare(
     doc: &Document,
     paragraph: &Paragraph,
     label: Option<&ListLabel>,
+    marks: &[String],
     table: Option<&str>,
     width: f32,
     shaper: &mut Shaper,
     library: &FontLibrary,
 ) -> Prepared {
+    let mut marks = marks.iter();
     let props = doc.resolve_paragraph_in(&paragraph.props, table);
     let mut spans = Vec::new();
     let mut span_props = Vec::new();
@@ -1062,8 +1077,28 @@ fn prepare(
                     spans.push(TextSpan::object(object, style));
                     span_props.push(resolved.clone());
                 }
+                // Номер сноски — надпись вместо знака в тексте.
+                RunContent::NoteReference(letter_model::NoteReference {
+                    custom_mark: false,
+                    ..
+                })
+                | RunContent::NoteMark(_) => {
+                    push_text(
+                        &mut spans,
+                        &mut span_props,
+                        &std::mem::take(&mut text),
+                        &resolved,
+                    );
+                    let number = marks.next().map_or("?", String::as_str);
+                    let style = text_style(&resolved, &resolved.fonts.h_ansi);
+                    spans.push(TextSpan::label(number, style));
+                    span_props.push(resolved.clone());
+                }
                 // Код поля не виден, видно только его результат.
-                RunContent::FieldChar(_) | RunContent::FieldCode(_) | RunContent::Unknown(_) => {}
+                RunContent::NoteReference(_)
+                | RunContent::FieldChar(_)
+                | RunContent::FieldCode(_)
+                | RunContent::Unknown(_) => {}
             }
         }
         push_text(&mut spans, &mut span_props, &text, &resolved);

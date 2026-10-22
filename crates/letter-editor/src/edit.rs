@@ -329,7 +329,13 @@ pub(crate) fn plain_text(paragraph: &Paragraph) -> String {
                 RunContent::Tab => text.push('\t'),
                 RunContent::Break(BreakKind::Line) => text.push('\n'),
                 RunContent::Break(_) => text.push('\u{c}'),
-                RunContent::Picture(_) => text.push(letter_model::OBJECT_CHAR),
+                RunContent::Picture(_) | RunContent::NoteMark(_) => {
+                    text.push(letter_model::OBJECT_CHAR);
+                }
+                RunContent::NoteReference(r) if !r.custom_mark => {
+                    text.push(letter_model::OBJECT_CHAR);
+                }
+                RunContent::NoteReference(_) => {}
                 RunContent::FieldChar(_) | RunContent::FieldCode(_) | RunContent::Unknown(_) => {}
             }
         }

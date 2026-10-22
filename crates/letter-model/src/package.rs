@@ -34,6 +34,11 @@ pub struct SourcePackage {
     /// Части колонтитулов, прочитанные в модель (при сохранении строятся
     /// заново), и атрибуты их корневых элементов.
     pub header_footer_parts: Vec<(String, Vec<(String, String)>)>,
+    /// Часть сносок, прочитанная в модель (при сохранении строится
+    /// заново), и атрибуты её корня.
+    pub footnotes_part: Option<(String, Vec<(String, String)>)>,
+    /// То же для концевых сносок.
+    pub endnotes_part: Option<(String, Vec<(String, String)>)>,
     /// Типы содержимого по расширению имени (`Default` в `[Content_Types].xml`):
     /// пары «расширение — тип».
     pub default_content_types: Vec<(String, String)>,

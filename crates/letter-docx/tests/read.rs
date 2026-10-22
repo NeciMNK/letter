@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use letter_docx::{ReadError, read_bytes, read_file};
 use letter_model::{
-    Block, Color, Document, HalfPoints, HeaderFooter, Inline, PageSize, Paragraph, RunContent,
-    Underline, VerticalAlign,
+    Block, Color, Document, HalfPoints, HeaderFooter, Inline, NoteKind, OBJECT_CHAR, PageSize,
+    Paragraph, RunContent, Underline, VerticalAlign,
 };
 
 fn fixture(name: &str) -> Document {
@@ -233,6 +233,37 @@ fn hyperlinks_and_bookmarks() {
     assert_eq!(p[2].plain_text(), "This is the target paragraph.");
     assert!(matches!(&p[2].content[1], Inline::BookmarkStart(b) if b.name == "target"));
     assert!(matches!(&p[2].content[3], Inline::BookmarkEnd(id) if id == "0"));
+}
+
+#[test]
+fn footnotes_and_endnotes() {
+    let doc = fixture("notes.docx");
+    let p = paragraphs(&doc);
+    let references: Vec<_> = p
+        .iter()
+        .flat_map(|p| p.runs())
+        .flat_map(|r| &r.content)
+        .filter_map(|c| match c {
+            RunContent::NoteReference(r) => Some((r.kind, r.id.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        references,
+        [
+            (NoteKind::Footnote, "1"),
+            (NoteKind::Footnote, "2"),
+            (NoteKind::Endnote, "1")
+        ]
+    );
+    assert_eq!(doc.footnotes.len(), 4);
+    assert_eq!(doc.footnotes[0].special.as_deref(), Some("separator"));
+    let second = &doc.footnotes[3];
+    assert!(second.is_regular());
+    assert_eq!(second.id, "2");
+    let text = second.blocks[0].plain_text();
+    assert_eq!(text, format!("{OBJECT_CHAR} Second footnote."));
+    assert_eq!(doc.endnotes.len(), 3);
 }
 
 #[test]

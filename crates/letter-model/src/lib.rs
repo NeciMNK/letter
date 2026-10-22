@@ -20,6 +20,7 @@
 mod border;
 mod document;
 mod field;
+mod note;
 mod numbering;
 mod package;
 mod paragraph;
@@ -37,6 +38,7 @@ mod units;
 pub use border::{Border, Borders, Shading};
 pub use document::{Document, Settings, for_each_picture_in};
 pub use field::{Field, alphabetic, fields, roman, set_field_result};
+pub use note::{Note, NoteKind, NoteReference};
 pub use numbering::{
     AbstractNumbering, LevelOverride, LevelSuffix, ListCounters, ListLabel, ListLevel,
     NumberFormat, Numbering, NumberingInstance, NumberingRef,

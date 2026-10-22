@@ -44,6 +44,9 @@ pub struct TextSpan {
     /// Объект в строке (рисунок): тогда текст — один знак
     /// [`OBJECT_CHAR`], а место в строке задаёт объект.
     pub object: Option<InlineObject>,
+    /// Надпись вместо текста (номер сноски): тогда текст — один знак
+    /// [`OBJECT_CHAR`], а видна надпись — неделимо, как одна буква.
+    pub label: Option<String>,
 }
 
 impl TextSpan {
@@ -53,6 +56,18 @@ impl TextSpan {
             text: text.into(),
             style,
             object: None,
+            label: None,
+        }
+    }
+
+    /// Надпись `label` (номер сноски), которая в тексте абзаца — один
+    /// знак [`OBJECT_CHAR`].
+    pub fn label(label: impl Into<String>, style: TextStyle) -> TextSpan {
+        TextSpan {
+            text: OBJECT_CHAR.to_string(),
+            style,
+            object: None,
+            label: Some(label.into()),
         }
     }
 
@@ -63,6 +78,7 @@ impl TextSpan {
             text: OBJECT_CHAR.to_string(),
             style,
             object: Some(object),
+            label: None,
         }
     }
 }
@@ -566,6 +582,11 @@ impl<'a> Builder<'a> {
                 }
                 continue;
             }
+            if let Some(label) = &span.label {
+                let level = levels[span_range.start].number();
+                self.shape_label(span_range, level, index, label, span);
+                continue;
+            }
             // Куски одного направления между табуляциями и разрывами.
             let mut piece_start = span_range.start;
             for (i, c) in span.text.char_indices() {
@@ -602,6 +623,48 @@ impl<'a> Builder<'a> {
                 );
             }
         }
+    }
+
+    /// Надпись куска `span` вместо его знака `range`: один неделимый
+    /// кластер с глифами надписи.
+    fn shape_label(
+        &mut self,
+        range: Range<usize>,
+        level: u8,
+        span: usize,
+        label: &str,
+        source: &TextSpan,
+    ) {
+        if range.is_empty() {
+            return;
+        }
+        let runs =
+            self.shaper
+                .shape_range(self.library, label, 0..label.len(), level, &source.style);
+        let mut runs = runs.into_iter();
+        let Some(mut run) = runs.next() else {
+            return;
+        };
+        for extra in runs {
+            run.glyphs.extend(extra.glyphs);
+        }
+        for glyph in &mut run.glyphs {
+            glyph.cluster = range.start;
+        }
+        run.range = range.clone();
+        let width = run.width();
+        let index = self.runs.len();
+        self.runs.push(run);
+        self.clusters.push(Cluster {
+            range,
+            width,
+            span,
+            level,
+            kind: Kind::Text {
+                run: index,
+                space: false,
+            },
+        });
     }
 
     fn shape_piece(&mut self, range: Range<usize>, level: u8, span: usize, source: &TextSpan) {
@@ -1113,6 +1176,30 @@ mod tests {
         assert_eq!(line_texts(&q), ["three ", "four"]);
         let ascent = p.lines[0].ascent;
         assert!(ascent > 8.0 && ascent < 10.0, "{ascent}");
+    }
+
+    #[test]
+    fn label_takes_its_width() {
+        let spans = [
+            TextSpan::new("ab", mono()),
+            TextSpan::label("12", mono()),
+            TextSpan::new("c", mono()),
+        ];
+        let p = lay(&spans, &ParagraphFormat::new(MONO * 20.0));
+        let line = &p.lines[0];
+        // Надпись из двух знаков стоит на месте одного знака текста.
+        assert_eq!(p.text, format!("ab{OBJECT_CHAR}c"));
+        assert!(close(line.width, MONO * 5.0), "{}", line.width);
+        let label = line
+            .items
+            .iter()
+            .find_map(|item| match item {
+                LineItem::Text(t) if t.span == 1 => Some(t),
+                _ => None,
+            })
+            .expect("нет надписи");
+        assert_eq!(label.run.range, 2..2 + OBJECT_CHAR.len_utf8());
+        assert_eq!(label.run.glyphs.len(), 2);
     }
 
     #[test]
