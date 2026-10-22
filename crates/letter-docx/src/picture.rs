@@ -210,8 +210,15 @@ pub(crate) fn picture_xml(picture: &Picture, id: usize) -> String {
     let (cx, cy) = (picture.width, picture.height);
     let name = escape_attr(name);
     let relationship = escape_attr(relationship);
-    format!(
-        "<w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" \
+    // Плавающий рисунок пишется как рисунок в строке, потом становится
+    // `wp:anchor` (для разбора нужно объявление `w:`).
+    let w = if picture.anchor.is_some() {
+        format!(" xmlns:w=\"{}\"", crate::document::W_NS)
+    } else {
+        String::new()
+    };
+    let inline = format!(
+        "<w:drawing{w}><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" \
          xmlns:wp=\"{WP_NS}\"><wp:extent cx=\"{cx}\" cy=\"{cy}\"/>\
          <wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>\
          <wp:docPr id=\"{id}\" name=\"{name}\"/>\
@@ -223,7 +230,12 @@ pub(crate) fn picture_xml(picture: &Picture, id: usize) -> String {
          </pic:blipFill><pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/>\
          </a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>\
          </a:graphicData></a:graphic></wp:inline></w:drawing>"
-    )
+    );
+    if picture.anchor.is_some() {
+        patched(&RawXml::new(inline), picture)
+    } else {
+        inline
+    }
 }
 
 /// Исходный `w:drawing` с размером, положением и обтеканием из модели
@@ -241,12 +253,23 @@ fn patched(raw: &RawXml, picture: &Picture) -> String {
         return raw.as_str().to_string();
     };
     let mut changed = false;
-    if let Some(anchor) = &picture.anchor
-        && inline.local == "anchor"
-        && read_anchor(inline).as_ref() != Some(&**anchor)
-    {
-        set_anchor(inline, anchor);
-        changed = true;
+    match (&picture.anchor, inline.local == "anchor") {
+        (Some(anchor), true) => {
+            if read_anchor(inline).as_ref() != Some(&**anchor) {
+                set_anchor(inline, anchor);
+                changed = true;
+            }
+        }
+        (Some(anchor), false) => {
+            to_anchor(inline);
+            set_anchor(inline, anchor);
+            changed = true;
+        }
+        (None, true) => {
+            to_inline(inline);
+            changed = true;
+        }
+        (None, false) => {}
     }
     let (cx, cy) = (picture.width.to_string(), picture.height.to_string());
     for node in &mut inline.children {
@@ -269,6 +292,58 @@ fn patched(raw: &RawXml, picture: &Picture) -> String {
     } else {
         raw.as_str().to_string()
     }
+}
+
+/// Переименовывает элемент `wp:inline` или `wp:anchor` в `local`.
+fn rename(element: &mut Element, local: &str) {
+    element.qname = match element.qname.split_once(':') {
+        Some((prefix, _)) => format!("{prefix}:{local}"),
+        None => local.to_string(),
+    };
+    element.local = local.to_string();
+}
+
+/// Делает из `wp:inline` плавающий `wp:anchor` (положение и обтекание
+/// потом ставит [`set_anchor`]): обязательные атрибуты и `wp:simplePos`.
+fn to_anchor(element: &mut Element) {
+    rename(element, "anchor");
+    for (name, value) in [
+        ("relativeHeight", "0"),
+        ("locked", "0"),
+        ("layoutInCell", "1"),
+        ("allowOverlap", "1"),
+    ] {
+        if !element.attrs.iter().any(|a| a.local == name) {
+            element.attrs.push(xml::Attr {
+                qname: name.to_string(),
+                ns: None,
+                local: name.to_string(),
+                value: value.to_string(),
+            });
+        }
+    }
+    let prefix = element
+        .qname
+        .split_once(':')
+        .map_or(String::new(), |(p, _)| format!("{p}:"));
+    let simple = element_in(element, &format!("<{prefix}simplePos x=\"0\" y=\"0\"/>"));
+    replace_child(element, |e| e.local == "simplePos", simple, &[]);
+}
+
+/// Делает из `wp:anchor` рисунок в строке `wp:inline`: остаются только
+/// расстояния до текста, размер, описание и сама картинка.
+fn to_inline(element: &mut Element) {
+    rename(element, "inline");
+    element
+        .attrs
+        .retain(|a| matches!(a.local.as_str(), "distT" | "distB" | "distL" | "distR"));
+    element.children.retain(|node| match node {
+        Node::Element(e) => matches!(
+            e.local.as_str(),
+            "extent" | "effectExtent" | "docPr" | "cNvGraphicFramePr" | "graphic"
+        ),
+        _ => true,
+    });
 }
 
 /// Записывает в `wp:anchor` положение и обтекание: атрибуты расстояний
@@ -627,5 +702,85 @@ mod tests {
             ..picture
         };
         assert_eq!(picture_xml(&lost, 1), "");
+    }
+
+    fn square_anchor() -> Anchor {
+        Anchor {
+            horizontal: AnchorPosition {
+                relative: HorizontalFrom::Column,
+                placement: Placement::Offset(127_000),
+            },
+            vertical: AnchorPosition {
+                relative: VerticalFrom::Paragraph,
+                placement: Placement::Offset(25_400),
+            },
+            wrap: Wrap::Square,
+            behind_text: false,
+            distance: Distance {
+                left: 114_300,
+                right: 114_300,
+                ..Distance::default()
+            },
+        }
+    }
+
+    #[test]
+    fn inline_picture_becomes_floating_and_back() {
+        let mut picture = read_picture(&parse(DRAWING)).unwrap();
+        picture.anchor = Some(Box::new(square_anchor()));
+        let xml = picture_xml(&picture, 1);
+        let floating = read_picture(&parse(&xml)).unwrap();
+        assert_eq!(floating.anchor, picture.anchor, "{xml}");
+        assert!(
+            xml.contains("<wp:anchor") && !xml.contains("wp:inline"),
+            "{xml}"
+        );
+        assert!(xml.contains(r#"layoutInCell="1""#), "{xml}");
+        assert!(xml.contains(r#"descr="Кот""#), "{xml}");
+        let order = [
+            "wp:simplePos",
+            "wp:positionH",
+            "wp:positionV",
+            "wp:extent",
+            "wp:wrapSquare",
+            "wp:docPr",
+        ];
+        let places: Vec<usize> = order.iter().map(|n| xml.find(n).unwrap()).collect();
+        assert!(places.windows(2).all(|w| w[0] < w[1]), "{xml}");
+
+        // Обратно в строку: от плавающего ничего не остаётся.
+        let mut back = Picture {
+            raw: Some(RawXml::new(xml)),
+            ..floating
+        };
+        back.anchor = None;
+        let xml = picture_xml(&back, 1);
+        let inline = read_picture(&parse(&xml)).unwrap();
+        assert_eq!(inline.anchor, None);
+        assert!(xml.contains("<wp:inline"), "{xml}");
+        for gone in ["positionH", "wrapSquare", "simplePos", "layoutInCell"] {
+            assert!(!xml.contains(gone), "{gone}: {xml}");
+        }
+        assert_eq!((inline.width, inline.height), (100, 200));
+    }
+
+    #[test]
+    fn new_floating_picture_is_written() {
+        let picture = Picture {
+            width: 12_700,
+            height: 25_400,
+            image: None,
+            relationship: Some("rId3".into()),
+            raw: None,
+            anchor: Some(Box::new(square_anchor())),
+        };
+        let xml = picture_xml(&picture, 7);
+        let wrapped = format!(
+            r#"<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{xml}</w:r>"#
+        );
+        let root = parse(&wrapped);
+        let again = read_picture(root.elements().next().unwrap()).unwrap();
+        assert_eq!(again.anchor, picture.anchor, "{xml}");
+        assert_eq!(again.relationship.as_deref(), Some("rId3"));
     }
 }

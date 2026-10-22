@@ -26,10 +26,10 @@ use eframe::egui::{
     Vec2, ViewportCommand, emath::GuiRounding, pos2,
 };
 use letter_editor::{
-    Command, History, ListKind, Motion, PictureBox, Position, RunFormat, Selection,
-    can_continue_numbering, caret, copy_range, find_all, find_next, formatting_at, hit_test,
-    language_at, list_kind, move_cursor, paragraph_at, picture_at_point, select_all,
-    selected_picture, selection_rects, word_at,
+    Command, History, ListKind, Motion, PictureBox, PictureWrap, Position, RunFormat, Selection,
+    anchor_with_wrap, can_continue_numbering, caret, copy_range, find_all, find_next,
+    formatting_at, hit_test, language_at, list_kind, move_cursor, moved_anchor, paragraph_at,
+    picture_at_point, picture_ref, select_all, selected_picture, selection_rects, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
 use letter_model::{Alignment, Document, Statistics};
@@ -42,7 +42,7 @@ use crate::find::{FindAction, FindDialog};
 use crate::font_dialog::{FontDialog, FontValues};
 use crate::icons::{self, Icon};
 use crate::paragraph_dialog::{ParagraphDialog, ParagraphValues};
-use crate::picture::PictureDrag;
+use crate::picture::{Handle, PictureDrag};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
 use crate::ruler::{self, RULER_SIZE, RulerParagraph, RulerState};
 use crate::settings::Settings;
@@ -1261,6 +1261,9 @@ impl Viewer {
                 selection.start().paragraph,
                 selection.end().paragraph,
             );
+            info.picture_wrap = selected_picture(&document.layout, selection)
+                .and_then(|p| picture_ref(&document.doc, p.at))
+                .map(PictureWrap::of);
         }
         info
     }
@@ -1335,6 +1338,16 @@ impl Viewer {
                 RibbonCommand::Style(id) => actions.push(Action::Edit(Command::Style(id))),
                 RibbonCommand::Edit(command) => actions.push(Action::Edit(command)),
                 RibbonCommand::InsertPicture => self.picture_requested = true,
+                RibbonCommand::PictureWrap(wrap) => {
+                    if let Some(document) = &self.document
+                        && let Some(placed) =
+                            selected_picture(&document.layout, document.selection())
+                        && let Some(picture) = picture_ref(&document.doc, placed.at)
+                    {
+                        let anchor = anchor_with_wrap(&document.layout, &placed, picture, wrap);
+                        actions.push(Action::Edit(Command::PictureAnchor(anchor)));
+                    }
+                }
                 RibbonCommand::BuiltInStyle(name) => {
                     if let Some(id) = self
                         .document
@@ -1706,8 +1719,17 @@ impl Viewer {
                 let handle = crate::picture::handle_at(picture_rect(&p), at?)?;
                 Some((p, handle))
             };
+            // Плавающий рисунок переносят, потянув за него самого.
+            let move_under = |at: Option<Pos2>| {
+                let p = selected.filter(|p| p.paragraph_top.is_some())?;
+                picture_rect(&p).contains(at?).then_some(p)
+            };
             if let Some((_, handle)) = handle_under(hover) {
                 ui.ctx().set_cursor_icon(handle.cursor());
+            } else if move_under(hover).is_some()
+                || picture_drag.is_some_and(|d| d.handle == Handle::MOVE)
+            {
+                ui.ctx().set_cursor_icon(Handle::MOVE.cursor());
             }
             let mut on_picture = false;
             if press
@@ -1720,6 +1742,19 @@ impl Viewer {
                     handle,
                     start,
                     size: Vec2::new(p.width, p.height),
+                    offset: Vec2::ZERO,
+                });
+            } else if press
+                && response.hovered()
+                && let Some(p) = move_under(pointer)
+                && let Some(start) = pointer
+            {
+                *picture_drag = Some(PictureDrag {
+                    picture: p,
+                    handle: Handle::MOVE,
+                    start,
+                    size: Vec2::new(p.width, p.height),
+                    offset: Vec2::ZERO,
                 });
             }
             if let Some(drag) = picture_drag.as_mut() {
@@ -1727,10 +1762,33 @@ impl Viewer {
                 if dragging {
                     if let Some(at) = pointer {
                         let size = Vec2::new(drag.picture.width, drag.picture.height);
-                        drag.size =
-                            crate::picture::resized(size, drag.handle, (at - drag.start) * points);
+                        if drag.handle == Handle::MOVE {
+                            drag.offset = (at - drag.start) * points;
+                        } else {
+                            drag.size = crate::picture::resized(
+                                size,
+                                drag.handle,
+                                (at - drag.start) * points,
+                            );
+                        }
                     }
                 } else {
+                    let p = drag.picture;
+                    if drag.offset != Vec2::ZERO
+                        && let Some(anchor) = picture_ref(&document.doc, p.at)
+                            .and_then(|picture| picture.anchor.as_deref())
+                    {
+                        let moved = moved_anchor(
+                            &document.layout,
+                            &p,
+                            anchor,
+                            p.left + drag.offset.x,
+                            p.top + drag.offset.y,
+                        );
+                        menu.push(RibbonCommand::Edit(Command::PictureAnchor(Some(Box::new(
+                            moved,
+                        )))));
+                    }
                     if drag.size != Vec2::new(drag.picture.width, drag.picture.height) {
                         menu.push(RibbonCommand::Edit(Command::ResizePicture {
                             width: crate::picture::to_emu(drag.size.x),
@@ -1830,6 +1888,9 @@ impl Viewer {
             if let Some(p) = framed {
                 let rect = picture_rect(&p);
                 let rect = match *picture_drag {
+                    Some(drag) if drag.handle == Handle::MOVE => {
+                        rect.translate(drag.offset / points)
+                    }
                     Some(drag) => crate::picture::preview(rect, drag.handle, drag.size / points),
                     None => rect,
                 };
@@ -2705,6 +2766,54 @@ mod tests {
         let document = viewer.document.as_ref().unwrap();
         let back = letter_editor::picture_ref(&document.doc, picture.at).unwrap();
         assert!((back.width_points() - picture.width).abs() < 0.01);
+
+        // «Обтекание текстом → Вокруг рамки»: рисунок становится плавающим
+        // и остаётся на месте; появляется вкладка «Формат рисунка».
+        frame(&ctx, &mut viewer, screen());
+        assert_eq!(viewer.ribbon_info().picture_wrap, Some(PictureWrap::InLine));
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::PictureWrap(PictureWrap::Square)]);
+        frame(&ctx, &mut viewer, screen());
+        let document = viewer.document.as_ref().unwrap();
+        let floating = letter_editor::picture_ref(&document.doc, picture.at).unwrap();
+        assert_eq!(PictureWrap::of(floating), PictureWrap::Square);
+        let [placed] = letter_editor::pictures_on_page(&document.layout, 0)[..] else {
+            panic!("рисунок не найден");
+        };
+        assert!(placed.paragraph_top.is_some());
+        assert!((placed.left - picture.left).abs() < 0.5, "{placed:?}");
+        assert!((placed.top - picture.top).abs() < 0.5, "{placed:?}");
+        assert_eq!(viewer.selection(), Some(picture.selection()));
+
+        // Плавающий рисунок переносят мышью: на 50 пт вправо и 20 вниз.
+        let middle = at(
+            placed.left + placed.width / 2.0,
+            placed.top + placed.height / 2.0,
+        );
+        let target = middle + vec2(50.0, 20.0) * scale;
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![Event::PointerMoved(middle), button(middle, true)]),
+        );
+        frame(&ctx, &mut viewer, events(vec![Event::PointerMoved(target)]));
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![Event::PointerMoved(target), button(target, false)]),
+        );
+        frame(&ctx, &mut viewer, screen());
+        let document = viewer.document.as_ref().unwrap();
+        let [after] = letter_editor::pictures_on_page(&document.layout, 0)[..] else {
+            panic!("рисунок не найден");
+        };
+        assert!((after.left - placed.left - 50.0).abs() < 0.5, "{after:?}");
+        assert!((after.top - placed.top - 20.0).abs() < 0.5, "{after:?}");
+
+        // «В тексте» возвращает рисунок в строку.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::PictureWrap(PictureWrap::InLine)]);
+        let document = viewer.document.as_ref().unwrap();
+        let inline = letter_editor::picture_ref(&document.doc, picture.at).unwrap();
+        assert_eq!(inline.anchor, None);
     }
 
     #[test]
