@@ -19,7 +19,7 @@ pub mod pdf;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use letter_layout::{FontLibrary, Shaper, layout_document};
+use letter_layout::{FontLibrary, PageLine, Shaper, layout_document};
 use letter_render::{GlyphCache, RgbaImage, SCREEN_PIXELS_PER_POINT, render_page};
 
 use letter_model::{
@@ -209,9 +209,15 @@ pub fn pages(doc: &Document, library: &FontLibrary) -> String {
             mm(page.height),
             page.lines.len()
         );
+        let notes: Vec<PageLine> = page
+            .notes
+            .iter()
+            .flat_map(|n| n.story.lines.iter().cloned())
+            .collect();
         let stories = [
             ("верхний колонтитул", &page.header.lines),
             ("текст", &page.lines),
+            ("сноски", &notes),
             ("нижний колонтитул", &page.footer.lines),
         ];
         for (name, lines) in stories {
