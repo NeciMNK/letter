@@ -245,4 +245,29 @@ mod tests {
         };
         assert_eq!(plain_text(p), "Claim.");
     }
+
+    #[test]
+    fn note_text_change_is_one_undo_step() {
+        let mut doc = doc();
+        let (_, id) = insert_note(&mut doc, Position::new(0, 0), NoteKind::Footnote);
+        let mut history = History::new();
+        let caret = Selection::caret(Position::new(0, 0));
+        let blocks = vec![Paragraph::text("New text").into()];
+        let after = history.run(
+            &mut doc,
+            caret,
+            Command::SetNote {
+                kind: NoteKind::Footnote,
+                id: id.clone(),
+                blocks: blocks.clone(),
+            },
+        );
+        assert_eq!(after, caret);
+        let note = |doc: &Document| doc.footnotes.iter().find(|n| n.id == id).cloned();
+        assert_eq!(note(&doc).map(|n| n.blocks), Some(blocks.clone()));
+        history.undo(&mut doc);
+        assert_ne!(note(&doc).map(|n| n.blocks), Some(blocks.clone()));
+        history.redo(&mut doc);
+        assert_eq!(note(&doc).map(|n| n.blocks), Some(blocks));
+    }
 }

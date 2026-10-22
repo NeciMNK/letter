@@ -1,16 +1,19 @@
-//! Правка колонтитулов. Двойной щелчок по колонтитулу (или кнопка на
-//! ленте) открывает его для правки: на время правки редактор работает
-//! с отдельным документом из одного раздела, где блоки — содержимое
-//! колонтитула, а сам документ откладывается. После каждой правки
+//! Правка колонтитулов и текста сносок. Двойной щелчок по колонтитулу
+//! (или кнопка на ленте) или по тексту сноски открывает его для правки:
+//! на время правки редактор работает с отдельным документом из одного
+//! раздела, где блоки — содержимое колонтитула или сноски, а сам документ
+//! откладывается. После каждой правки
 //! колонтитул записывается в отложенный документ и тот верстается заново,
 //! поэтому новый колонтитул сразу виден на всех страницах. Когда правка
 //! кончается (Esc, двойной щелчок по тексту), изменение записывается
 //! в историю документа одним шагом отмены.
 
-use letter_editor::{History, Position, header_footer_source, set_header_footer};
+use letter_editor::{
+    Command, History, Position, header_footer_source, notes, notes_mut, set_header_footer,
+};
 use letter_layout::{DocumentLayout, PageStory};
 use letter_model::{
-    Block, Document, HeaderFooter, HeaderFooterKind, Paragraph, ParagraphProps, Section,
+    Block, Document, HeaderFooter, HeaderFooterKind, NoteKind, Paragraph, ParagraphProps, Section,
 };
 
 /// Колонтитул, открытый для правки.
@@ -28,6 +31,8 @@ pub struct StoryEdit {
     pub header: bool,
     /// Вид колонтитула.
     pub kind: HeaderFooterKind,
+    /// Правится не колонтитул, а текст этой сноски: вид и номер.
+    pub note: Option<(NoteKind, String)>,
     /// Страница, на которой идёт правка.
     pub page: usize,
     /// Колонтитул до правки (`None` — его не было).
@@ -91,6 +96,7 @@ impl StoryEdit {
             section: source,
             header,
             kind,
+            note: None,
             page,
             original,
             start,
@@ -99,16 +105,96 @@ impl StoryEdit {
         (edit, story)
     }
 
-    /// Колонтитул после правки: `None` — не изменился.
-    fn edited(&self, story: &Document) -> Option<Option<HeaderFooter>> {
+    /// Начинает правку текста сноски `id` вида `kind`, который виден на
+    /// странице `page`. Возвращает правку и документ сноски для редактора.
+    #[allow(clippy::too_many_arguments)]
+    pub fn begin_note(
+        body: Document,
+        history: History,
+        cursor: Position,
+        anchor: Position,
+        display: DocumentLayout,
+        page: usize,
+        kind: NoteKind,
+        id: String,
+    ) -> (StoryEdit, Document) {
+        let section = display.pages.get(page).map_or(0, |p| p.section);
+        let start = notes(&body, kind)
+            .iter()
+            .find(|n| n.id == id)
+            .map(|n| n.blocks.clone())
+            .filter(|b| !b.is_empty())
+            .unwrap_or_else(|| vec![Paragraph::default().into()]);
+        let story = Document {
+            sections: vec![Section {
+                props: body
+                    .sections
+                    .get(section)
+                    .map(|s| s.props.clone())
+                    .unwrap_or_default(),
+                blocks: start.clone(),
+            }],
+            styles: body.styles.clone(),
+            numbering: body.numbering.clone(),
+            theme: body.theme.clone(),
+            settings: body.settings.clone(),
+            ..Document::new()
+        };
+        let edit = StoryEdit {
+            body,
+            history,
+            cursor,
+            anchor,
+            section,
+            header: false,
+            kind: HeaderFooterKind::Default,
+            note: Some((kind, id)),
+            page,
+            original: None,
+            start,
+            display,
+        };
+        (edit, story)
+    }
+
+    /// Правится колонтитул (а не сноска): `Some(true)` — верхний.
+    pub fn header(&self) -> Option<bool> {
+        self.note.is_none().then_some(self.header)
+    }
+
+    /// Блоки сноски или колонтитула из `story`: `None` — не изменились.
+    fn edited_blocks(&self, story: &Document) -> Option<Vec<Block>> {
         let blocks = story
             .sections
             .iter()
             .flat_map(|s| s.blocks.iter().cloned())
             .collect::<Vec<_>>();
-        if blocks == self.start {
-            return None;
+        (blocks != self.start).then_some(blocks)
+    }
+
+    /// Ставит текст сноски в документ.
+    fn set_note(&mut self, blocks: Vec<Block>) {
+        if let Some((kind, id)) = &self.note
+            && let Some(note) = notes_mut(&mut self.body, *kind)
+                .iter_mut()
+                .find(|n| n.id == *id)
+        {
+            note.blocks = blocks;
         }
+    }
+
+    /// Страницы для курсора, выделения и щелчков: строки — только того,
+    /// что правится.
+    pub fn edit_layout(&self) -> DocumentLayout {
+        match &self.note {
+            Some((kind, id)) => note_layout(&self.display, self.page, *kind, id),
+            None => edit_layout(&self.display, self.page, self.header),
+        }
+    }
+
+    /// Колонтитул после правки: `None` — не изменился.
+    fn edited(&self, story: &Document) -> Option<Option<HeaderFooter>> {
+        let blocks = self.edited_blocks(story)?;
         let mut relationship = self.original.as_ref().and_then(|o| o.relationship.clone());
         // Часть файла, общая с колонтитулом другого раздела, не трогаем:
         // изменённый колонтитул получит свою.
@@ -136,15 +222,30 @@ impl StoryEdit {
         count > 1
     }
 
-    /// Записывает колонтитул из `story` в документ (для показа).
+    /// Записывает колонтитул или сноску из `story` в документ (для
+    /// показа).
     pub fn write_back(&mut self, story: &Document) {
+        if self.note.is_some() {
+            let blocks = self
+                .edited_blocks(story)
+                .unwrap_or_else(|| self.start.clone());
+            self.set_note(blocks);
+            return;
+        }
         let new = self.edited(story).unwrap_or_else(|| self.original.clone());
         set_header_footer(&mut self.body, self.section, self.header, self.kind, new);
     }
 
-    /// Кончает правку: документ с колонтитулом как до правки и сам новый
-    /// колонтитул, если он изменился.
-    pub fn finish(mut self, story: &Document) -> (Document, History, Option<Option<HeaderFooter>>) {
+    /// Кончает правку: документ с колонтитулом или сноской как до правки
+    /// и команда, которая вносит изменение (если оно есть).
+    pub fn finish(mut self, story: &Document) -> (Document, History, Option<Command>) {
+        if let Some((kind, id)) = self.note.clone() {
+            let edited = self.edited_blocks(story);
+            let start = self.start.clone();
+            self.set_note(start);
+            let command = edited.map(|blocks| Command::SetNote { kind, id, blocks });
+            return (self.body, self.history, command);
+        }
         let edited = self.edited(story);
         let original = self.original.clone();
         set_header_footer(
@@ -154,7 +255,13 @@ impl StoryEdit {
             self.kind,
             original,
         );
-        (self.body, self.history, edited)
+        let command = edited.map(|story| Command::HeaderFooter {
+            section: self.section,
+            header: self.header,
+            kind: self.kind,
+            story: story.map(Box::new),
+        });
+        (self.body, self.history, command)
     }
 }
 
@@ -199,6 +306,51 @@ pub fn edit_layout(display: &DocumentLayout, page: usize, header: bool) -> Docum
         })
         .collect();
     DocumentLayout { pages }
+}
+
+/// Страницы для правки текста сноски: как `display`, но строки
+/// страницы `page` — только этой сноски, а у остальных страниц строк нет.
+pub fn note_layout(
+    display: &DocumentLayout,
+    page: usize,
+    kind: NoteKind,
+    id: &str,
+) -> DocumentLayout {
+    let pages = display
+        .pages
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let mut copy = p.clone();
+            let story = p
+                .notes
+                .iter()
+                .filter(|n| i == page && n.kind == kind && n.id == id)
+                .map(|n| n.story.clone())
+                .next()
+                .unwrap_or_default();
+            copy.lines = story.lines;
+            copy.floats = story.floats;
+            copy.shapes = Vec::new();
+            copy.header = PageStory::default();
+            copy.footer = PageStory::default();
+            copy
+        })
+        .collect();
+    DocumentLayout { pages }
+}
+
+/// Сноска, текст которой на листе на высоте `y`: вид и номер.
+pub fn note_at(page: &letter_layout::Page, y: f32) -> Option<(NoteKind, String)> {
+    page.notes
+        .iter()
+        .find(|n| {
+            n.story
+                .lines
+                .iter()
+                .any(|l| (l.top..l.top + l.height).contains(&y))
+        })
+        .map(|n| (n.kind, n.id.clone()))
 }
 
 /// Где на листе колонтитул: `Some(true)` — верхний, `Some(false)` —
@@ -281,7 +433,7 @@ mod tests {
         let (body, _, edited) = edit.finish(&story);
         // Документ — как до правки; изменение — отдельно, для истории.
         assert_eq!(body, doc());
-        let edited = edited.flatten().unwrap();
+        let edited = header_footer(edited).unwrap();
         assert_eq!(edited.blocks[0].plain_text(), "top");
     }
 
@@ -305,6 +457,44 @@ mod tests {
         assert_eq!(edit.section, 1);
         story.sections[0].blocks = vec![Paragraph::text("new").into()];
         let (_, _, edited) = edit.finish(&story);
-        assert_eq!(edited.flatten().unwrap().relationship, None);
+        assert_eq!(header_footer(edited).unwrap().relationship, None);
+    }
+
+    /// Колонтитул из команды, которую дала правка.
+    fn header_footer(command: Option<Command>) -> Option<HeaderFooter> {
+        match command {
+            Some(Command::HeaderFooter { story, .. }) => story.map(|s| *s),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn note_text_is_edited_apart() {
+        let mut body = doc();
+        let (_, id) =
+            letter_editor::insert_note(&mut body, Position::default(), NoteKind::Footnote);
+        let (mut edit, mut story) = StoryEdit::begin_note(
+            body.clone(),
+            History::new(),
+            Position::default(),
+            Position::default(),
+            DocumentLayout { pages: Vec::new() },
+            0,
+            NoteKind::Footnote,
+            id.clone(),
+        );
+        assert_eq!(edit.header(), None);
+        story.sections[0].blocks = vec![Paragraph::text("note").into()];
+        edit.write_back(&story);
+        let text = |doc: &Document| {
+            doc.footnotes
+                .iter()
+                .find(|n| n.id == id)
+                .map(|n| n.blocks[0].plain_text())
+        };
+        assert_eq!(text(&edit.body).as_deref(), Some("note"));
+        let (restored, _, command) = edit.finish(&story);
+        assert_eq!(restored, body);
+        assert!(matches!(command, Some(Command::SetNote { .. })));
     }
 }
