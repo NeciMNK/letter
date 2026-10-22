@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::files::write_atomic;
+use crate::theme::ThemeChoice;
 
 /// Параметры программы.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,6 +15,8 @@ pub struct Settings {
     pub autosave_minutes: u32,
     /// Показывать линейку при запуске.
     pub show_ruler: bool,
+    /// Тема оформления.
+    pub theme: ThemeChoice,
 }
 
 impl Default for Settings {
@@ -21,6 +24,7 @@ impl Default for Settings {
         Settings {
             autosave_minutes: 2,
             show_ruler: true,
+            theme: ThemeChoice::default(),
         }
     }
 }
@@ -49,6 +53,11 @@ impl Settings {
                         settings.show_ruler = show;
                     }
                 }
+                "theme" => {
+                    if let Some(theme) = ThemeChoice::from_key(value) {
+                        settings.theme = theme;
+                    }
+                }
                 _ => {}
             }
         }
@@ -58,8 +67,10 @@ impl Settings {
     /// Текст файла параметров.
     pub fn to_text(self) -> String {
         format!(
-            "autosave_minutes = {}\nshow_ruler = {}\n",
-            self.autosave_minutes, self.show_ruler
+            "autosave_minutes = {}\nshow_ruler = {}\ntheme = {}\n",
+            self.autosave_minutes,
+            self.show_ruler,
+            self.theme.key()
         )
     }
 
@@ -90,6 +101,7 @@ mod tests {
         let settings = Settings {
             autosave_minutes: 10,
             show_ruler: false,
+            theme: ThemeChoice::Dark,
         };
         assert_eq!(Settings::parse(&settings.to_text()), settings);
         let odd = "мусор\nautosave_minutes = 9999\nshow_ruler = может быть\n";
@@ -109,6 +121,7 @@ mod tests {
         let settings = Settings {
             autosave_minutes: 5,
             show_ruler: false,
+            theme: ThemeChoice::Light,
         };
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(Some(&dir)), settings);

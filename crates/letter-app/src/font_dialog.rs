@@ -401,7 +401,10 @@ fn font_tab(ui: &mut Ui, v: &mut FontValues, fonts: &[String], size_text: &mut O
 /// Список с прокруткой под полем.
 fn list(ui: &mut Ui, id: &str, width: f32, content: impl FnOnce(&mut Ui)) {
     egui::Frame::new()
-        .stroke(egui::Stroke::new(1.0, Color32::from_gray(190)))
+        .stroke(egui::Stroke::new(
+            1.0,
+            crate::theme::Palette::of(ui.ctx()).border,
+        ))
         .show(ui, |ui| {
             ui.set_width(width);
             ScrollArea::vertical()
