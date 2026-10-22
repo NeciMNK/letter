@@ -799,6 +799,17 @@ impl Viewer {
             self.ask = Some(Intent::Close);
         }
         crate::i18n::set_language(self.settings.language);
+        // Подсказки клавиш по Alt — только над лентой, без открытых окон.
+        if !self.backstage.open
+            && self.error.is_none()
+            && self.ask.is_none()
+            && !self.font_dialog.open
+            && !self.paragraph_dialog.open
+            && (self.ribbon.keytips.active() || !ctx.egui_wants_keyboard_input())
+        {
+            let commands = self.ribbon.handle_keys(&ctx);
+            self.run_ribbon(&ctx, commands);
+        }
         self.handle_input(&ctx);
         if self.applied_theme != Some(self.settings.theme) {
             ctx.set_theme(self.settings.theme.preference());
@@ -1276,6 +1287,8 @@ impl Viewer {
                     }
                     actions.push(Action::Edit(Command::DeleteBackward));
                 }
+                RibbonCommand::OpenPopup(id) => egui::Popup::open_id(ctx, id),
+                RibbonCommand::Focus(id) => ctx.memory_mut(|m| m.request_focus(id)),
                 RibbonCommand::Find => self.find.show(false),
                 RibbonCommand::Replace => self.find.show(true),
                 RibbonCommand::SelectAll => actions.push(Action::SelectAll),
@@ -2665,6 +2678,84 @@ mod tests {
             events(vec![press(Key::D, Modifiers::COMMAND)]),
         );
         assert!(viewer.font_dialog.open);
+    }
+
+    #[test]
+    fn alt_shows_key_tips() {
+        use crate::keytips::Level;
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        viewer.ribbon.tab = crate::ribbon::Tab::View;
+        frame(&ctx, &mut viewer, screen());
+        let right = || press(Key::ArrowRight, Modifiers::SHIFT);
+        frame(&ctx, &mut viewer, events(vec![right(), right()]));
+        // Нажали и отпустили Alt — видны буквы вкладок.
+        let modifiers = |m| events(vec![Event::ModifiersChanged(m)]);
+        frame(&ctx, &mut viewer, modifiers(Modifiers::ALT));
+        frame(&ctx, &mut viewer, modifiers(Modifiers::NONE));
+        assert_eq!(viewer.ribbon.keytips.level, Some(Level::Tabs));
+        // «Я» (клавиша Z) — «Главная»; набранная буква не попадает в текст.
+        let before = first_text(&mut viewer);
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![
+                press(Key::Z, Modifiers::NONE),
+                Event::Text("я".into()),
+            ]),
+        );
+        assert_eq!(viewer.ribbon.tab, crate::ribbon::Tab::Home);
+        assert_eq!(viewer.ribbon.keytips.level, Some(Level::Commands));
+        assert_eq!(first_text(&mut viewer), before);
+        frame(&ctx, &mut viewer, screen());
+        assert!(crate::keytips::collected(&ctx).len() >= 25);
+        // «1» — полужирный; подсказки скрываются.
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(Key::Num1, Modifiers::NONE)]),
+        );
+        assert_eq!(viewer.ribbon.keytips.level, None);
+        assert!(viewer.modified());
+        // Многобуквенная: «ШР» — фокус в поле размера шрифта.
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(Key::Z, Modifiers::ALT)]),
+        );
+        assert_eq!(viewer.ribbon.keytips.level, Some(Level::Commands));
+        frame(&ctx, &mut viewer, screen());
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![
+                press(Key::I, Modifiers::NONE),
+                press(Key::H, Modifiers::NONE),
+            ]),
+        );
+        assert_eq!(viewer.ribbon.keytips.level, None);
+        frame(&ctx, &mut viewer, screen());
+        assert!(ctx.egui_wants_keyboard_input());
+        ctx.memory_mut(|m| m.stop_text_input());
+        // Esc — на уровень назад, ещё раз — выход.
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(Key::Z, Modifiers::ALT)]),
+        );
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(Key::Escape, Modifiers::NONE)]),
+        );
+        assert_eq!(viewer.ribbon.keytips.level, Some(Level::Tabs));
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![press(Key::Escape, Modifiers::NONE)]),
+        );
+        assert_eq!(viewer.ribbon.keytips.level, None);
     }
 
     #[test]

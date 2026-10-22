@@ -8,6 +8,7 @@ use letter_editor::{ParagraphFormat, RunFormat};
 use letter_model::{Alignment, Color, HalfPoints, Highlight, LineSpacing, Twips};
 
 use crate::icons::{self, Icon, color_button, icon_button, icon_text_button};
+use crate::keytips::{self, Level, TipAction};
 use crate::ribbon::{RibbonCommand, RibbonInfo, group, group_with_launcher};
 use crate::theme::Palette;
 
@@ -110,30 +111,95 @@ fn font_color32(color: Color) -> Color32 {
     }
 }
 
+/// Подсказки клавиш вкладки «Главная» (имена в файлах перевода) — для
+/// проверки, что они не мешают друг другу.
+#[cfg(test)]
+pub const KEYTIPS: [&str; 30] = [
+    "keytip-home-paste",
+    "keytip-home-cut",
+    "keytip-home-copy",
+    "keytip-home-font",
+    "keytip-home-size",
+    "keytip-home-grow",
+    "keytip-home-shrink",
+    "keytip-home-clear",
+    "keytip-home-bold",
+    "keytip-home-italic",
+    "keytip-home-underline",
+    "keytip-home-strike",
+    "keytip-home-subscript",
+    "keytip-home-superscript",
+    "keytip-home-highlight",
+    "keytip-home-font-color",
+    "keytip-home-font-dialog",
+    "keytip-home-indent-less",
+    "keytip-home-indent-more",
+    "keytip-home-marks",
+    "keytip-home-align-left",
+    "keytip-home-align-center",
+    "keytip-home-align-right",
+    "keytip-home-align-justify",
+    "keytip-home-line-spacing",
+    "keytip-home-paragraph-dialog",
+    "keytip-home-find",
+    "keytip-home-replace",
+    "keytip-home-select-all",
+    "keytip-home-styles",
+];
+
+/// Подсказка клавиш у кнопки с командой.
+fn keytip(ui: &Ui, response: &egui::Response, id: &str, command: RibbonCommand) {
+    keytips::tip(
+        ui,
+        response,
+        Level::Commands,
+        id,
+        TipAction::Command(command),
+    );
+}
+
+/// Подсказка клавиш у кнопки со списком или меню: открывает его.
+fn popup_keytip(ui: &Ui, response: &egui::Response, id: &str) {
+    let popup = egui::Popup::default_response_id(response);
+    keytips::tip(ui, response, Level::Commands, id, TipAction::Popup(popup));
+}
+
 /// Вкладка «Главная».
 pub fn home(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     let doc = info.has_document;
     group(ui, tr("group-clipboard"), |ui| {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                if icon_button(ui, Icon::Paste, tr("paste"), vec2(44.0, 34.0), doc, false)
-                    .on_hover_text(tr("paste-hint"))
-                    .clicked()
-                {
+                let response =
+                    icon_button(ui, Icon::Paste, tr("paste"), vec2(44.0, 34.0), doc, false)
+                        .on_hover_text(tr("paste-hint"));
+                keytip(ui, &response, "keytip-home-paste", RibbonCommand::Paste);
+                if response.clicked() {
                     out.push(RibbonCommand::Paste);
                 }
                 ui.label(tr("paste"));
             });
             ui.vertical(|ui| {
                 let selected = doc && info.has_selection;
-                for (icon, name, tip, command) in [
-                    (Icon::Cut, tr("cut"), tr("cut-hint"), RibbonCommand::Cut),
-                    (Icon::Copy, tr("copy"), tr("copy-hint"), RibbonCommand::Copy),
+                for (icon, name, tip, key, command) in [
+                    (
+                        Icon::Cut,
+                        tr("cut"),
+                        tr("cut-hint"),
+                        "keytip-home-cut",
+                        RibbonCommand::Cut,
+                    ),
+                    (
+                        Icon::Copy,
+                        tr("copy"),
+                        tr("copy-hint"),
+                        "keytip-home-copy",
+                        RibbonCommand::Copy,
+                    ),
                 ] {
-                    if icon_text_button(ui, icon, name, selected)
-                        .on_hover_text(tip)
-                        .clicked()
-                    {
+                    let response = icon_text_button(ui, icon, name, selected).on_hover_text(tip);
+                    keytip(ui, &response, key, command.clone());
+                    if response.clicked() {
                         out.push(command);
                     }
                 }
@@ -141,14 +207,24 @@ pub fn home(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Vec
         });
     });
     let mut font = Vec::new();
-    if group_with_launcher(ui, tr("font"), Some(tr("font-settings")), |ui| {
+    let launcher = (
+        tr("font-settings"),
+        "keytip-home-font-dialog",
+        RibbonCommand::FontDialog,
+    );
+    if group_with_launcher(ui, tr("font"), Some(launcher), |ui| {
         font_group(ui, state, info, &mut font);
     }) {
         font.push(RibbonCommand::FontDialog);
     }
     out.extend(font);
     let mut paragraph = Vec::new();
-    if group_with_launcher(ui, tr("paragraph"), Some(tr("paragraph-settings")), |ui| {
+    let launcher = (
+        tr("paragraph-settings"),
+        "keytip-home-paragraph-dialog",
+        RibbonCommand::ParagraphDialog,
+    );
+    if group_with_launcher(ui, tr("paragraph"), Some(launcher), |ui| {
         paragraph_group(ui, info, &mut paragraph);
     }) {
         paragraph.push(RibbonCommand::ParagraphDialog);
@@ -156,30 +232,32 @@ pub fn home(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Vec
     out.extend(paragraph);
     group(ui, tr("group-styles"), |ui| styles_group(ui, info, out));
     group(ui, tr("group-editing"), |ui| {
-        for (icon, name, tip, command) in [
+        for (icon, name, tip, key, command) in [
             (
                 Icon::Search,
                 tr("find"),
                 tr("find-hint"),
+                "keytip-home-find",
                 RibbonCommand::Find,
             ),
             (
                 Icon::Replace,
                 tr("replace"),
                 tr("replace-hint"),
+                "keytip-home-replace",
                 RibbonCommand::Replace,
             ),
             (
                 Icon::SelectAll,
                 tr("select-all"),
                 tr("select-all-hint"),
+                "keytip-home-select-all",
                 RibbonCommand::SelectAll,
             ),
         ] {
-            if icon_text_button(ui, icon, name, doc)
-                .on_hover_text(tip)
-                .clicked()
-            {
+            let response = icon_text_button(ui, icon, name, doc).on_hover_text(tip);
+            keytip(ui, &response, key, command.clone());
+            if response.clicked() {
                 out.push(command);
             }
         }
@@ -208,7 +286,7 @@ fn styles_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 }
             }
         });
-        drop_down(ui, info.has_document, tr("all-styles"), |ui| {
+        let response = drop_down(ui, info.has_document, tr("all-styles"), |ui| {
             egui::ScrollArea::vertical()
                 .max_height(320.0)
                 .show(ui, |ui| {
@@ -224,6 +302,7 @@ fn styles_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                     }
                 });
         });
+        popup_keytip(ui, &response, "keytip-home-styles");
     });
 }
 
@@ -298,47 +377,69 @@ fn paragraph_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>)
     let doc = info.has_document;
     let button = vec2(26.0, 24.0);
     ui.horizontal(|ui| {
-        for (icon, name, format) in [
+        for (icon, name, key, format) in [
             (
                 Icon::IndentLess,
                 tr("indent-decrease"),
+                "keytip-home-indent-less",
                 ParagraphFormat::IndentLess,
             ),
             (
                 Icon::IndentMore,
                 tr("indent-increase"),
+                "keytip-home-indent-more",
                 ParagraphFormat::IndentMore,
             ),
         ] {
-            if icon_button(ui, icon, name, button, doc, false)
-                .on_hover_text(name)
-                .clicked()
-            {
+            let response = icon_button(ui, icon, name, button, doc, false).on_hover_text(name);
+            keytip(ui, &response, key, RibbonCommand::Paragraph(format));
+            if response.clicked() {
                 out.push(RibbonCommand::Paragraph(format));
             }
         }
         ui.separator();
         let name = tr("show-marks");
-        if icon_button(ui, Icon::Pilcrow, name, button, doc, info.marks)
-            .on_hover_text(tr("show-marks-hint"))
-            .clicked()
-        {
+        let response = icon_button(ui, Icon::Pilcrow, name, button, doc, info.marks)
+            .on_hover_text(tr("show-marks-hint"));
+        keytip(
+            ui,
+            &response,
+            "keytip-home-marks",
+            RibbonCommand::ToggleMarks,
+        );
+        if response.clicked() {
             out.push(RibbonCommand::ToggleMarks);
         }
     });
     ui.horizontal(|ui| {
-        for (alignment, tip) in [
-            (Alignment::Left, tr("align-left-hint")),
-            (Alignment::Center, tr("align-center-hint")),
-            (Alignment::Right, tr("align-right-hint")),
-            (Alignment::Justify, tr("align-justify-hint")),
+        for (alignment, tip, key) in [
+            (
+                Alignment::Left,
+                tr("align-left-hint"),
+                "keytip-home-align-left",
+            ),
+            (
+                Alignment::Center,
+                tr("align-center-hint"),
+                "keytip-home-align-center",
+            ),
+            (
+                Alignment::Right,
+                tr("align-right-hint"),
+                "keytip-home-align-right",
+            ),
+            (
+                Alignment::Justify,
+                tr("align-justify-hint"),
+                "keytip-home-align-justify",
+            ),
         ] {
             let on = info.alignment == Some(alignment);
             let name = tip.split(" (").next().unwrap_or(tip);
-            if icon_button(ui, Icon::Align(alignment), name, button, doc, on)
-                .on_hover_text(tip)
-                .clicked()
-            {
+            let response =
+                icon_button(ui, Icon::Align(alignment), name, button, doc, on).on_hover_text(tip);
+            keytip(ui, &response, key, RibbonCommand::Align(alignment));
+            if response.clicked() {
                 out.push(RibbonCommand::Align(alignment));
             }
         }
@@ -349,6 +450,7 @@ fn paragraph_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>)
         ui.add_enabled_ui(doc, |ui| {
             let (response, _) = egui::containers::menu::MenuButton::from_button(spacing)
                 .ui(ui, |ui| spacing_menu(ui, info, out));
+            popup_keytip(ui, &response, "keytip-home-line-spacing");
             response.on_hover_text(tr("line-spacing"));
         });
     });
@@ -400,66 +502,74 @@ fn font_group(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut V
             font_list(ui, state, info, out);
             size_box(ui, state, info, out);
         });
-        for (icon, name, tip, format) in [
+        for (icon, name, tip, key, format) in [
             (
                 Icon::Grow,
                 tr("font-grow"),
                 tr("font-grow-hint"),
+                "keytip-home-grow",
                 RunFormat::GrowStep,
             ),
             (
                 Icon::Shrink,
                 tr("font-shrink"),
                 tr("font-shrink-hint"),
+                "keytip-home-shrink",
                 RunFormat::ShrinkStep,
             ),
             (
                 Icon::ClearFormat,
                 tr("clear-formatting"),
                 tr("clear-formatting-hint"),
+                "keytip-home-clear",
                 RunFormat::Clear,
             ),
         ] {
-            if icon_button(ui, icon, name, button, doc, false)
-                .on_hover_text(tip)
-                .clicked()
-            {
+            let response = icon_button(ui, icon, name, button, doc, false).on_hover_text(tip);
+            keytip(ui, &response, key, RibbonCommand::Format(format.clone()));
+            if response.clicked() {
                 out.push(RibbonCommand::Format(format));
             }
         }
     });
     ui.horizontal(|ui| {
-        for (on, text, tip, format) in [
+        for (on, text, tip, key, format) in [
             (
                 info.bold,
                 RichText::new(tr("bold-letter")).strong(),
                 tr("bold-hint"),
+                "keytip-home-bold",
                 RunFormat::Bold,
             ),
             (
                 info.italic,
                 RichText::new(tr("italic-letter")).italics(),
                 tr("italic-hint"),
+                "keytip-home-italic",
                 RunFormat::Italic,
             ),
             (
                 info.underline,
                 RichText::new(tr("underline-letter")).underline(),
                 tr("underline-hint"),
+                "keytip-home-underline",
                 RunFormat::Underline,
             ),
         ] {
             let toggle = egui::Button::selectable(on, text).min_size(button);
-            if ui.add_enabled(doc, toggle).on_hover_text(tip).clicked() {
+            let response = ui.add_enabled(doc, toggle).on_hover_text(tip);
+            keytip(ui, &response, key, RibbonCommand::Format(format.clone()));
+            if response.clicked() {
                 out.push(RibbonCommand::Format(format));
             }
         }
-        for (icon, on, name, tip, format) in [
+        for (icon, on, name, tip, key, format) in [
             (
                 Icon::Strike,
                 info.strike,
                 tr("strikethrough"),
                 tr("strikethrough"),
+                "keytip-home-strike",
                 RunFormat::Strike,
             ),
             (
@@ -467,6 +577,7 @@ fn font_group(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut V
                 info.subscript,
                 tr("subscript"),
                 tr("subscript-hint"),
+                "keytip-home-subscript",
                 RunFormat::Subscript,
             ),
             (
@@ -474,33 +585,35 @@ fn font_group(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut V
                 info.superscript,
                 tr("superscript"),
                 tr("superscript-hint"),
+                "keytip-home-superscript",
                 RunFormat::Superscript,
             ),
         ] {
-            if icon_button(ui, icon, name, button, doc, on)
-                .on_hover_text(tip)
-                .clicked()
-            {
+            let response = icon_button(ui, icon, name, button, doc, on).on_hover_text(tip);
+            keytip(ui, &response, key, RibbonCommand::Format(format.clone()));
+            if response.clicked() {
                 out.push(RibbonCommand::Format(format));
             }
         }
         ui.separator();
         let marker = state.highlight.rgb().map_or(Color32::TRANSPARENT, color32);
-        if color_button(ui, Icon::Highlight, tr("highlight-color"), marker, doc)
-            .on_hover_text(tr("highlight-color"))
-            .clicked()
-        {
-            out.push(RibbonCommand::Format(RunFormat::Highlight(state.highlight)));
+        let highlight = RibbonCommand::Format(RunFormat::Highlight(state.highlight));
+        let response = color_button(ui, Icon::Highlight, tr("highlight-color"), marker, doc)
+            .on_hover_text(tr("highlight-color"));
+        keytip(ui, &response, "keytip-home-highlight", highlight.clone());
+        if response.clicked() {
+            out.push(highlight);
         }
         drop_down(ui, doc, tr("highlight-colors"), |ui| {
             highlight_menu(ui, state, out);
         });
         let color = font_color32(state.font_color);
-        if color_button(ui, Icon::FontColor, tr("font-color"), color, doc)
-            .on_hover_text(tr("font-color"))
-            .clicked()
-        {
-            out.push(RibbonCommand::Format(RunFormat::Color(state.font_color)));
+        let font_color = RibbonCommand::Format(RunFormat::Color(state.font_color));
+        let response = color_button(ui, Icon::FontColor, tr("font-color"), color, doc)
+            .on_hover_text(tr("font-color"));
+        keytip(ui, &response, "keytip-home-font-color", font_color.clone());
+        if response.clicked() {
+            out.push(font_color);
         }
         drop_down(ui, doc, tr("font-colors"), |ui| {
             color_menu(ui, state, out);
@@ -509,19 +622,20 @@ fn font_group(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut V
 }
 
 /// Узкая кнопка со стрелкой, открывающая меню.
-fn drop_down(ui: &mut Ui, enabled: bool, name: &str, menu: impl FnOnce(&mut Ui)) {
+fn drop_down(ui: &mut Ui, enabled: bool, name: &str, menu: impl FnOnce(&mut Ui)) -> egui::Response {
     let arrow = egui::Button::new(icons::text(ui, Icon::ChevronDown, 10.0))
         .frame(false)
         .min_size(vec2(12.0, 24.0));
     ui.add_enabled_ui(enabled, |ui| {
         let (response, _) = egui::containers::menu::MenuButton::from_button(arrow).ui(ui, menu);
-        response.on_hover_text(name);
-    });
+        response.on_hover_text(name)
+    })
+    .inner
 }
 
 /// Список шрифтов с поиском.
 fn font_list(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
-    egui::ComboBox::from_id_salt("font-name")
+    let response = egui::ComboBox::from_id_salt("font-name")
         .width(120.0)
         .selected_text(info.font.as_str())
         .height(320.0)
@@ -543,8 +657,9 @@ fn font_list(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Ve
                 }
             }
         })
-        .response
-        .on_hover_text(tr("font"));
+        .response;
+    popup_keytip(ui, &response, "keytip-home-font");
+    response.on_hover_text(tr("font"));
 }
 
 /// Поле «Размер шрифта» со списком: размер можно набрать (Enter —
@@ -555,6 +670,13 @@ fn size_box(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Vec
     let response = ui
         .add(TextEdit::singleline(text).desired_width(30.0))
         .on_hover_text(tr("font-size-box"));
+    keytips::tip(
+        ui,
+        &response,
+        Level::Commands,
+        "keytip-home-size",
+        TipAction::Focus(response.id),
+    );
     if response.lost_focus() {
         let cancelled = ui.input(|i| i.key_pressed(Key::Escape));
         if !cancelled
