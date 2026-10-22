@@ -1837,6 +1837,19 @@ impl Viewer {
                         self.reveal_cursor = true;
                     }
                 }
+                RibbonCommand::InsertToc | RibbonCommand::UpdateToc => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &self.document
+                        && document.story.is_none()
+                    {
+                        let context = Box::new(document.field_context());
+                        actions.push(Action::Edit(if command == RibbonCommand::InsertToc {
+                            Command::InsertToc(context)
+                        } else {
+                            Command::UpdateToc(context)
+                        }));
+                    }
+                }
                 RibbonCommand::UpdateFields => {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
                     if let Some(document) = &self.document {
@@ -3674,6 +3687,36 @@ mod tests {
         viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
         let document = viewer.document.as_ref().unwrap();
         assert!(bookmark_range(&document.doc, "start").is_some());
+    }
+
+    #[test]
+    fn toc_is_inserted_and_saved() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("headings.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::InsertToc]);
+        let document = viewer.document.as_ref().unwrap();
+        let lines: Vec<String> = document.layout.pages[0]
+            .lines
+            .iter()
+            .map(|l| {
+                l.text
+                    .get(l.line.range.clone())
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(lines[0], "Оглавление");
+        assert!(lines[1].starts_with("Heading 1\t1"), "{lines:?}");
+        assert!(lines[3].starts_with("Heading 3\t1"), "{lines:?}");
+        // Оглавление переживает сохранение и обновляется.
+        let bytes = letter_docx::write_bytes(&document.doc).unwrap();
+        let reopened = letter_docx::read_bytes(&bytes).unwrap();
+        assert_eq!(reopened.sections, document.doc.sections);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::UpdateToc]);
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(document.layout.pages[0].lines.len(), lines.len());
     }
 
     #[test]
