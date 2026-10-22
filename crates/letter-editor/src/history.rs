@@ -18,7 +18,10 @@ use crate::edit::{
 use crate::format::{
     ParagraphFormat, RunFormat, align_paragraphs, apply_style, format_paragraphs, format_runs,
 };
-use crate::lists::{ListKind, change_list_level, tab_changes_level, toggle_list};
+use crate::lists::{
+    ListKind, change_list_level, continue_numbering, multilevel_list, restart_numbering,
+    tab_changes_level, toggle_list,
+};
 use crate::search::{SearchOptions, clamp, replace_all};
 use crate::selection::Selection;
 
@@ -51,6 +54,12 @@ pub enum Command {
     List(ListKind),
     /// Уровень пунктов списка глубже (+1) или выше (−1).
     ListLevel(i8),
+    /// Кнопка «Многоуровневый список».
+    MultilevelList,
+    /// «Начать заново с 1» у пункта с курсором.
+    RestartNumbering,
+    /// «Продолжить нумерацию» у пункта с курсором.
+    ContinueNumbering,
     /// Tab (`shift` — Shift+Tab): в начале пункта списка меняет уровень,
     /// иначе Tab вставляет табуляцию, а Shift+Tab ничего не делает.
     Tab {
@@ -183,6 +192,9 @@ impl History {
                 | Command::Style(_)
                 | Command::List(_)
                 | Command::ListLevel(_)
+                | Command::MultilevelList
+                | Command::RestartNumbering
+                | Command::ContinueNumbering
                 | Command::ReplaceAll { .. }
         );
         let erasing = !selection.is_empty() && !formatting;
@@ -193,6 +205,10 @@ impl History {
             Command::DeleteForward if !erasing => (start.paragraph, end.paragraph + 1),
             // Замена может задеть любой абзац.
             Command::ReplaceAll { .. } => (0, paragraph_count(doc).saturating_sub(1)),
+            // Новый номер получают и следующие пункты списка.
+            Command::RestartNumbering | Command::ContinueNumbering => {
+                (start.paragraph, paragraph_count(doc).saturating_sub(1))
+            }
             _ => (start.paragraph, end.paragraph),
         };
         let from = top_level(doc, first).or_else(|| top_level(doc, start.paragraph));
@@ -238,6 +254,18 @@ impl History {
                 change_list_level(doc, start, end, *delta);
                 Some(selection)
             }
+            Command::MultilevelList => {
+                multilevel_list(doc, start, end);
+                Some(selection)
+            }
+            Command::RestartNumbering => {
+                restart_numbering(doc, selection.focus.paragraph);
+                Some(selection)
+            }
+            Command::ContinueNumbering => {
+                continue_numbering(doc, selection.focus.paragraph);
+                Some(selection)
+            }
             Command::ReplaceAll {
                 query,
                 replacement,
@@ -264,6 +292,9 @@ impl History {
             | Command::Style(_)
             | Command::List(_)
             | Command::ListLevel(_)
+            | Command::MultilevelList
+            | Command::RestartNumbering
+            | Command::ContinueNumbering
             | Command::Tab { .. }
             | Command::ReplaceAll { .. } => at,
         };

@@ -35,8 +35,8 @@ pub use format::{
 };
 pub use history::{Command, History};
 pub use lists::{
-    ListKind, change_list_level, list_item, list_kind, remove_from_list, tab_changes_level,
-    toggle_list,
+    ListKind, can_continue_numbering, change_list_level, continue_numbering, list_item, list_kind,
+    multilevel_list, remove_from_list, restart_numbering, tab_changes_level, toggle_list,
 };
 pub use navigation::{Motion, Moved, move_cursor};
 pub use position::{Affinity, Position};

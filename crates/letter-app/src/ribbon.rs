@@ -122,6 +122,12 @@ pub enum RibbonCommand {
     Paragraph(ParagraphFormat),
     /// «Маркеры» или «Нумерация».
     List(ListKind),
+    /// «Многоуровневый список».
+    MultilevelList,
+    /// «Начать заново с 1».
+    RestartNumbering,
+    /// «Продолжить нумерацию».
+    ContinueNumbering,
     /// Показать или скрыть знаки форматирования.
     ToggleMarks,
     /// Применить стиль с этим идентификатором.

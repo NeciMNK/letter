@@ -114,7 +114,7 @@ fn font_color32(color: Color) -> Color32 {
 /// Подсказки клавиш вкладки «Главная» (имена в файлах перевода) — для
 /// проверки, что они не мешают друг другу.
 #[cfg(test)]
-pub const KEYTIPS: [&str; 32] = [
+pub const KEYTIPS: [&str; 33] = [
     "keytip-home-paste",
     "keytip-home-cut",
     "keytip-home-copy",
@@ -134,6 +134,7 @@ pub const KEYTIPS: [&str; 32] = [
     "keytip-home-font-dialog",
     "keytip-home-bullets",
     "keytip-home-numbering",
+    "keytip-home-multilevel",
     "keytip-home-indent-less",
     "keytip-home-indent-more",
     "keytip-home-marks",
@@ -401,6 +402,14 @@ fn paragraph_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>)
             if response.clicked() {
                 out.push(RibbonCommand::List(kind));
             }
+        }
+        let name = tr("multilevel");
+        let response = icon_button(ui, Icon::Multilevel, name, button, doc, false)
+            .on_hover_text(tr("multilevel-hint"));
+        let command = RibbonCommand::MultilevelList;
+        keytip(ui, &response, "keytip-home-multilevel", command.clone());
+        if response.clicked() {
+            out.push(command);
         }
         for (icon, name, key, format) in [
             (
