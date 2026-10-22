@@ -7,16 +7,16 @@
 
 use letter_model::{
     Block, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind, FirstLineIndent,
-    HeaderFooterKind, Hyperlink, Inline, LineSpacing, Note, NoteKind, Orientation, Paragraph,
-    ParagraphProps, RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps,
-    SectionStart, Style, StyleKind, Styles, VerticalAlign,
+    HeaderFooterKind, Hyperlink, Inline, LineSpacing, Note, NoteKind, Orientation,
+    PageBorderDisplay, PageBorders, Paragraph, ParagraphProps, RawXml, Run, RunContent, RunFonts,
+    RunProps, Section, SectionProps, SectionStart, Style, StyleKind, Styles, VerticalAlign,
 };
 
 use crate::document::{W_NS, is_w_ns};
 use crate::names::{
     ALIGNMENTS, HIGHLIGHTS, TAB_KINDS, TAB_LEADERS, THEME_FONTS, UNDERLINES, name_of,
 };
-use crate::table::{paragraph_borders_xml, shading_xml};
+use crate::table::{border_lines, paragraph_borders_xml, shading_xml};
 use crate::xml;
 
 /// Пространство имён связей (`r:id`).
@@ -193,6 +193,12 @@ pub(crate) fn document_xml(doc: &Document) -> String {
     );
     NEW_PICTURES.with(|n| n.set(0));
     let mut children = Children::new(DOCUMENT_ORDER);
+    if let Some(color) = doc.background {
+        children.push(
+            "background",
+            empty("w:background", &[("w:color", hex_color(color))]),
+        );
+    }
     children.raw(&doc.unknown);
     children.push("body", body(&doc.sections));
     xml_part(&element_with("w:document", &attrs, &children.finish()))
@@ -713,8 +719,38 @@ fn section_props(props: &SectionProps) -> String {
     if props.title_page {
         children.push("titlePg", empty("w:titlePg", &[]));
     }
+    if let Some(borders) = &props.page_borders {
+        children.push("pgBorders", page_borders_xml(borders));
+    }
     children.raw(&props.unknown);
     element("w:sectPr", &children.finish())
+}
+
+/// Границы страниц `w:pgBorders`.
+fn page_borders_xml(borders: &PageBorders) -> String {
+    let mut attrs = Vec::new();
+    if borders.from_page_edge {
+        attrs.push(("w:offsetFrom", "page".to_string()));
+    }
+    if borders.behind_text {
+        attrs.push(("w:zOrder", "back".to_string()));
+    }
+    match borders.display {
+        PageBorderDisplay::AllPages => {}
+        PageBorderDisplay::FirstPage => attrs.push(("w:display", "firstPage".to_string())),
+        PageBorderDisplay::NotFirstPage => attrs.push(("w:display", "notFirstPage".to_string())),
+    }
+    let attrs: Vec<(String, String)> = attrs
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value))
+        .collect();
+    let lines = border_lines([
+        ("w:top", &borders.top),
+        ("w:left", &borders.left),
+        ("w:bottom", &borders.bottom),
+        ("w:right", &borders.right),
+    ]);
+    element_with("w:pgBorders", &attrs, &lines)
 }
 
 /// Колонки раздела `w:cols`.

@@ -25,6 +25,10 @@ use crate::xml;
 
 const CT_MAIN: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
+const CT_SETTINGS: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml";
+const REL_SETTINGS: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings";
 const CT_STYLES: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml";
 const CT_NUMBERING: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml";
@@ -203,6 +207,24 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
         parts.push((name.clone(), xml.into_bytes().into()));
         ensure_override(&mut overrides, name, CT_NUMBERING);
         replaced.push(name.clone());
+    }
+
+    // Цвет страницы Word показывает, только если в настройках есть
+    // флаг `w:displayBackgroundShape`.
+    if doc.background.is_some() {
+        let name = links.find_or_add(
+            &main,
+            REL_SETTINGS,
+            &["/settings"],
+            &join(base_dir, "settings.xml"),
+            false,
+        );
+        let original = source.part(&name).map(|p| p.data.as_slice());
+        if let Some(xml) = crate::settings::with_background_shape(original) {
+            parts.push((name.clone(), xml.into_bytes().into()));
+            ensure_override(&mut overrides, &name, CT_SETTINGS);
+            replaced.push(name);
+        }
     }
 
     let core = &doc.properties.core;

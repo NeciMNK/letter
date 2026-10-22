@@ -60,8 +60,8 @@ pub use run::{
     RunFonts, RunProps, ThemeColor, ThemeFont, Underline, VerticalAlign,
 };
 pub use section::{
-    Columns, HeaderFooter, HeaderFooterKind, HeaderFooters, Orientation, PageMargins, PageSize,
-    Section, SectionProps, SectionStart,
+    Columns, HeaderFooter, HeaderFooterKind, HeaderFooters, Orientation, PageBorderDisplay,
+    PageBorders, PageMargins, PageSize, Section, SectionProps, SectionStart,
 };
 pub use style::{DocDefaults, Style, StyleKind, Styles};
 pub use table::{

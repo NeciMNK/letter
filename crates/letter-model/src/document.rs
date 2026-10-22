@@ -1,8 +1,8 @@
 //! Документ целиком.
 
 use crate::{
-    Block, Inline, Note, Numbering, Paragraph, Picture, Properties, RawXml, RunContent, Section,
-    SourcePackage, Styles, Theme, Twips,
+    Block, Color, Inline, Note, Numbering, Paragraph, Picture, Properties, RawXml, RunContent,
+    Section, SourcePackage, Styles, Theme, Twips,
 };
 
 /// Документ: разделы с содержимым, стили, нумерация списков и настройки.
@@ -27,7 +27,9 @@ pub struct Document {
     pub footnotes: Vec<Note>,
     /// Концевые сноски.
     pub endnotes: Vec<Note>,
-    /// Непонятые элементы уровня документа (например, фон страницы `w:background`).
+    /// Цвет страницы (`w:background`); `None` — белая.
+    pub background: Option<Color>,
+    /// Непонятые элементы уровня документа (например, фон-рисунок).
     pub unknown: Vec<RawXml>,
     /// Части исходного файла, которые программа не разбирает и при
     /// сохранении возвращает без изменений. У нового документа — `None`.
@@ -50,6 +52,7 @@ impl Document {
             properties: Properties::default(),
             footnotes: Vec::new(),
             endnotes: Vec::new(),
+            background: None,
             unknown: Vec::new(),
             source: None,
         }
