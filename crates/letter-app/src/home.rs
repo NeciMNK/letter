@@ -151,16 +151,48 @@ pub fn home(ui: &mut Ui, state: &mut HomeState, info: &RibbonInfo, out: &mut Vec
     group(ui, "Шрифт", |ui| font_group(ui, state, info, out));
     group(ui, "Абзац", |ui| paragraph_group(ui, info, out));
     group(ui, "Стили", |ui| styles_group(ui, info, out));
+    group(ui, "Редактирование", |ui| {
+        for (icon, name, tip, command) in [
+            (Icon::Search, "Найти", "Найти (Ctrl+F)", RibbonCommand::Find),
+            (
+                Icon::Replace,
+                "Заменить",
+                "Заменить (Ctrl+H)",
+                RibbonCommand::Replace,
+            ),
+            (
+                Icon::SelectAll,
+                "Выделить все",
+                "Выделить все (Ctrl+A)",
+                RibbonCommand::SelectAll,
+            ),
+        ] {
+            if icon_text_button(ui, icon, name, doc)
+                .on_hover_text(tip)
+                .clicked()
+            {
+                out.push(command);
+            }
+        }
+    });
 }
 
-/// Сколько стилей видно в галерее без списка.
+/// Сколько стилей видно в галерее без списка (если хватает места).
 const GALLERY_TILES: usize = 6;
+
+/// Ширина плитки галереи с промежутком и место под группу
+/// «Редактирование» справа от галереи, точки экрана.
+const TILE_WIDTH: f32 = 68.0;
+const EDITING_WIDTH: f32 = 150.0;
 
 /// Галерея «Стили»: образцы первых стилей и список всех.
 fn styles_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+    // Узкое окно — меньше плиток, чтобы влезла группа справа.
+    let room = ui.available_width() - EDITING_WIDTH - 20.0;
+    let tiles = ((room / TILE_WIDTH).floor().max(1.0) as usize).min(GALLERY_TILES);
     ui.horizontal(|ui| {
         ui.add_enabled_ui(info.has_document, |ui| {
-            for style in info.styles.iter().take(GALLERY_TILES) {
+            for style in info.styles.iter().take(tiles) {
                 let on = info.style.as_deref() == Some(style.id.as_str());
                 if style_tile(ui, style, on).clicked() {
                     out.push(RibbonCommand::Style(style.id.clone()));

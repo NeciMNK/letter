@@ -308,7 +308,7 @@ fn item_len(item: &RunContent) -> usize {
     }
 }
 
-fn plain_text(paragraph: &Paragraph) -> String {
+pub(crate) fn plain_text(paragraph: &Paragraph) -> String {
     let mut text = String::new();
     for run in paragraph.runs() {
         for item in &run.content {
@@ -322,6 +322,13 @@ fn plain_text(paragraph: &Paragraph) -> String {
         }
     }
     text
+}
+
+/// Сколько абзацев в документе (вместе с абзацами таблиц).
+pub(crate) fn paragraph_count(doc: &Document) -> usize {
+    (0..)
+        .take_while(|&i| paragraph_ref(doc, i).is_some())
+        .count()
 }
 
 pub(crate) fn text_len(paragraph: &Paragraph) -> usize {

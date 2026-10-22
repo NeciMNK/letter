@@ -99,6 +99,12 @@ pub enum RibbonCommand {
     ToggleMarks,
     /// Применить стиль с этим идентификатором.
     Style(String),
+    /// Окно «Найти».
+    Find,
+    /// Окно «Заменить».
+    Replace,
+    /// «Выделить все».
+    SelectAll,
     /// Масштаб крупнее.
     ZoomIn,
     /// Масштаб мельче.
