@@ -131,6 +131,10 @@ pub enum Icon {
     Symbol,
     /// Расстановка переносов: стрелка к краю строки.
     Hyphenation,
+    /// Титульная страница: книга с текстом.
+    CoverPage,
+    /// Пустая страница: лист с плюсом.
+    BlankPage,
     /// Границы страниц: уголки рамки.
     PageBorders,
     /// Удалить строки, столбцы или таблицу.
@@ -242,6 +246,8 @@ impl Icon {
             Icon::PageColor => ("palette", '\u{E1DD}'),
             Icon::Symbol => ("omega", '\u{E619}'),
             Icon::Hyphenation => ("arrow-right-to-line", '\u{E459}'),
+            Icon::CoverPage => ("book-text", '\u{E54B}'),
+            Icon::BlankPage => ("file-plus", '\u{E0C9}'),
             Icon::PageBorders => ("scan", '\u{E257}'),
             Icon::DeleteTable => ("grid-2x2-x", '\u{E5E5}'),
             Icon::InsertAbove => ("between-horizontal-start", '\u{E592}'),
@@ -426,7 +432,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 60] = [
+    const ALL: [Icon; 62] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -487,6 +493,8 @@ mod tests {
         Icon::PageBorders,
         Icon::Symbol,
         Icon::Hyphenation,
+        Icon::CoverPage,
+        Icon::BlankPage,
     ];
 
     #[test]

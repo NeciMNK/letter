@@ -176,6 +176,10 @@ pub enum Command {
     PageColor(Option<Color>),
     /// «Расстановка переносов»: автоматическая (`true`) или нет.
     AutoHyphenation(bool),
+    /// «Титульная страница»: вставить в начало документа.
+    InsertCoverPage(Box<crate::cover::CoverPage>),
+    /// «Пустая страница»: два разрыва страницы у курсора.
+    BlankPage,
     /// «Подложка» с этой надписью во всех верхних колонтитулах; `None` —
     /// «Удалить подложку».
     Watermark(Option<String>),
@@ -433,6 +437,7 @@ impl History {
                 | Command::Link { text: None, .. }
                 | Command::AddBookmark(_)
                 | Command::DeleteBookmark(_)
+                | Command::InsertCoverPage(_)
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -450,6 +455,8 @@ impl History {
             | Command::PageSetup(PageSetup::Borders(_)) => {
                 (0, paragraph_count(doc).saturating_sub(1))
             }
+            // Титульная страница встаёт в начало документа.
+            Command::InsertCoverPage(_) => (0, 0),
             // Новый номер получают и следующие пункты списка.
             Command::RestartNumbering | Command::ContinueNumbering => {
                 (start.paragraph, paragraph_count(doc).saturating_sub(1))
@@ -650,6 +657,11 @@ impl History {
             Command::InsertNote(kind) => insert_note(doc, at, *kind).0,
             Command::InsertToc(context) => insert_toc(doc, at, context),
             Command::Break(kind) => insert_break(doc, at, *kind),
+            Command::BlankPage => {
+                let at = insert_break(doc, at, BreakKind::Page);
+                insert_break(doc, at, BreakKind::Page)
+            }
+            Command::InsertCoverPage(cover) => crate::cover::insert_cover_page(doc, cover),
             Command::SectionBreak(start) => insert_section_break(doc, at, *start),
             Command::Format(_)
             | Command::Align(_)

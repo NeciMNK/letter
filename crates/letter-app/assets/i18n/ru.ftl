@@ -688,3 +688,21 @@ hyphenation-hint = Переносить слова по слогам в конц
 hyphenation-none = Нет
 hyphenation-auto = Авто
 keytip-layout-hyphenation = Н
+
+# Страницы
+group-pages = Страницы
+cover-page = Титульная страница
+cover-page-hint = Вставить в начало документа оформленную первую страницу с названием, автором и датой
+cover-plain = Простая
+cover-band = Полоса
+cover-side = Линия слева
+cover-title = [Название документа]
+cover-subtitle = [Подзаголовок документа]
+cover-author = [Автор]
+blank-page = Пустая страница
+blank-page-hint = Вставить пустую страницу в месте курсора
+page-break = Разрыв страницы
+page-break-hint = Начать следующую страницу в месте курсора (Ctrl+Enter)
+keytip-insert-cover = ЛТ
+keytip-insert-blank-page = ЛП
+keytip-insert-page-break = ЛР
