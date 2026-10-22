@@ -19,10 +19,11 @@ const SQUARE: f32 = 16.0;
 
 /// Подсказки клавиш вкладки «Вставка» (для проверки).
 #[cfg(test)]
-pub const INSERT_KEYTIPS: [&str; 8] = [
+pub const INSERT_KEYTIPS: [&str; 9] = [
     "keytip-insert-table",
     "keytip-insert-picture",
     "keytip-insert-link",
+    "keytip-insert-bookmark",
     "keytip-insert-header",
     "keytip-insert-footer",
     "keytip-insert-page-number",
@@ -117,6 +118,29 @@ pub fn insert(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 out.push(command);
             }
             ui.label(tr("link"));
+        });
+        ui.vertical(|ui| {
+            let response = icon_button(
+                ui,
+                Icon::Bookmark,
+                tr("bookmark"),
+                vec2(44.0, 34.0),
+                doc,
+                false,
+            )
+            .on_hover_text(tr("bookmark-hint"));
+            let command = RibbonCommand::BookmarkDialog;
+            keytips::tip(
+                ui,
+                &response,
+                Level::Commands,
+                "keytip-insert-bookmark",
+                TipAction::Command(command.clone()),
+            );
+            if response.clicked() {
+                out.push(command);
+            }
+            ui.label(tr("bookmark"));
         });
     });
     crate::headers::insert_group(ui, info, out);

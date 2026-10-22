@@ -200,6 +200,8 @@ pub enum RibbonCommand {
     InsertField(String),
     /// Окно «Ссылка» (Ctrl+K).
     LinkDialog,
+    /// Окно «Закладка».
+    BookmarkDialog,
     /// Перейти по ссылке у курсора.
     OpenLink,
     /// Удалить ссылку у курсора (или в выделенном).

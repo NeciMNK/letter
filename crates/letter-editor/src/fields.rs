@@ -235,6 +235,23 @@ fn field_value(
         "NUMPAGES" if context.pages > 0 => Some(field.format_number(context.pages)),
         "NUMWORDS" => Some(field.format_number(statistics.words)),
         "NUMCHARS" => Some(field.format_number(statistics.characters)),
+        // Текст закладки и номер её страницы.
+        "REF" => {
+            let name = field.arguments().into_iter().next()?;
+            let (start, end) = crate::links::bookmark_range(doc, &name)?;
+            let piece = crate::clipboard::copy_range(doc, start, end);
+            let text = piece
+                .blocks()
+                .map(letter_model::Block::plain_text)
+                .collect::<Vec<_>>()
+                .join(" ");
+            Some(field.format_text(&text))
+        }
+        "PAGEREF" => {
+            let name = field.arguments().into_iter().next()?;
+            let start = crate::links::bookmark_position(doc, &name)?;
+            Some(field.format_number(*context.page_of_paragraph.get(start.paragraph)?))
+        }
         "SECTION" => {
             let section = crate::edit::top_level(doc, paragraph)?.0 + 1;
             Some(field.format_number(section))
@@ -465,8 +482,32 @@ mod tests {
         assert_eq!(updated("PAGE \\* ROMAN"), "[III]");
         assert_eq!(updated("NUMPAGES"), "[7]");
         assert_eq!(updated("SECTION"), "[1]");
-        // Неизвестное поле сохраняет результат.
+        // Неизвестное поле и ссылка на несуществующую закладку сохраняют
+        // результат.
         assert_eq!(updated("REF bookmark"), "[old]");
+        assert_eq!(updated("HYPERLINK \"https://a.b\""), "[old]");
+    }
+
+    #[test]
+    fn references_to_bookmarks() {
+        let mut doc = Document::new();
+        doc.sections[0].blocks = vec![
+            Paragraph::text("Chapter one").into(),
+            field_paragraph(" REF chapter \\h ", "old").into(),
+            field_paragraph("PAGEREF chapter", "old").into(),
+            field_paragraph("REF chapter \\* Upper", "old").into(),
+        ];
+        crate::links::add_bookmark(
+            &mut doc,
+            "Chapter",
+            crate::Position::new(0, 8),
+            crate::Position::new(0, 11),
+        );
+        update_fields(&mut doc, 0, 3, &context());
+        let text = |i: usize| doc.sections[0].blocks[i].plain_text();
+        assert_eq!(text(1), "[one]");
+        assert_eq!(text(2), "[1]");
+        assert_eq!(text(3), "[ONE]");
     }
 
     #[test]

@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backstage;
+mod bookmark_dialog;
 mod clipboard;
 mod context_menu;
 mod fields;

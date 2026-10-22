@@ -28,10 +28,10 @@ use eframe::egui::{
 };
 use letter_editor::{
     Command, FieldContext, History, ListKind, Motion, PictureBox, PictureWrap, Position, RunFormat,
-    Selection, anchor_with_wrap, bookmark_position, bookmarks, can_continue_numbering, caret,
-    copy_range, find_all, find_next, formatting_at, hit_test, language_at, link_at, list_kind,
-    move_cursor, moved_anchor, paragraph_at, picture_at_point, picture_ref, select_all,
-    selected_picture, selection_rects, word_at,
+    Selection, anchor_with_wrap, bookmark_position, bookmark_range, bookmarks,
+    can_continue_numbering, caret, copy_range, find_all, find_next, formatting_at, hit_test,
+    language_at, link_at, list_kind, move_cursor, moved_anchor, paragraph_at, picture_at_point,
+    picture_ref, select_all, selected_picture, selection_rects, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
 use letter_model::{
@@ -41,6 +41,7 @@ use letter_model::{
 use letter_render::{MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, formatting_marks};
 
 use crate::backstage::{Backstage, BackstageInfo, DocumentInfo, Page};
+use crate::bookmark_dialog::{BookmarkAction, BookmarkDialog};
 use crate::clipboard::{Clipboard, PasteMode, SystemBuffer};
 use crate::files::{self, Autosave, OPEN_FILTERS, Recent, Recovered, SAVE_FILTERS};
 use crate::find::{FindAction, FindDialog};
@@ -611,6 +612,8 @@ pub struct Viewer {
     paragraph_dialog: ParagraphDialog,
     /// Окно «Ссылка».
     link_dialog: LinkDialog,
+    /// Окно «Закладка».
+    bookmark_dialog: BookmarkDialog,
     /// Окно «Шрифт».
     font_dialog: FontDialog,
     /// Тема, уже переданная egui.
@@ -791,6 +794,7 @@ impl Viewer {
             ruler_state: RulerState::default(),
             paragraph_dialog: ParagraphDialog::default(),
             link_dialog: LinkDialog::default(),
+            bookmark_dialog: BookmarkDialog::default(),
             font_dialog: FontDialog::default(),
             applied_theme: None,
         }
@@ -1073,6 +1077,7 @@ impl Viewer {
             && !self.font_dialog.open
             && !self.paragraph_dialog.open
             && !self.link_dialog.open
+            && !self.bookmark_dialog.open
             && (self.ribbon.keytips.active() || !ctx.egui_wants_keyboard_input())
         {
             let commands = self.ribbon.handle_keys(&ctx);
@@ -1126,6 +1131,9 @@ impl Viewer {
                     },
                 };
                 self.run_ribbon(&ctx, vec![RibbonCommand::Edit(command)]);
+            }
+            if let Some(action) = self.bookmark_dialog.ui(&ctx) {
+                self.bookmark_action(&ctx, action);
             }
             egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
             egui::CentralPanel::no_frame()
@@ -1461,6 +1469,28 @@ impl Viewer {
             PageNumberPlace::Here => {}
         }
         self.apply_actions(ctx, actions);
+    }
+
+    /// Ответ окна «Закладка»: добавить или удалить закладку (шаг
+    /// отмены) или выделить её.
+    fn bookmark_action(&mut self, ctx: &Context, action: BookmarkAction) {
+        let command = match action {
+            BookmarkAction::Add(name) => Command::AddBookmark(name),
+            BookmarkAction::Delete(name) => Command::DeleteBookmark(name),
+            BookmarkAction::GoTo(name) => {
+                if let Some(document) = &mut self.document
+                    && let Some((start, end)) = bookmark_range(&document.doc, &name)
+                {
+                    document.anchor = start;
+                    document.cursor = end;
+                    document.goal_x = None;
+                    document.history.seal();
+                    self.reveal_cursor = true;
+                }
+                return;
+            }
+        };
+        self.run_ribbon(ctx, vec![RibbonCommand::Edit(command)]);
     }
 
     /// Окно «Ссылка»: с текстом выделенного (или ссылки у курсора —
@@ -1809,6 +1839,17 @@ impl Viewer {
                 RibbonCommand::LinkDialog => {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
                     self.open_link_dialog();
+                }
+                RibbonCommand::BookmarkDialog => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &self.document {
+                        let names = bookmarks(&document.doc)
+                            .into_iter()
+                            .map(|(name, _)| name)
+                            .filter(|name| !name.starts_with('_'))
+                            .collect();
+                        self.bookmark_dialog.show(names);
+                    }
                 }
                 RibbonCommand::OpenLink => {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
@@ -3507,6 +3548,42 @@ mod tests {
         let document = viewer.document.as_ref().unwrap();
         assert!(link_at(&document.doc, Position::new(0, 21)).is_none());
         assert!(link_at(&document.doc, Position::new(0, 9)).is_some());
+    }
+
+    #[test]
+    fn bookmarks_from_the_dialog() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("links.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::BookmarkDialog]);
+        assert!(viewer.bookmark_dialog.open);
+        assert_eq!(viewer.bookmark_dialog.bookmarks, ["target"]);
+        // Закладка на слово «Site».
+        {
+            let document = viewer.document.as_mut().unwrap();
+            document.anchor = Position::new(0, 0);
+            document.cursor = Position::new(0, 4);
+        }
+        viewer.bookmark_action(&ctx, BookmarkAction::Add("Start".into()));
+        let document = viewer.document.as_mut().unwrap();
+        assert_eq!(
+            bookmark_range(&document.doc, "start"),
+            Some((Position::new(0, 0), Position::new(0, 4)))
+        );
+        document.anchor = Position::new(2, 0);
+        document.cursor = Position::new(2, 0);
+        viewer.bookmark_action(&ctx, BookmarkAction::GoTo("target".into()));
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(document.anchor, Position::new(2, 8));
+        assert_eq!(document.cursor, Position::new(2, 18));
+        viewer.bookmark_action(&ctx, BookmarkAction::Delete("Start".into()));
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(bookmark_range(&document.doc, "start"), None);
+        // Отмена возвращает закладку.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
+        let document = viewer.document.as_ref().unwrap();
+        assert!(bookmark_range(&document.doc, "start").is_some());
     }
 
     #[test]

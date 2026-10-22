@@ -115,6 +115,8 @@ pub enum Icon {
     Field,
     /// Ссылка: звенья цепи.
     Link,
+    /// Закладка.
+    Bookmark,
     /// Удалить строки, столбцы или таблицу.
     DeleteTable,
     /// Вставить строку сверху.
@@ -216,6 +218,7 @@ impl Icon {
             Icon::DateTime => ("calendar-clock", '\u{E304}'),
             Icon::Field => ("braces", '\u{E36A}'),
             Icon::Link => ("link", '\u{E102}'),
+            Icon::Bookmark => ("bookmark", '\u{E060}'),
             Icon::DeleteTable => ("grid-2x2-x", '\u{E5E5}'),
             Icon::InsertAbove => ("between-horizontal-start", '\u{E592}'),
             Icon::InsertBelow => ("between-horizontal-end", '\u{E591}'),
@@ -399,7 +402,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 51] = [
+    const ALL: [Icon; 52] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -451,6 +454,7 @@ mod tests {
         Icon::DateTime,
         Icon::Field,
         Icon::Link,
+        Icon::Bookmark,
     ];
 
     #[test]
