@@ -37,6 +37,7 @@ use crate::backstage::{Backstage, BackstageInfo, DocumentInfo, Page};
 use crate::clipboard::{Clipboard, SystemBuffer};
 use crate::files::{self, Autosave, OPEN_FILTERS, Recent, Recovered, SAVE_FILTERS};
 use crate::find::{FindAction, FindDialog};
+use crate::font_dialog::{FontDialog, FontValues};
 use crate::icons::{self, Icon};
 use crate::paragraph_dialog::{ParagraphDialog, ParagraphValues};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
@@ -46,6 +47,59 @@ use crate::view::{
     MAX_ZOOM, MIN_ZOOM, PAGE_GAP, Zoom, anchored_offset, clamp_zoom, current_page, page_width_zoom,
     place_pages, step_zoom,
 };
+
+/// Образец текста для окна «Шрифт»: одна строка с оформлением `props`
+/// по центру `rect`, свёрстанная и нарисованная как в документе (100 %).
+fn paint_font_sample(
+    painter: &egui::Painter,
+    rect: Rect,
+    props: &letter_model::RunProps,
+    library: &FontLibrary,
+    shaper: &mut Shaper,
+    page_painter: &mut PagePainter,
+) {
+    use letter_model::{Block, PageMargins, PageSize, Paragraph, Run, Twips};
+    let text = props
+        .fonts
+        .ascii
+        .clone()
+        .filter(|f| !f.is_empty())
+        .unwrap_or_else(|| "Образец".to_owned());
+    let mut doc = Document::new();
+    // Размер листа — как у прямоугольника при масштабе 100 %.
+    let twips = |points: f32| Twips((points / SCREEN_PIXELS_PER_POINT * 20.0) as i32);
+    let section = &mut doc.sections[0];
+    section.props.page_size = Some(PageSize {
+        width: twips(rect.width()),
+        height: twips(rect.height() * 4.0),
+        orientation: Default::default(),
+    });
+    section.props.margins = Some(PageMargins {
+        top: Twips(0),
+        right: Twips(0),
+        bottom: Twips(0),
+        left: Twips(0),
+        ..PageMargins::default()
+    });
+    let mut paragraph = Paragraph::from_runs([Run::text(text).with_props(props.clone())]);
+    paragraph.props.alignment = Some(Alignment::Center);
+    section.blocks = vec![Block::from(paragraph)];
+    let layout = letter_layout::layout_document(&doc, shaper, library);
+    let Some(page) = layout.pages.first() else {
+        return;
+    };
+    let Some(line) = page.lines.first() else {
+        return;
+    };
+    let scale = rect.width() / page.width;
+    let line_middle = (line.baseline - line.line.ascent / 2.0 + line.line.descent / 2.0) * scale;
+    let top = rect.center().y - line_middle;
+    let sheet = Rect::from_min_size(
+        pos2(rect.left(), top),
+        Vec2::new(rect.width(), page.height * scale),
+    );
+    page_painter.paint_page(painter, library, page, sheet);
+}
 
 /// Название программы в заголовке окна.
 pub const APP_NAME: &str = "letter";
@@ -312,6 +366,8 @@ pub struct Viewer {
     ruler_state: RulerState,
     /// Окно «Абзац».
     paragraph_dialog: ParagraphDialog,
+    /// Окно «Шрифт».
+    font_dialog: FontDialog,
     /// Шрифты для списка на ленте.
     font_names: Arc<[String]>,
     /// Окно «Найти и заменить».
@@ -442,6 +498,7 @@ impl Viewer {
             ruler_page: None,
             ruler_state: RulerState::default(),
             paragraph_dialog: ParagraphDialog::default(),
+            font_dialog: FontDialog::default(),
         }
     }
 
@@ -725,6 +782,16 @@ impl Viewer {
             self.run_ribbon(&ctx, commands);
             if let Some(action) = self.find.ui(&ctx) {
                 self.find_action(&ctx, action);
+            }
+            let (library, shaper, painter) = (&self.library, &mut self.shaper, &mut self.painter);
+            let changes = self
+                .font_dialog
+                .ui(&ctx, &self.font_names, |p, rect, props| {
+                    paint_font_sample(p, rect, props, library, shaper, painter);
+                });
+            if let Some(changes) = changes {
+                let format = RunFormat::Set(Box::new(changes));
+                self.run_ribbon(&ctx, vec![RibbonCommand::Format(format)]);
             }
             if let Some(changes) = self.paragraph_dialog.ui(&ctx) {
                 let format = letter_editor::ParagraphFormat::Set(changes);
@@ -1179,7 +1246,14 @@ impl Viewer {
                         self.paragraph_dialog.show(ParagraphValues::new(&props));
                     }
                 }
-                RibbonCommand::FontDialog => {}
+                RibbonCommand::FontDialog => {
+                    if let Some(document) = &self.document
+                        && let Some((_, props)) =
+                            formatting_at(&document.doc, document.selection().start())
+                    {
+                        self.font_dialog.show(FontValues::new(&props));
+                    }
+                }
             }
         }
         self.apply_actions(ctx, actions);
@@ -1897,6 +1971,15 @@ mod tests {
         let values = viewer.paragraph_dialog.values.unwrap();
         assert_eq!(values.before, 240);
         assert_eq!(values.line, crate::paragraph_dialog::LineKind::Double);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::FontDialog]);
+        assert!(viewer.font_dialog.open);
+        assert!(
+            viewer
+                .font_dialog
+                .values
+                .as_ref()
+                .is_some_and(|v| v.size.0 > 0)
+        );
     }
 
     fn fixture(name: &str) -> PathBuf {

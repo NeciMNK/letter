@@ -10,6 +10,7 @@ mod backstage;
 mod clipboard;
 mod files;
 mod find;
+mod font_dialog;
 mod home;
 mod icons;
 mod language;

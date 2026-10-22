@@ -46,6 +46,54 @@ pub enum RunFormat {
     Clear,
     /// Стиль символов с этим идентификатором.
     CharStyle(String),
+    /// Изменения из окна «Шрифт».
+    Set(Box<RunChanges>),
+}
+
+/// Изменения из окна «Шрифт»: `None` — поле не трогали.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RunChanges {
+    /// Шрифт (для латиницы, кириллицы и сложных письменностей).
+    pub font: Option<String>,
+    /// Полужирный.
+    pub bold: Option<bool>,
+    /// Курсив.
+    pub italic: Option<bool>,
+    /// Размер.
+    pub size: Option<HalfPoints>,
+    /// Цвет текста.
+    pub color: Option<Color>,
+    /// Подчёркивание.
+    pub underline: Option<Underline>,
+    /// Цвет подчёркивания: `Some(None)` — «Авто».
+    pub underline_color: Option<Option<Color>>,
+    /// Зачёркнутый.
+    pub strike: Option<bool>,
+    /// Двойное зачёркивание.
+    pub double_strike: Option<bool>,
+    /// Над- или подстрочный.
+    pub vertical_align: Option<VerticalAlign>,
+    /// Малые прописные.
+    pub small_caps: Option<bool>,
+    /// Все прописные.
+    pub caps: Option<bool>,
+    /// Скрытый.
+    pub hidden: Option<bool>,
+    /// Масштаб, проценты.
+    pub scale: Option<u16>,
+    /// Интервал между буквами.
+    pub spacing: Option<Twips>,
+    /// Смещение, полупункты.
+    pub position: Option<i32>,
+    /// Кернинг от этого размера; ноль — выключен.
+    pub kerning: Option<HalfPoints>,
+}
+
+impl RunChanges {
+    /// Ничего не меняется.
+    pub fn is_empty(&self) -> bool {
+        *self == RunChanges::default()
+    }
 }
 
 /// Самый маленький и самый большой размер шрифта Word, полупункты.
@@ -137,14 +185,34 @@ pub fn format_runs(doc: &mut Document, start: Position, end: Position, format: R
                     VerticalAlign::Superscript
                 });
             }
-            RunFormat::Font(name) => {
-                let fonts = &mut props.fonts;
-                fonts.ascii = Some(name.clone());
-                fonts.h_ansi = Some(name.clone());
-                fonts.complex_script = Some(name.clone());
-                fonts.ascii_theme = None;
-                fonts.h_ansi_theme = None;
-                fonts.complex_script_theme = None;
+            RunFormat::Font(name) => set_font(props, name),
+            RunFormat::Set(changes) => {
+                if let Some(name) = &changes.font {
+                    set_font(props, name);
+                }
+                if let Some(size) = changes.size {
+                    props.size = Some(HalfPoints(size.0.clamp(MIN_SIZE, MAX_SIZE)));
+                }
+                if let Some(color) = changes.color {
+                    props.color = Some(color);
+                    props.theme_color = None;
+                }
+                if let Some(color) = changes.underline_color {
+                    props.underline_color = color;
+                }
+                set(&mut props.bold, changes.bold);
+                set(&mut props.italic, changes.italic);
+                set(&mut props.underline, changes.underline);
+                set(&mut props.strike, changes.strike);
+                set(&mut props.double_strike, changes.double_strike);
+                set(&mut props.vertical_align, changes.vertical_align);
+                set(&mut props.small_caps, changes.small_caps);
+                set(&mut props.caps, changes.caps);
+                set(&mut props.hidden, changes.hidden);
+                set(&mut props.scale, changes.scale.map(|s| s.clamp(1, 600)));
+                set(&mut props.spacing, changes.spacing);
+                set(&mut props.position, changes.position);
+                set(&mut props.kerning, changes.kerning);
             }
             RunFormat::Size(size) => {
                 props.size = Some(HalfPoints(size.0.clamp(MIN_SIZE, MAX_SIZE)));
@@ -343,6 +411,18 @@ pub fn format_paragraphs(
             }
         }
     }
+}
+
+/// Шрифт для латиницы, кириллицы и сложных письменностей (ссылки на
+/// шрифты темы снимаются).
+fn set_font(props: &mut RunProps, name: &str) {
+    let fonts = &mut props.fonts;
+    fonts.ascii = Some(name.to_owned());
+    fonts.h_ansi = Some(name.to_owned());
+    fonts.complex_script = Some(name.to_owned());
+    fonts.ascii_theme = None;
+    fonts.h_ansi_theme = None;
+    fonts.complex_script_theme = None;
 }
 
 /// Ставит `value` в `target`, если оно задано.
@@ -818,6 +898,42 @@ mod tests {
         all(&mut d, RunFormat::Bold);
         all(&mut d, RunFormat::Clear);
         assert_eq!(props(&d), RunProps::default());
+    }
+
+    #[test]
+    fn font_dialog_changes_only_what_was_touched() {
+        let mut d = doc(vec![Paragraph::from_runs([
+            Run::text("ab"),
+            Run::text("cd").with_props(RunProps {
+                bold: Some(true),
+                ..RunProps::default()
+            }),
+        ])]);
+        let changes = RunChanges {
+            font: Some("Arial".into()),
+            caps: Some(true),
+            scale: Some(900),
+            underline: Some(Underline::Double),
+            underline_color: Some(Some(Color::Rgb(1, 2, 3))),
+            ..RunChanges::default()
+        };
+        assert!(!changes.is_empty() && RunChanges::default().is_empty());
+        format_runs(
+            &mut d,
+            Position::new(0, 0),
+            Position::new(0, 4),
+            RunFormat::Set(Box::new(changes)),
+        );
+        let runs: Vec<&RunProps> = para(&d, 0).runs().map(|r| &r.props).collect();
+        assert_eq!(runs.len(), 2);
+        for props in &runs {
+            assert_eq!(props.fonts.h_ansi.as_deref(), Some("Arial"));
+            assert_eq!(props.caps, Some(true));
+            assert_eq!(props.scale, Some(600));
+            assert_eq!(props.underline_color, Some(Color::Rgb(1, 2, 3)));
+        }
+        // Полужирный остался только у второго куска.
+        assert_eq!((runs[0].bold, runs[1].bold), (None, Some(true)));
     }
 
     #[test]
