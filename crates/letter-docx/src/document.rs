@@ -128,11 +128,49 @@ fn read_paragraph(p: &Element, allow_section: bool) -> (Paragraph, Option<Sectio
             section = section_props;
         } else if child.is_w("r") {
             paragraph.content.push(Inline::Run(read_run(child)));
+        } else if let Some(runs) = simple_field(child) {
+            paragraph.content.extend(runs.into_iter().map(Inline::Run));
         } else {
             paragraph.content.push(Inline::Unknown(child.raw()));
         }
     }
     (paragraph, section)
+}
+
+/// Простое поле `w:fldSimple` превращается в такое же поле из знаков
+/// поля (`w:fldChar`): начало, код, разделитель, результат, конец —
+/// так его результат виден и правится как обычный текст, а номер
+/// страницы подставляется при вёрстке. Поле с чем-то, кроме фрагментов
+/// текста, остаётся как есть.
+fn simple_field(element: &Element) -> Option<Vec<Run>> {
+    if !element.is_w("fldSimple") || !element.only_attrs(&["instr"]) {
+        return None;
+    }
+    let instruction = element.w_attr("instr")?;
+    let mut result = Vec::new();
+    for child in element.elements() {
+        if !child.is_w("r") {
+            return None;
+        }
+        result.push(read_run(child));
+    }
+    let props = result.first().map(|r| r.props.clone()).unwrap_or_default();
+    let marker = |xml: String| Run {
+        props: props.clone(),
+        content: vec![RunContent::Unknown(RawXml::new(xml))],
+    };
+    let char_xml = |kind: &str| format!(r#"<w:fldChar xmlns:w="{W_NS}" w:fldCharType="{kind}"/>"#);
+    let mut runs = vec![
+        marker(char_xml("begin")),
+        marker(format!(
+            r#"<w:instrText xmlns:w="{W_NS}" xml:space="preserve">{}</w:instrText>"#,
+            crate::serialize::escape_text(instruction)
+        )),
+        marker(char_xml("separate")),
+    ];
+    runs.extend(result);
+    runs.push(marker(char_xml("end")));
+    Some(runs)
 }
 
 pub(crate) fn read_paragraph_props(
@@ -918,6 +956,31 @@ mod tests {
             assert!(raw.as_str().contains("xmlns:w="));
             assert!(xml::parse(raw.as_str().as_bytes()).is_ok());
         }
+    }
+
+    #[test]
+    fn simple_field_becomes_field_characters() {
+        let doc = read_body_xml(
+            r#"<w:p><w:fldSimple w:instr=" PAGE "><w:r><w:rPr><w:b/></w:rPr><w:t>7</w:t></w:r></w:fldSimple></w:p>"#,
+        );
+        let p = first_paragraph(&doc);
+        assert_eq!(p.plain_text(), "7");
+        let names: Vec<_> = p
+            .runs()
+            .flat_map(|r| &r.content)
+            .map(|c| match c {
+                RunContent::Unknown(raw) => raw.local_name().to_string(),
+                RunContent::Text(t) => t.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(names, ["fldChar", "instrText", "fldChar", "7", "fldChar"]);
+        // Оформление результата есть и у знаков поля.
+        assert!(p.runs().all(|r| r.props.bold == Some(true)));
+        // Записанное поле читается так же.
+        let xml = crate::serialize::document_xml(&doc);
+        let again = read_document(&xml::parse(xml.as_bytes()).unwrap()).unwrap();
+        assert_eq!(again.sections[0].blocks, doc.sections[0].blocks);
     }
 
     #[test]

@@ -1,0 +1,283 @@
+//! Номера страниц в колонтитулах: поля PAGE (номер страницы) и NUMPAGES
+//! (число страниц). Поле в .docx записано знаками поля (`w:fldChar`):
+//! начало, код (`w:instrText`), разделитель, результат, конец. При
+//! вёрстке колонтитула результат таких полей заменяется номером этой
+//! страницы. Остальные поля показывают свой сохранённый результат.
+
+use letter_model::{Block, Inline, RawXml, RunContent};
+
+/// Блоки `blocks` с номером страницы `page` и числом страниц `pages`
+/// в полях PAGE и NUMPAGES; `None`, если таких полей нет.
+pub(crate) fn with_page_numbers(blocks: &[Block], page: usize, pages: usize) -> Option<Vec<Block>> {
+    if !blocks.iter().any(has_page_fields) {
+        return None;
+    }
+    let mut blocks = blocks.to_vec();
+    for block in &mut blocks {
+        substitute(block, page, pages);
+    }
+    Some(blocks)
+}
+
+/// Есть ли в блоке поле PAGE или NUMPAGES.
+fn has_page_fields(block: &Block) -> bool {
+    match block {
+        Block::Paragraph(p) => p.runs().flat_map(|r| &r.content).any(|item| {
+            matches!(item, RunContent::Unknown(raw) if raw.local_name() == "instrText"
+                && field_value(&instruction_text(raw), 1, 1).is_some())
+        }),
+        Block::Table(t) => t
+            .rows
+            .iter()
+            .flat_map(|r| &r.cells)
+            .flat_map(|c| &c.blocks)
+            .any(has_page_fields),
+        Block::Unknown(_) => false,
+    }
+}
+
+/// Где мы внутри поля верхнего уровня.
+#[derive(Debug, PartialEq)]
+enum Phase {
+    /// Вне поля.
+    Outside,
+    /// Читаем код поля.
+    Code(String),
+    /// Результат поля; `Some` — чем его заменить (`written` — замена уже
+    /// вставлена).
+    Result {
+        value: Option<String>,
+        written: bool,
+    },
+}
+
+fn substitute(block: &mut Block, page: usize, pages: usize) {
+    let paragraph = match block {
+        Block::Paragraph(p) => p,
+        Block::Table(t) => {
+            for cell in t.rows.iter_mut().flat_map(|r| &mut r.cells) {
+                for block in &mut cell.blocks {
+                    substitute(block, page, pages);
+                }
+            }
+            return;
+        }
+        Block::Unknown(_) => return,
+    };
+    let mut depth = 0usize;
+    let mut phase = Phase::Outside;
+    for inline in &mut paragraph.content {
+        let Inline::Run(run) = inline else {
+            continue;
+        };
+        let mut content = Vec::with_capacity(run.content.len());
+        for item in std::mem::take(&mut run.content) {
+            match &item {
+                RunContent::Unknown(raw) if raw.local_name() == "fldChar" => {
+                    match raw.attribute("fldCharType") {
+                        Some("begin") => {
+                            depth += 1;
+                            if depth == 1 {
+                                phase = Phase::Code(String::new());
+                            }
+                        }
+                        Some("separate") if depth == 1 => {
+                            if let Phase::Code(code) = &phase {
+                                phase = Phase::Result {
+                                    value: field_value(code, page, pages),
+                                    written: false,
+                                };
+                            }
+                        }
+                        Some("end") => {
+                            if depth == 1 {
+                                // Поле без результата: вставляем его перед концом.
+                                if let Phase::Code(code) = &phase
+                                    && let Some(value) = field_value(code, page, pages)
+                                {
+                                    content.push(RunContent::Text(value));
+                                }
+                                phase = Phase::Outside;
+                            }
+                            depth = depth.saturating_sub(1);
+                        }
+                        _ => {}
+                    }
+                }
+                RunContent::Unknown(raw) if raw.local_name() == "instrText" && depth == 1 => {
+                    if let Phase::Code(code) = &mut phase {
+                        code.push_str(&instruction_text(raw));
+                    }
+                }
+                RunContent::Text(_) => {
+                    if let Phase::Result {
+                        value: Some(value),
+                        written,
+                    } = &mut phase
+                    {
+                        if !*written {
+                            *written = true;
+                            content.push(RunContent::Text(value.clone()));
+                        }
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            content.push(item);
+        }
+        run.content = content;
+    }
+}
+
+/// Текст внутри `w:instrText`.
+fn instruction_text(raw: &RawXml) -> String {
+    let xml = raw.as_str();
+    let (Some(open), Some(close)) = (xml.find('>'), xml.rfind("</")) else {
+        return String::new();
+    };
+    if open + 1 > close {
+        return String::new();
+    }
+    xml[open + 1..close]
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+/// Значение поля с кодом `code`: номер страницы или число страниц
+/// в нужном виде (`\* roman` и т. п.); `None` — другое поле.
+fn field_value(code: &str, page: usize, pages: usize) -> Option<String> {
+    let mut words = code.split_whitespace();
+    let number = match words.next()?.to_ascii_uppercase().as_str() {
+        "PAGE" => page,
+        "NUMPAGES" => pages,
+        _ => return None,
+    };
+    let mut format = None;
+    while let Some(word) = words.next() {
+        if word == "\\*" {
+            format = words.next();
+        }
+    }
+    Some(match format {
+        Some("roman") => roman(number).to_lowercase(),
+        Some("ROMAN") => roman(number),
+        Some("alphabetic") => alphabetic(number).to_lowercase(),
+        Some("ALPHABETIC") => alphabetic(number),
+        _ => number.to_string(),
+    })
+}
+
+/// Римская запись числа (0 — пусто).
+fn roman(mut n: usize) -> String {
+    const DIGITS: [(usize, &str); 13] = [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+    let mut out = String::new();
+    for (value, digit) in DIGITS {
+        while n >= value {
+            out.push_str(digit);
+            n -= value;
+        }
+    }
+    out
+}
+
+/// Буквенная запись, как в Word: A…Z, потом AA…ZZ, AAA…
+fn alphabetic(n: usize) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    let letter = char::from(b'A' + ((n - 1) % 26) as u8);
+    letter.to_string().repeat((n - 1) / 26 + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use letter_model::{Paragraph, Run};
+
+    const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+    fn field_char(kind: &str) -> RunContent {
+        RunContent::Unknown(RawXml::new(format!(
+            r#"<w:fldChar xmlns:w="{W}" w:fldCharType="{kind}"/>"#
+        )))
+    }
+
+    fn code(text: &str) -> RunContent {
+        RunContent::Unknown(RawXml::new(format!(
+            r#"<w:instrText xmlns:w="{W}" xml:space="preserve">{text}</w:instrText>"#
+        )))
+    }
+
+    fn paragraph(items: Vec<RunContent>) -> Block {
+        Paragraph::from_runs(items.into_iter().map(|item| Run {
+            content: vec![item],
+            ..Run::default()
+        }))
+        .into()
+    }
+
+    fn text(blocks: &[Block]) -> String {
+        blocks.iter().map(Block::plain_text).collect()
+    }
+
+    #[test]
+    fn page_numbers_replace_field_results() {
+        let blocks = vec![paragraph(vec![
+            RunContent::Text("Page ".into()),
+            field_char("begin"),
+            code(" PAGE  \\* MERGEFORMAT "),
+            field_char("separate"),
+            RunContent::Text("1".into()),
+            RunContent::Text("0".into()),
+            field_char("end"),
+            RunContent::Text(" of ".into()),
+            field_char("begin"),
+            code("NUMPAGES"),
+            field_char("end"),
+        ])];
+        let filled = with_page_numbers(&blocks, 3, 12).unwrap();
+        assert_eq!(text(&filled), "Page 3 of 12");
+    }
+
+    #[test]
+    fn other_fields_keep_their_result() {
+        let blocks = vec![paragraph(vec![
+            field_char("begin"),
+            code("DATE"),
+            field_char("separate"),
+            RunContent::Text("01.01.2026".into()),
+            field_char("end"),
+        ])];
+        assert_eq!(with_page_numbers(&blocks, 2, 2), None);
+    }
+
+    #[test]
+    fn number_formats() {
+        assert_eq!(field_value("PAGE \\* roman", 14, 1).as_deref(), Some("xiv"));
+        assert_eq!(field_value("PAGE \\* ROMAN", 4, 1).as_deref(), Some("IV"));
+        assert_eq!(
+            field_value("PAGE \\* ALPHABETIC", 28, 1).as_deref(),
+            Some("BB")
+        );
+        assert_eq!(field_value("page", 5, 1).as_deref(), Some("5"));
+        assert_eq!(field_value("REF x", 5, 1), None);
+    }
+}

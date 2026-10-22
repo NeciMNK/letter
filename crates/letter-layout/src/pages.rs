@@ -43,6 +43,7 @@ use letter_model::{
     Twips, VerticalAlign, VerticalFrom, Wrap,
 };
 
+use crate::fields;
 use crate::fonts::FontLibrary;
 use crate::lines::{
     Align, InlineObject, Line, LineEnd, LineItem, LineRoom, ParagraphFormat, TabKind, TabLeader,
@@ -457,7 +458,7 @@ pub fn layout_document_cached(
     cache.entries = entries;
     cache.rebuilt = rebuilt;
     let mut pages = pager.pages;
-    place_stories(doc, &mut pages, &stories);
+    place_stories(doc, &mut pages, &stories, shaper, library);
     DocumentLayout { pages }
 }
 
@@ -517,22 +518,24 @@ fn flow(
 
 /// Колонтитул, свёрстанный от своего верха.
 #[derive(Debug, Clone)]
-struct StoryBox {
+struct StoryBox<'d> {
     story: PageStory,
     height: f32,
+    /// Содержимое колонтитула (для номеров страниц).
+    blocks: &'d [Block],
 }
 
 /// Колонтитулы раздела: верхние и нижние для каждого вида страниц (см.
 /// [`kind_index`]); `None` — колонтитула нет.
-type SectionStories = [[Option<StoryBox>; 3]; 2];
+type SectionStories<'d> = [[Option<StoryBox<'d>>; 3]; 2];
 
 /// Колонтитулы всех разделов. Раздел, у которого нет своего колонтитула
 /// какого-то вида, берёт его у предыдущего раздела.
-fn section_stories(
-    doc: &Document,
+fn section_stories<'d>(
+    doc: &'d Document,
     shaper: &mut Shaper,
     library: &FontLibrary,
-) -> Vec<SectionStories> {
+) -> Vec<SectionStories<'d>> {
     let mut current: [[Option<&HeaderFooter>; 3]; 2] = Default::default();
     let mut out = Vec::with_capacity(doc.sections.len());
     for section in &doc.sections {
@@ -547,8 +550,14 @@ fn section_stories(
                 if let Some(story) = set.get(kind) {
                     current[side][k] = Some(story);
                 }
-                boxes[side][k] = current[side][k]
-                    .map(|story| lay_story(doc, &story.blocks, &geometry, shaper, library));
+                boxes[side][k] = current[side][k].map(|story| {
+                    let (laid, height) = lay_story(doc, &story.blocks, &geometry, shaper, library);
+                    StoryBox {
+                        story: laid,
+                        height,
+                        blocks: &story.blocks,
+                    }
+                });
             }
         }
         out.push(boxes);
@@ -567,7 +576,7 @@ fn lay_story(
     g: &Geometry,
     shaper: &mut Shaper,
     library: &FontLibrary,
-) -> StoryBox {
+) -> (PageStory, f32) {
     let width = g.text_width();
     let mut items = Vec::new();
     collect_paragraphs(doc, blocks, width, None, &mut items);
@@ -621,7 +630,7 @@ fn lay_story(
         .map(|l| l.top + l.height)
         .chain(story.shapes.iter().map(|s| s.y + s.height))
         .fold(0.0, f32::max);
-    StoryBox { story, height }
+    (story, height)
 }
 
 /// Место колонтитулов раздела. Колонтитул, который не влезает в поле,
@@ -655,8 +664,15 @@ fn bands(section: &Section, g: &Geometry, stories: &SectionStories, even_and_odd
 
 /// Ставит колонтитулы на страницы: верхний — на расстоянии от верха
 /// листа, нижний — так, чтобы его низ был на расстоянии от низа листа.
-fn place_stories(doc: &Document, pages: &mut [Page], stories: &[SectionStories]) {
-    for page in pages {
+fn place_stories(
+    doc: &Document,
+    pages: &mut [Page],
+    stories: &[SectionStories<'_>],
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+) {
+    let count = pages.len();
+    for (index, page) in pages.iter_mut().enumerate() {
         let Some(section) = doc.sections.get(page.section) else {
             continue;
         };
@@ -665,12 +681,23 @@ fn place_stories(doc: &Document, pages: &mut [Page], stories: &[SectionStories])
         };
         let m = section.props.margins.unwrap_or_default();
         let k = kind_index(page.kind);
+        // Колонтитул с номером страницы верстается для каждой страницы.
+        let mut on_page = |story: &StoryBox<'_>| match fields::with_page_numbers(
+            story.blocks,
+            index + 1,
+            count,
+        ) {
+            Some(blocks) => lay_story(doc, &blocks, &Geometry::of(section), shaper, library),
+            None => (story.story.clone(), story.height),
+        };
         if let Some(story) = &boxes[0][k] {
-            page.header = story.story.clone().moved(points(m.header).max(0.0));
+            let (laid, _) = on_page(story);
+            page.header = laid.moved(points(m.header).max(0.0));
         }
         if let Some(story) = &boxes[1][k] {
-            let top = page.height - points(m.footer).max(0.0) - story.height;
-            page.footer = story.story.clone().moved(top);
+            let (laid, height) = on_page(story);
+            let top = page.height - points(m.footer).max(0.0) - height;
+            page.footer = laid.moved(top);
         }
     }
 }

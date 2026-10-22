@@ -15,6 +15,7 @@
 //!   по вертикали;
 //! - `table` — таблицы: столбцы, ячейки, границы и заливка.
 
+mod fields;
 pub mod fonts;
 pub mod lines;
 pub mod pages;
