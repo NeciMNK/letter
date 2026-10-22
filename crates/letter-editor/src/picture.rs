@@ -4,7 +4,7 @@
 //! рисунок — это выделение ровно этого знака. Как в Word, щелчок по
 //! рисунку выделяет его, а за маркеры на рамке можно менять размер.
 
-use letter_layout::{DocumentLayout, LineItem};
+use letter_layout::{DocumentLayout, Float, LineItem};
 use letter_model::{Document, Inline, OBJECT_CHAR, Picture, RunContent};
 
 use crate::edit::{clamp_offset, insert_items, paragraph_mut, paragraph_ref, plain_text};
@@ -47,15 +47,32 @@ impl PictureBox {
     }
 }
 
-/// Все рисунки на странице `page`.
+/// Все рисунки на странице `page` в порядке «кто сверху»: сначала
+/// плавающие перед текстом, потом рисунки в строке, потом плавающие
+/// за текстом.
 pub fn pictures_on_page(layout: &DocumentLayout, page: usize) -> Vec<PictureBox> {
     let Some(sheet) = layout.pages.get(page) else {
         return Vec::new();
     };
-    let mut out = Vec::new();
+    let float = |f: &Float| PictureBox {
+        page,
+        at: Position::new(f.paragraph, f.at),
+        left: f.x,
+        top: f.y,
+        width: f.width,
+        height: f.height,
+    };
+    let mut out: Vec<PictureBox> = sheet
+        .floats
+        .iter()
+        .filter(|f| !f.behind)
+        .map(float)
+        .collect();
     for line in &sheet.lines {
         for item in &line.line.items {
-            if let LineItem::Object(object) = item {
+            if let LineItem::Object(object) = item
+                && (object.width > 0.0 || object.height > 0.0)
+            {
                 out.push(PictureBox {
                     page,
                     at: Position::new(line.paragraph, object.at),
@@ -67,6 +84,7 @@ pub fn pictures_on_page(layout: &DocumentLayout, page: usize) -> Vec<PictureBox>
             }
         }
     }
+    out.extend(sheet.floats.iter().filter(|f| f.behind).map(float));
     out
 }
 
@@ -180,6 +198,7 @@ mod tests {
             image: None,
             relationship: None,
             raw: None,
+            anchor: None,
         }
     }
 
@@ -222,5 +241,40 @@ mod tests {
         let selection = found.selection();
         assert_eq!(selected_picture(&layout, selection), Some(found));
         assert_eq!(selected_picture(&layout, Selection::caret(found.at)), None);
+    }
+
+    #[test]
+    fn floating_picture_is_found_where_it_is_placed() {
+        use letter_model::{
+            Anchor, AnchorPosition, Distance, HorizontalFrom, Placement, VerticalFrom, Wrap,
+        };
+        let mut doc = Document::new();
+        doc.sections[0].blocks = vec![Block::from(Paragraph::from_runs([Run::text("ab")]))];
+        let mut floating = picture(914_400, 457_200);
+        floating.anchor = Some(Box::new(Anchor {
+            horizontal: AnchorPosition {
+                relative: HorizontalFrom::Page,
+                placement: Placement::Offset(300 * 12_700),
+            },
+            vertical: AnchorPosition {
+                relative: VerticalFrom::Page,
+                placement: Placement::Offset(400 * 12_700),
+            },
+            wrap: Wrap::None,
+            behind_text: false,
+            distance: Distance::default(),
+        }));
+        insert_picture(&mut doc, Position::new(0, 1), floating);
+        let library = letter_layout::FontLibrary::embedded_only();
+        let layout =
+            letter_layout::layout_document(&doc, &mut letter_layout::Shaper::new(), &library);
+        let boxes = pictures_on_page(&layout, 0);
+        let [found] = boxes[..] else {
+            panic!("{boxes:?}");
+        };
+        assert_eq!(found.at, Position::new(0, 1));
+        assert!((found.left - 300.0).abs() < 0.01 && (found.top - 400.0).abs() < 0.01);
+        assert_eq!(picture_at_point(&layout, 0, 310.0, 410.0), Some(found));
+        assert_eq!(selected_picture(&layout, found.selection()), Some(found));
     }
 }

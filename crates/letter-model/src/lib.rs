@@ -44,7 +44,10 @@ pub use paragraph::{
     Alignment, FirstLineIndent, Indentation, Inline, LineSpacing, Paragraph, ParagraphProps,
     Spacing, TabLeader, TabStop, TabStopKind,
 };
-pub use picture::{EMU_PER_POINT, ImageData, Picture};
+pub use picture::{
+    Anchor, AnchorAlign, AnchorPosition, Distance, EMU_PER_POINT, HorizontalFrom, ImageData,
+    Picture, Placement, VerticalFrom, Wrap,
+};
 pub use properties::{AppProperties, CoreProperties, Properties, Statistics};
 pub use raw::RawXml;
 pub use resolve::{ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps, overlay_borders};

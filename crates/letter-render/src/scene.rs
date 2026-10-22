@@ -3,7 +3,8 @@
 //! в пикселях. Список одинаков для экрана и для картинки.
 
 use letter_layout::{
-    FontLibrary, LineItem, Page, PageLine, ShapeKind, TabItem, TabLeader, TextItem, baseline_rise,
+    Float, FontLibrary, LineItem, Page, PageLine, ShapeKind, TabItem, TabLeader, TextItem,
+    baseline_rise,
 };
 use std::sync::Arc;
 
@@ -62,8 +63,9 @@ pub enum DrawItem {
 
 /// Список того, что нарисовать на странице при масштабе `scale`
 /// пикселей на пункт. Сначала идут фоны (заливка ячеек, выделение
-/// маркером), потом рисунки, глифы и линии (подчёркивания, границы
-/// таблиц).
+/// маркером) и плавающие рисунки за текстом, потом рисунки в строке,
+/// глифы и линии (подчёркивания, границы таблиц), последними — плавающие
+/// рисунки перед текстом.
 pub fn page_scene(
     page: &Page,
     scale: f32,
@@ -122,6 +124,8 @@ pub fn page_scene(
                         leader(&mut lines, line, tab, props, scale);
                     }
                 }
+                // Знак привязки плавающего рисунка места не занимает.
+                LineItem::Object(object) if object.width == 0.0 && object.height == 0.0 => {}
                 LineItem::Object(object) => pictures.push(DrawItem::Picture {
                     x: (line.x + object.x) * scale,
                     y: (line.baseline - object.height) * scale,
@@ -150,9 +154,18 @@ pub fn page_scene(
             }
         }
     }
+    let float = |f: &Float| DrawItem::Picture {
+        x: f.x * scale,
+        y: f.y * scale,
+        width: f.width * scale,
+        height: f.height * scale,
+        image: f.image.clone(),
+    };
+    backgrounds.extend(page.floats.iter().filter(|f| f.behind).map(float));
     backgrounds.extend(pictures);
     backgrounds.extend(glyphs);
     backgrounds.extend(lines);
+    backgrounds.extend(page.floats.iter().filter(|f| !f.behind).map(float));
     backgrounds
 }
 

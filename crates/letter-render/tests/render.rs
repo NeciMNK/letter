@@ -262,6 +262,7 @@ fn broken_picture_becomes_a_placeholder() {
         })),
         relationship: None,
         raw: None,
+        anchor: None,
     };
     doc.sections[0].blocks = vec![Block::from(Paragraph::from_runs([Run {
         props: Default::default(),
@@ -278,4 +279,44 @@ fn broken_picture_becomes_a_placeholder() {
         image.pixel(x, y),
         Some(letter_render::picture::PLACEHOLDER_FILL)
     );
+}
+
+#[test]
+fn floating_pictures_are_drawn_in_their_place() {
+    let library = FontLibrary::embedded_only();
+    let mut cache = GlyphCache::new();
+    let doc = layout("floating.docx", &library);
+    let page = &doc.pages[0];
+    let items = page_scene(page, 1.0, &library, &mut cache);
+    let pictures: Vec<(usize, f32, f32, f32)> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, item)| match item {
+            DrawItem::Picture { x, y, width, .. } => Some((i, *x, *y, *width)),
+            _ => None,
+        })
+        .collect();
+    // Знаки привязки не рисуются: только два плавающих рисунка.
+    let [behind, square] = pictures[..] else {
+        panic!("{pictures:?}");
+    };
+    let first_glyph = items
+        .iter()
+        .position(|i| matches!(i, DrawItem::Glyph { .. }))
+        .expect("glyphs");
+    // «За текстом» — под буквами, «вокруг рамки» — поверх.
+    assert!(behind.0 < first_glyph && square.0 > first_glyph);
+    // 4 572 000 EMU = 360 пт от края листа.
+    assert!((square.1 - 360.0).abs() < 0.01, "{square:?}");
+    assert!((square.3 - 72.0).abs() < 0.01);
+    // По центру между полями и по нижнему полю (рисунок квадратный).
+    let text_width = page.width - page.margins.left - page.margins.right;
+    let center = page.margins.left + (text_width - behind.3) / 2.0;
+    assert!((behind.1 - center).abs() < 0.01, "{behind:?}");
+    let bottom = page.height - page.margins.bottom - behind.3;
+    assert!((behind.2 - bottom).abs() < 0.01, "{behind:?}");
+    // Плавающие рисунки не раздвигают строки.
+    let tops: Vec<f32> = page.lines.iter().map(|l| l.top).collect();
+    let steps: Vec<f32> = tops.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(steps.iter().all(|s| *s < 30.0), "{steps:?}");
 }
