@@ -117,6 +117,8 @@ pub enum Icon {
     Link,
     /// Закладка.
     Bookmark,
+    /// Концевая сноска: строки и знак конца.
+    Endnote,
     /// Удалить строки, столбцы или таблицу.
     DeleteTable,
     /// Вставить строку сверху.
@@ -219,6 +221,7 @@ impl Icon {
             Icon::Field => ("braces", '\u{E36A}'),
             Icon::Link => ("link", '\u{E102}'),
             Icon::Bookmark => ("bookmark", '\u{E060}'),
+            Icon::Endnote => ("list-end", '\u{E2DF}'),
             Icon::DeleteTable => ("grid-2x2-x", '\u{E5E5}'),
             Icon::InsertAbove => ("between-horizontal-start", '\u{E592}'),
             Icon::InsertBelow => ("between-horizontal-end", '\u{E591}'),
@@ -402,7 +405,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 52] = [
+    const ALL: [Icon; 53] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -455,6 +458,7 @@ mod tests {
         Icon::Field,
         Icon::Link,
         Icon::Bookmark,
+        Icon::Endnote,
     ];
 
     #[test]

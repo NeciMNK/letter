@@ -346,6 +346,7 @@ impl Ribbon {
                         Tab::Home => home(ui, &mut self.home, info, &mut out),
                         Tab::View => view(ui, info, &mut out),
                         Tab::Insert => crate::insert::insert(ui, info, &mut out),
+                        Tab::References => crate::references::references(ui, info, &mut out),
                         Tab::Layout => crate::layout::layout(ui, info, &mut out),
                         Tab::TableDesign => crate::insert::table_design(ui, info, &mut out),
                         Tab::TableLayout => crate::insert::table_layout(ui, info, &mut out),

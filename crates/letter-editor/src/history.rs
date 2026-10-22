@@ -9,7 +9,7 @@
 
 use letter_model::{
     Alignment, Anchor, Block, BreakKind, Color, Document, HeaderFooter, HeaderFooterKind,
-    Hyperlink, Picture, Section, SectionStart,
+    Hyperlink, NoteKind, Picture, Section, SectionStart,
 };
 
 use crate::clipboard::{insert_fragment, insert_plain_text};
@@ -27,6 +27,7 @@ use crate::lists::{
     ListKind, change_list_level, continue_numbering, multilevel_list, restart_numbering,
     tab_changes_level, toggle_list,
 };
+use crate::notes::insert_note;
 use crate::picture::{insert_picture, resize_picture, set_picture_anchor};
 use crate::search::{SearchOptions, clamp, replace_all};
 use crate::section::{
@@ -162,6 +163,8 @@ pub enum Command {
     AddBookmark(String),
     /// Удалить закладку с этим именем.
     DeleteBookmark(String),
+    /// Вставить у курсора ссылку на новую сноску (выделенное заменяется).
+    InsertNote(NoteKind),
     /// Обновить поля в абзацах выделенного (F9).
     UpdateFields(Box<FieldContext>),
     /// «Заменить все»: найденное `query` заменить на `replacement` во
@@ -520,6 +523,7 @@ impl History {
             Command::PasteText(text) => insert_plain_text(doc, at, text),
             Command::InsertTable { rows, columns } => insert_table(doc, at, *rows, *columns),
             Command::InsertPicture(picture) => insert_picture(doc, at, (**picture).clone()),
+            Command::InsertNote(kind) => insert_note(doc, at, *kind).0,
             Command::Break(kind) => insert_break(doc, at, *kind),
             Command::SectionBreak(start) => insert_section_break(doc, at, *start),
             Command::Format(_)

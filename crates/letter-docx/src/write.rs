@@ -111,6 +111,10 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
     // Сноски: часть строится заново из модели (новая — если сносок
     // раньше не было).
     let base = main.rsplit_once('/').map_or("", |(dir, _)| dir);
+    let mut referenced = Vec::new();
+    for section in &doc.sections {
+        note_references(&section.blocks, &mut referenced);
+    }
     for (kind, notes, source_part) in [
         (NoteKind::Footnote, &doc.footnotes, &source.footnotes_part),
         (NoteKind::Endnote, &doc.endnotes, &source.endnotes_part),
@@ -127,7 +131,9 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
             }
             None => continue,
         };
+        // Сноски, ссылки на которые удалили, в файл не идут.
         let mut notes = notes.clone();
+        notes.retain(|n| !n.is_regular() || referenced.contains(&(kind, n.id.as_str())));
         for note in &mut notes {
             link_hyperlinks(&mut note.blocks, &name, &mut links);
         }
@@ -818,6 +824,27 @@ fn encode_part_name(name: &str) -> String {
         }
     }
     out
+}
+
+/// Сноски, на которые ссылается текст `blocks`: вид и номер.
+fn note_references<'d>(blocks: &'d [Block], out: &mut Vec<(NoteKind, &'d str)>) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(p) => {
+                for item in p.runs().flat_map(|r| &r.content) {
+                    if let RunContent::NoteReference(r) = item {
+                        out.push((r.kind, r.id.as_str()));
+                    }
+                }
+            }
+            Block::Table(t) => {
+                for cell in t.rows.iter().flat_map(|r| &r.cells) {
+                    note_references(&cell.blocks, out);
+                }
+            }
+            Block::Unknown(_) => {}
+        }
+    }
 }
 
 #[cfg(test)]

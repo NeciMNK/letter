@@ -596,3 +596,11 @@ bookmark-add = Добавить
 bookmark-delete = Удалить
 bookmark-go-to = Перейти
 keytip-insert-bookmark = ЗК
+
+group-footnotes = Сноски
+insert-footnote = Вставить сноску
+insert-footnote-hint = Добавить сноску внизу страницы (Ctrl+Alt+F)
+insert-endnote = Вставить концевую сноску
+insert-endnote-hint = Добавить сноску в конце документа (Ctrl+Alt+D)
+keytip-references-footnote = СН
+keytip-references-endnote = КС

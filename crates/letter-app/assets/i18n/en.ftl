@@ -604,3 +604,11 @@ bookmark-add = Add
 bookmark-delete = Delete
 bookmark-go-to = Go To
 keytip-insert-bookmark = K
+
+group-footnotes = Footnotes
+insert-footnote = Insert Footnote
+insert-footnote-hint = Add a note at the bottom of the page (Ctrl+Alt+F)
+insert-endnote = Insert Endnote
+insert-endnote-hint = Add a note at the end of the document (Ctrl+Alt+D)
+keytip-references-footnote = F
+keytip-references-endnote = E

@@ -22,6 +22,7 @@ pub mod history;
 pub mod links;
 pub mod lists;
 pub mod navigation;
+pub mod notes;
 pub mod picture;
 pub mod position;
 pub mod search;
@@ -49,6 +50,7 @@ pub use lists::{
     multilevel_list, remove_from_list, restart_numbering, tab_changes_level, toggle_list,
 };
 pub use navigation::{Motion, Moved, move_cursor};
+pub use notes::{insert_note, note_styles, notes, notes_mut};
 pub use picture::{
     MIN_PICTURE_SIZE, PictureBox, PictureWrap, anchor_with_wrap, insert_picture, is_picture,
     moved_anchor, picture_at_point, picture_ref, pictures_on_page, resize_picture,
