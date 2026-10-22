@@ -363,7 +363,7 @@ pub(crate) fn clamp_offset(paragraph: &Paragraph, offset: usize) -> usize {
 }
 
 /// Вставляет элементы в позицию `offset`, во фрагмент с буквой перед ней.
-fn insert_items(paragraph: &mut Paragraph, offset: usize, items: Vec<RunContent>) {
+pub(crate) fn insert_items(paragraph: &mut Paragraph, offset: usize, items: Vec<RunContent>) {
     if items.is_empty() {
         return;
     }

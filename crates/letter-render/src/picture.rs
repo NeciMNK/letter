@@ -45,6 +45,21 @@ pub fn decode(data: &ImageData) -> Option<RgbaImage> {
     })
 }
 
+/// Размер картинки в пикселях без распаковки (по заголовку файла).
+/// `None`, если вид картинки не поддерживается или файл испорчен.
+pub fn pixel_size(data: &ImageData) -> Option<(u32, u32)> {
+    let reader = ImageReader::new(Cursor::new(data.bytes.as_slice()))
+        .with_guessed_format()
+        .ok()?;
+    if !reader.format().is_some_and(|f| SUPPORTED.contains(&f)) {
+        return None;
+    }
+    reader
+        .into_dimensions()
+        .ok()
+        .filter(|&(w, h)| w > 0 && h > 0)
+}
+
 /// Уменьшает картинку так, чтобы ни одна сторона не была больше
 /// `max_side` (берётся ближайшая точка). Меньшую картинку не трогает.
 pub fn fit_within(image: RgbaImage, max_side: u32) -> RgbaImage {
@@ -130,6 +145,7 @@ mod tests {
             };
             let image = decode(&data).unwrap();
             assert_eq!((image.width, image.height), (2, 1));
+            assert_eq!(pixel_size(&data), Some((2, 1)));
             assert_eq!(image.pixel(0, 0), Some([255, 0, 0, 255]));
             assert_eq!(image.pixel(1, 0), Some([0, 0, 0, 0]));
         }
@@ -142,6 +158,7 @@ mod tests {
             bytes: vec![1, 0, 0, 0, 108, 0, 0, 0],
         };
         assert!(decode(&emf).is_none());
+        assert!(pixel_size(&emf).is_none());
         let broken = ImageData {
             name: "word/media/image1.png".into(),
             bytes: b"\x89PNG\r\n\x1a\nbroken".to_vec(),

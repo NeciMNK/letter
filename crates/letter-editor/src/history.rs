@@ -7,7 +7,7 @@
 //! операцию к каждой правке, а память тратится только на задетые абзацы.
 //! Набор текста объединяется в один шаг по словам, как в Word.
 
-use letter_model::{Alignment, Block, Color, Document, Section};
+use letter_model::{Alignment, Block, Color, Document, Picture, Section};
 
 use crate::clipboard::{insert_fragment, insert_plain_text};
 use crate::edit::paragraph_count;
@@ -22,6 +22,7 @@ use crate::lists::{
     ListKind, change_list_level, continue_numbering, multilevel_list, restart_numbering,
     tab_changes_level, toggle_list,
 };
+use crate::picture::{insert_picture, resize_picture};
 use crate::search::{SearchOptions, clamp, replace_all};
 use crate::selection::Selection;
 use crate::table::{
@@ -99,6 +100,15 @@ pub enum Command {
     CellShading(Option<Color>),
     /// Объединить выделенные ячейки.
     MergeCells,
+    /// Вставить рисунок у курсора (заменяет выделенное).
+    InsertPicture(Box<Picture>),
+    /// Новый размер выделенного рисунка, EMU (выделение остаётся).
+    ResizePicture {
+        /// Ширина.
+        width: i64,
+        /// Высота.
+        height: i64,
+    },
     /// «Заменить все»: найденное `query` заменить на `replacement` во
     /// всём документе. Курсор остаётся в том же абзаце (выделение
     /// снимается).
@@ -246,6 +256,7 @@ impl History {
                 | Command::CellBorders(_)
                 | Command::CellShading(_)
                 | Command::MergeCells
+                | Command::ResizePicture { .. }
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -356,6 +367,10 @@ impl History {
                 let at = merge_cells(doc, start.paragraph, end.paragraph);
                 Some(at.map_or(selection, Selection::caret))
             }
+            Command::ResizePicture { width, height } => {
+                resize_picture(doc, start, *width, *height);
+                Some(selection)
+            }
             _ => None,
         };
         let focus = match &command {
@@ -369,6 +384,7 @@ impl History {
             Command::Paste(fragment) => insert_fragment(doc, at, fragment),
             Command::PasteText(text) => insert_plain_text(doc, at, text),
             Command::InsertTable { rows, columns } => insert_table(doc, at, *rows, *columns),
+            Command::InsertPicture(picture) => insert_picture(doc, at, (**picture).clone()),
             Command::Format(_)
             | Command::Align(_)
             | Command::Paragraph(_)
@@ -387,7 +403,8 @@ impl History {
             | Command::DeleteTable
             | Command::CellBorders(_)
             | Command::CellShading(_)
-            | Command::MergeCells => at,
+            | Command::MergeCells
+            | Command::ResizePicture { .. } => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
 
@@ -581,6 +598,38 @@ mod tests {
 
     fn caret(p: usize, o: usize) -> Selection {
         Selection::caret(Position::new(p, o))
+    }
+
+    #[test]
+    fn pictures_are_inserted_resized_and_undone() {
+        let mut d = doc(&["ab"]);
+        let mut h = History::new();
+        let picture = Picture {
+            width: 127_000,
+            height: 254_000,
+            image: None,
+            relationship: None,
+            raw: None,
+        };
+        // Вставка заменяет выделенное.
+        let picked = Selection::new(Position::new(0, 0), Position::new(0, 1));
+        let s = h.run(&mut d, picked, Command::InsertPicture(Box::new(picture)));
+        assert_eq!(s, caret(0, 3));
+        assert_eq!(texts(&d), ["\u{fffc}b"]);
+        let selected = Selection::new(Position::new(0, 0), Position::new(0, 3));
+        let command = Command::ResizePicture {
+            width: 254_000,
+            height: 508_000,
+        };
+        assert_eq!(h.run(&mut d, selected, command), selected);
+        let size = |d: &Document| {
+            crate::picture::picture_ref(d, Position::new(0, 0)).map(|p| (p.width, p.height))
+        };
+        assert_eq!(size(&d), Some((254_000, 508_000)));
+        h.undo(&mut d);
+        assert_eq!(size(&d), Some((127_000, 254_000)));
+        h.undo(&mut d);
+        assert_eq!(texts(&d), ["ab"]);
     }
 
     #[test]

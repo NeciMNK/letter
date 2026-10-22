@@ -19,6 +19,7 @@ mod insert;
 mod keytips;
 mod language;
 mod paragraph_dialog;
+mod picture;
 mod ribbon;
 mod ruler;
 mod settings;
