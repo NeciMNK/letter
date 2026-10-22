@@ -423,6 +423,7 @@ mod tests {
                 &crate::insert::TABLE_KEYTIPS[..],
                 &crate::insert::DESIGN_KEYTIPS[..],
                 &crate::insert::PICTURE_KEYTIPS[..],
+                &crate::layout::KEYTIPS[..],
             ] {
                 let keys: Vec<String> = ids.iter().map(|id| tr(id).to_owned()).collect();
                 no_prefixes(&keys);

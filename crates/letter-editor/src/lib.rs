@@ -23,6 +23,7 @@ pub mod navigation;
 pub mod picture;
 pub mod position;
 pub mod search;
+pub mod section;
 pub mod selection;
 pub mod table;
 
@@ -49,6 +50,9 @@ pub use picture::{
 };
 pub use position::{Affinity, Position};
 pub use search::{Found, SearchOptions, find_all, find_next, replace_all};
+pub use section::{
+    ColumnPreset, PageSetup, insert_break, insert_section_break, section_props, set_page_setup,
+};
 pub use selection::{Selection, SelectionRect, paragraph_at, select_all, selection_rects, word_at};
 pub use table::{
     BorderPreset, can_merge, delete_columns, delete_rows, delete_table, in_table, insert_columns,

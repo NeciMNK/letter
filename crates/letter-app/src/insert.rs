@@ -273,7 +273,7 @@ fn table_button(
 }
 
 /// Большая кнопка со значком, подписью под ней и меню.
-fn menu_button(
+pub(crate) fn menu_button(
     ui: &mut Ui,
     icon: Icon,
     label: &str,

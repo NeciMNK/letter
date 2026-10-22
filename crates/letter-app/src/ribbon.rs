@@ -242,6 +242,8 @@ pub struct RibbonInfo {
     pub can_merge: bool,
     /// Обтекание выделенного рисунка (`None` — рисунок не выделен).
     pub picture_wrap: Option<letter_editor::PictureWrap>,
+    /// Параметры страницы раздела с курсором.
+    pub section: Option<letter_model::SectionProps>,
 }
 
 /// Состояние ленты.
@@ -303,6 +305,7 @@ impl Ribbon {
                         Tab::Home => home(ui, &mut self.home, info, &mut out),
                         Tab::View => view(ui, info, &mut out),
                         Tab::Insert => crate::insert::insert(ui, info, &mut out),
+                        Tab::Layout => crate::layout::layout(ui, info, &mut out),
                         Tab::TableDesign => crate::insert::table_design(ui, info, &mut out),
                         Tab::TableLayout => crate::insert::table_layout(ui, info, &mut out),
                         Tab::PictureFormat => crate::insert::picture_format(ui, info, &mut out),

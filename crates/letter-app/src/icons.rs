@@ -91,6 +91,16 @@ pub enum Icon {
     Picture,
     /// Обтекание текстом.
     WrapText,
+    /// Поля страницы.
+    Margins,
+    /// Ориентация листа.
+    Orientation,
+    /// Размер листа.
+    PageSize,
+    /// Колонки.
+    Columns,
+    /// Разрывы.
+    Breaks,
     /// Удалить строки, столбцы или таблицу.
     DeleteTable,
     /// Вставить строку сверху.
@@ -180,6 +190,11 @@ impl Icon {
             Icon::Table => ("table", '\u{E17D}'),
             Icon::Picture => ("image", '\u{E0F6}'),
             Icon::WrapText => ("wrap-text", '\u{E248}'),
+            Icon::Margins => ("fullscreen", '\u{E534}'),
+            Icon::Orientation => ("rectangle-horizontal", '\u{E376}'),
+            Icon::PageSize => ("scaling", '\u{E2EC}'),
+            Icon::Columns => ("columns-2", '\u{E098}'),
+            Icon::Breaks => ("separator-horizontal", '\u{E1C8}'),
             Icon::DeleteTable => ("grid-2x2-x", '\u{E5E5}'),
             Icon::InsertAbove => ("between-horizontal-start", '\u{E592}'),
             Icon::InsertBelow => ("between-horizontal-end", '\u{E591}'),
@@ -363,7 +378,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 39] = [
+    const ALL: [Icon; 44] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -403,6 +418,11 @@ mod tests {
         Icon::PasteText,
         Icon::Picture,
         Icon::WrapText,
+        Icon::Margins,
+        Icon::Orientation,
+        Icon::PageSize,
+        Icon::Columns,
+        Icon::Breaks,
     ];
 
     #[test]

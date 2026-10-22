@@ -7,7 +7,9 @@
 //! операцию к каждой правке, а память тратится только на задетые абзацы.
 //! Набор текста объединяется в один шаг по словам, как в Word.
 
-use letter_model::{Alignment, Anchor, Block, Color, Document, Picture, Section};
+use letter_model::{
+    Alignment, Anchor, Block, BreakKind, Color, Document, Picture, Section, SectionStart,
+};
 
 use crate::clipboard::{insert_fragment, insert_plain_text};
 use crate::edit::paragraph_count;
@@ -24,6 +26,7 @@ use crate::lists::{
 };
 use crate::picture::{insert_picture, resize_picture, set_picture_anchor};
 use crate::search::{SearchOptions, clamp, replace_all};
+use crate::section::{PageSetup, insert_break, insert_section_break, set_page_setup};
 use crate::selection::Selection;
 use crate::table::{
     BorderPreset, delete_columns, delete_rows, delete_table, in_table, insert_columns, insert_rows,
@@ -112,6 +115,14 @@ pub enum Command {
     /// Новая привязка выделенного рисунка (обтекание, место на странице);
     /// `None` — рисунок в тексте.
     PictureAnchor(Option<Box<Anchor>>),
+    /// Разрыв страницы (Ctrl+Enter) или колонки (Ctrl+Shift+Enter)
+    /// у курсора (заменяет выделенное).
+    Break(BreakKind),
+    /// Разрыв раздела у курсора (заменяет выделенное): дальше — новый
+    /// раздел, который начинается так, как сказано.
+    SectionBreak(SectionStart),
+    /// Ориентация, размер, поля или колонки разделов выделенного.
+    PageSetup(PageSetup),
     /// «Заменить все»: найденное `query` заменить на `replacement` во
     /// всём документе. Курсор остаётся в том же абзаце (выделение
     /// снимается).
@@ -261,6 +272,7 @@ impl History {
                 | Command::MergeCells
                 | Command::ResizePicture { .. }
                 | Command::PictureAnchor(_)
+                | Command::PageSetup(_)
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -283,7 +295,9 @@ impl History {
         };
         let sections_before = doc.sections.len();
         let blocks_before = doc.sections.get(to.0).map_or(0, |s| s.blocks.len());
-        let saved = if from.0 == to.0 {
+        // Разрыв раздела и параметры страницы меняют разделы целиком.
+        let whole = matches!(command, Command::SectionBreak(_) | Command::PageSetup(_));
+        let saved = if from.0 == to.0 && !whole {
             Saved::Blocks(doc.sections[from.0].blocks[from.1..=to.1].to_vec())
         } else {
             Saved::Sections(doc.sections[from.0..=to.0].to_vec())
@@ -379,6 +393,10 @@ impl History {
                 set_picture_anchor(doc, start, anchor.clone());
                 Some(selection)
             }
+            Command::PageSetup(setup) => {
+                set_page_setup(doc, start.paragraph, end.paragraph, *setup);
+                Some(selection)
+            }
             _ => None,
         };
         let focus = match &command {
@@ -393,6 +411,8 @@ impl History {
             Command::PasteText(text) => insert_plain_text(doc, at, text),
             Command::InsertTable { rows, columns } => insert_table(doc, at, *rows, *columns),
             Command::InsertPicture(picture) => insert_picture(doc, at, (**picture).clone()),
+            Command::Break(kind) => insert_break(doc, at, *kind),
+            Command::SectionBreak(start) => insert_section_break(doc, at, *start),
             Command::Format(_)
             | Command::Align(_)
             | Command::Paragraph(_)
@@ -413,7 +433,8 @@ impl History {
             | Command::CellShading(_)
             | Command::MergeCells
             | Command::ResizePicture { .. }
-            | Command::PictureAnchor(_) => at,
+            | Command::PictureAnchor(_)
+            | Command::PageSetup(_) => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
 
@@ -851,5 +872,32 @@ mod tests {
         h.undo(&mut d);
         h.undo(&mut d);
         assert_eq!(d, original);
+    }
+
+    #[test]
+    fn section_breaks_and_page_setup_are_undone() {
+        let mut d = doc(&["ab", "cd"]);
+        let original = d.clone();
+        let mut h = History::new();
+        let s = h.run(
+            &mut d,
+            caret(0, 1),
+            Command::SectionBreak(SectionStart::Continuous),
+        );
+        assert_eq!(s, caret(1, 0));
+        assert_eq!(d.sections.len(), 2);
+        let columns = Command::PageSetup(PageSetup::Columns(crate::ColumnPreset::Two));
+        h.run(&mut d, caret(2, 0), columns);
+        assert!(d.sections[1].props.columns.is_some());
+        assert!(d.sections[0].props.columns.is_none());
+        h.run(&mut d, caret(2, 1), Command::Break(BreakKind::Page));
+        assert_eq!(texts(&d), ["a", "b", "c\u{c}d"]);
+        h.undo(&mut d);
+        h.undo(&mut d);
+        assert!(d.sections[1].props.columns.is_none());
+        h.undo(&mut d);
+        assert_eq!(d, original);
+        h.redo(&mut d);
+        assert_eq!(d.sections.len(), 2);
     }
 }
