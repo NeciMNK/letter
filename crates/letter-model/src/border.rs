@@ -1,4 +1,4 @@
-//! Границы и заливка: у таблиц и ячеек (позже — у абзацев и страниц).
+//! Границы и заливка: у таблиц, ячеек и абзацев (позже — у страниц).
 
 use crate::Color;
 
@@ -77,6 +77,64 @@ impl Borders {
     /// Ничего не задано.
     pub fn is_empty(&self) -> bool {
         *self == Borders::default()
+    }
+}
+
+/// Границы абзаца (`w:pBdr`). `None` — не задана здесь (берётся из
+/// стиля), `Some` с видом `nil` — убрана.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ParagraphBorders {
+    /// Сверху.
+    pub top: Option<Border>,
+    /// Слева.
+    pub left: Option<Border>,
+    /// Снизу.
+    pub bottom: Option<Border>,
+    /// Справа.
+    pub right: Option<Border>,
+    /// Между абзацами с одинаковыми границами (`w:between`).
+    pub between: Option<Border>,
+    /// Вертикальная черта у края страницы (`w:bar`).
+    pub bar: Option<Border>,
+}
+
+impl ParagraphBorders {
+    /// Рамка из одинаковых линий со всех четырёх сторон.
+    pub fn frame(border: Border) -> ParagraphBorders {
+        ParagraphBorders {
+            top: Some(border.clone()),
+            left: Some(border.clone()),
+            bottom: Some(border.clone()),
+            right: Some(border),
+            ..ParagraphBorders::default()
+        }
+    }
+
+    /// Ничего не задано.
+    pub fn is_empty(&self) -> bool {
+        *self == ParagraphBorders::default()
+    }
+
+    /// Границы `layer` поверх этих по сторонам.
+    pub fn overlay(&mut self, layer: &ParagraphBorders) {
+        let sides = [
+            (&mut self.top, &layer.top),
+            (&mut self.left, &layer.left),
+            (&mut self.bottom, &layer.bottom),
+            (&mut self.right, &layer.right),
+            (&mut self.between, &layer.between),
+            (&mut self.bar, &layer.bar),
+        ];
+        for (acc, layer) in sides {
+            if layer.is_some() {
+                acc.clone_from(layer);
+            }
+        }
+    }
+
+    /// Видимая линия стороны: `nil` и `none` дают `None`.
+    pub fn visible(side: &Option<Border>) -> Option<&Border> {
+        side.as_ref().filter(|b| !b.is_none())
     }
 }
 

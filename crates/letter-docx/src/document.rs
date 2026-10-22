@@ -18,6 +18,7 @@ use crate::names::{
     ALIGNMENTS, HIGHLIGHTS, TAB_KINDS, TAB_LEADERS, THEME_FONTS, UNDERLINES, lookup,
 };
 use crate::serialize::R_NS;
+use crate::table::{read_paragraph_borders, read_shading};
 use crate::xml::Element;
 
 /// Пространство имён WordprocessingML (обычный вариант OOXML).
@@ -265,6 +266,8 @@ pub(crate) fn read_paragraph_props(
                 "tabs" if props.tabs.is_empty() => {
                     read_tabs(child).map(|t| props.tabs = t).is_some()
                 }
+                "pBdr" => set(&mut props.borders, read_paragraph_borders(child)),
+                "shd" => set(&mut props.shading, read_shading(child)),
                 "sectPr" if allow_section => {
                     section = Some(read_section_props(child));
                     true

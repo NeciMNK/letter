@@ -13,10 +13,10 @@ use letter_model::{
     Alignment, Block, Border, Borders, BreakKind, CellMargins, CellProps, CellVerticalAlign, Color,
     Columns, DocDefaults, Document, FirstLineIndent, HalfPoints, HeaderFooter, HeightRule,
     Highlight, Hyperlink, Indentation, Inline, LineSpacing, PageMargins, PageSize, Paragraph,
-    ParagraphProps, RawXml, RowHeight, RowProps, Run, RunContent, RunFonts, RunProps, Section,
-    SectionProps, SectionStart, Shading, Spacing, Style, StyleKind, Styles, TabLeader, TabStop,
-    TabStopKind, Table, TableCell, TableLayout, TableProps, TableRow, TableWidth, ThemeColor,
-    ThemeFont, Twips, Underline, VerticalAlign, VerticalMerge,
+    ParagraphBorders, ParagraphProps, RawXml, RowHeight, RowProps, Run, RunContent, RunFonts,
+    RunProps, Section, SectionProps, SectionStart, Shading, Spacing, Style, StyleKind, Styles,
+    TabLeader, TabStop, TabStopKind, Table, TableCell, TableLayout, TableProps, TableRow,
+    TableWidth, ThemeColor, ThemeFont, Twips, Underline, VerticalAlign, VerticalMerge,
 };
 
 const FIXTURES: &[&str] = &[
@@ -32,6 +32,7 @@ const FIXTURES: &[&str] = &[
     "headers.docx",
     "links.docx",
     "notes.docx",
+    "borders.docx",
     "header-footer.docx",
     "ru-en.docx",
 ];
@@ -247,6 +248,18 @@ fn everything() -> Document {
                 leader: TabLeader::MiddleDot,
             },
         ],
+        borders: Some(ParagraphBorders {
+            top: Some(Border::single(12)),
+            bottom: Some(Border {
+                style: "double".into(),
+                size: Some(6),
+                space: Some(1),
+                color: Some(Color::Rgb(0x1F, 0x4E, 0x79)),
+            }),
+            between: Some(Border::single(4)),
+            ..ParagraphBorders::default()
+        }),
+        shading: Some(Shading::fill(Color::Rgb(0xDD, 0xEE, 0xFF))),
         unknown: vec![RawXml::new(
             r#"<w:framePr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:wrap="around"/>"#,
         )],

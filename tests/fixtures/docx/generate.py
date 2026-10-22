@@ -460,6 +460,40 @@ def pages() -> Document:
     return doc
 
 
+def set_borders(paragraph, sides: dict[str, tuple[str, int, int, str]], fill: str | None = None) -> None:
+    """Границы абзаца (`w:pBdr`): сторона → (вид, толщина в 1/8 пт,
+    отступ в пт, цвет); `fill` — цвет заливки (`w:shd`)."""
+    ppr = paragraph._p.get_or_add_pPr()
+    pbdr = etree.SubElement(ppr, qn("w:pBdr")) if sides else None
+    for side, (style, size, space, color) in sides.items():
+        border = etree.SubElement(pbdr, qn(f"w:{side}"))
+        border.set(qn("w:val"), style)
+        border.set(qn("w:sz"), str(size))
+        border.set(qn("w:space"), str(space))
+        border.set(qn("w:color"), color)
+    if fill:
+        shd = etree.SubElement(ppr, qn("w:shd"))
+        shd.set(qn("w:val"), "clear")
+        shd.set(qn("w:color"), "auto")
+        shd.set(qn("w:fill"), fill)
+
+
+def borders() -> Document:
+    """Границы и заливка абзацев: рамка вокруг двух абзацев с линией
+    между ними, линия под заголовком, заливка без линий."""
+    doc = new_document("Границы и заливка")
+    box = {
+        side: ("single", 8, 4 if side in ("left", "right") else 1, "1F4E79")
+        for side in ("top", "left", "bottom", "right", "between")
+    }
+    for text in ("Первый абзац в рамке.", "Второй абзац в той же рамке."):
+        set_borders(doc.add_paragraph(text), box, fill="DEEAF6")
+    set_borders(doc.add_paragraph("Заголовок с линией снизу"), {"bottom": ("double", 6, 1, "auto")})
+    set_borders(doc.add_paragraph("Абзац с заливкой без линий."), {}, fill="FFF2CC")
+    doc.add_paragraph("Обычный абзац.")
+    return doc
+
+
 FIXTURES = {
     "empty.docx": empty,
     "plain-text.docx": plain_text,
@@ -476,6 +510,7 @@ FIXTURES = {
     "headers.docx": headers,
     "links.docx": links,
     "notes.docx": notes,
+    "borders.docx": borders,
 }
 
 

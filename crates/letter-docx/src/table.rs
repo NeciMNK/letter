@@ -5,9 +5,9 @@
 //! остальное хранится как есть и записывается обратно.
 
 use letter_model::{
-    Block, Border, Borders, CellMargins, CellProps, CellVerticalAlign, HeightRule, RowHeight,
-    RowProps, Shading, Table, TableCell, TableLayout, TableProps, TableRow, TableWidth, Twips,
-    VerticalMerge,
+    Block, Border, Borders, CellMargins, CellProps, CellVerticalAlign, HeightRule,
+    ParagraphBorders, RowHeight, RowProps, Shading, Table, TableCell, TableLayout, TableProps,
+    TableRow, TableWidth, Twips, VerticalMerge,
 };
 
 use crate::document::{enum_val, is_w_ns, parse_color, read_block, set, string_val, toggle};
@@ -333,6 +333,34 @@ fn read_borders(element: &Element) -> Option<Borders> {
     Some(borders)
 }
 
+/// `w:pBdr`: границы абзаца. `None`, если внутри есть что-то
+/// непонятное — тогда элемент сохраняется как есть.
+pub(crate) fn read_paragraph_borders(element: &Element) -> Option<ParagraphBorders> {
+    if !element.attrs.is_empty() {
+        return None;
+    }
+    let mut borders = ParagraphBorders::default();
+    for child in element.elements() {
+        if !is_w_ns(child.ns.as_deref()) {
+            return None;
+        }
+        let slot = match child.local.as_str() {
+            "top" => &mut borders.top,
+            "left" | "start" => &mut borders.left,
+            "bottom" => &mut borders.bottom,
+            "right" | "end" => &mut borders.right,
+            "between" => &mut borders.between,
+            "bar" => &mut borders.bar,
+            _ => return None,
+        };
+        if slot.is_some() {
+            return None;
+        }
+        *slot = Some(read_border(child)?);
+    }
+    Some(borders)
+}
+
 fn read_border(element: &Element) -> Option<Border> {
     if !element.only_attrs(&["val", "sz", "space", "color"]) {
         return None;
@@ -354,7 +382,7 @@ fn read_border(element: &Element) -> Option<Border> {
     })
 }
 
-fn read_shading(element: &Element) -> Option<Shading> {
+pub(crate) fn read_shading(element: &Element) -> Option<Shading> {
     if !element.only_attrs(&["val", "color", "fill"]) {
         return None;
     }
@@ -541,14 +569,35 @@ fn width_xml(name: &str, width: TableWidth) -> String {
 }
 
 fn borders_xml(name: &str, borders: &Borders) -> String {
-    let sides = [
-        ("w:top", &borders.top),
-        ("w:left", &borders.left),
-        ("w:bottom", &borders.bottom),
-        ("w:right", &borders.right),
-        ("w:insideH", &borders.inside_h),
-        ("w:insideV", &borders.inside_v),
-    ];
+    sides_xml(
+        name,
+        [
+            ("w:top", &borders.top),
+            ("w:left", &borders.left),
+            ("w:bottom", &borders.bottom),
+            ("w:right", &borders.right),
+            ("w:insideH", &borders.inside_h),
+            ("w:insideV", &borders.inside_v),
+        ],
+    )
+}
+
+/// `w:pBdr`.
+pub(crate) fn paragraph_borders_xml(borders: &ParagraphBorders) -> String {
+    sides_xml(
+        "w:pBdr",
+        [
+            ("w:top", &borders.top),
+            ("w:left", &borders.left),
+            ("w:bottom", &borders.bottom),
+            ("w:right", &borders.right),
+            ("w:between", &borders.between),
+            ("w:bar", &borders.bar),
+        ],
+    )
+}
+
+fn sides_xml(name: &str, sides: [(&str, &Option<Border>); 6]) -> String {
     let mut inner = String::new();
     for (side, border) in sides {
         if let Some(border) = border {
@@ -568,7 +617,7 @@ fn borders_xml(name: &str, borders: &Borders) -> String {
     element(name, &inner)
 }
 
-fn shading_xml(shading: &Shading) -> String {
+pub(crate) fn shading_xml(shading: &Shading) -> String {
     let mut attrs = vec![("w:val", shading.pattern.clone())];
     if let Some(color) = shading.color {
         attrs.push(("w:color", hex_color(color)));
