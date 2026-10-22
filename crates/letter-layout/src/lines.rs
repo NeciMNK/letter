@@ -18,6 +18,9 @@
 //! страницы (как позиции табуляций в Word).
 
 use std::ops::Range;
+use std::sync::Arc;
+
+use letter_model::{ImageData, OBJECT_CHAR};
 
 use unicode_bidi::{BidiInfo, Level};
 use unicode_linebreak::{BreakOpportunity, linebreaks};
@@ -38,6 +41,9 @@ pub struct TextSpan {
     pub text: String,
     /// Оформление.
     pub style: TextStyle,
+    /// Объект в строке (рисунок): тогда текст — один знак
+    /// [`OBJECT_CHAR`], а место в строке задаёт объект.
+    pub object: Option<InlineObject>,
 }
 
 impl TextSpan {
@@ -46,8 +52,31 @@ impl TextSpan {
         TextSpan {
             text: text.into(),
             style,
+            object: None,
         }
     }
+
+    /// Объект в строке (рисунок); `style` — оформление знака, по нему
+    /// считается глубина строки под базовой линией.
+    pub fn object(object: InlineObject, style: TextStyle) -> TextSpan {
+        TextSpan {
+            text: OBJECT_CHAR.to_string(),
+            style,
+            object: Some(object),
+        }
+    }
+}
+
+/// Объект, который стоит в строке как большая буква: низ — на базовой
+/// линии, ширина и высота заданы.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InlineObject {
+    /// Ширина, пт.
+    pub width: f32,
+    /// Высота, пт.
+    pub height: f32,
+    /// Картинка рисунка (`None` — рисовать заглушку).
+    pub image: Option<Arc<ImageData>>,
 }
 
 /// Выравнивание строк абзаца.
@@ -185,6 +214,8 @@ pub enum LineItem {
     Text(TextItem),
     /// Пустое место табуляции (возможно, с заполнителем).
     Tab(TabItem),
+    /// Объект в строке (рисунок).
+    Object(ObjectItem),
 }
 
 impl LineItem {
@@ -193,6 +224,7 @@ impl LineItem {
         match self {
             LineItem::Text(t) => t.x,
             LineItem::Tab(t) => t.x,
+            LineItem::Object(o) => o.x,
         }
     }
 
@@ -201,6 +233,7 @@ impl LineItem {
         match self {
             LineItem::Text(t) => t.run.width(),
             LineItem::Tab(t) => t.width,
+            LineItem::Object(o) => o.width,
         }
     }
 }
@@ -232,6 +265,24 @@ pub struct TabItem {
     pub span: usize,
 }
 
+/// Объект (рисунок) на своём месте в строке. Низ объекта — на базовой
+/// линии строки.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectItem {
+    /// Где знак объекта в тексте абзаца, байты.
+    pub at: usize,
+    /// Левый край, пт от левого поля.
+    pub x: f32,
+    /// Ширина, пт.
+    pub width: f32,
+    /// Высота, пт.
+    pub height: f32,
+    /// Номер куска [`TextSpan`] с объектом.
+    pub span: usize,
+    /// Картинка.
+    pub image: Option<Arc<ImageData>>,
+}
+
 /// Одна строка абзаца.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Line {
@@ -247,6 +298,9 @@ pub struct Line {
     pub descent: f32,
     /// Дополнительный промежуток над строкой (внешний интерлиньяж), пт.
     pub leading: f32,
+    /// Высота самого высокого рисунка в строке, пт (0 — рисунков нет).
+    /// Рисунок стоит на базовой линии, поэтому `ascent` не меньше его.
+    pub object_height: f32,
     /// Части строки в порядке показа слева направо.
     pub items: Vec<LineItem>,
     /// Чем кончается строка.
@@ -280,6 +334,8 @@ enum Kind {
     Tab,
     /// Разрыв строки или страницы.
     Break(LineEnd),
+    /// Объект в строке (рисунок) из куска с этим номером.
+    Object,
 }
 
 /// Неделимая часть текста.
@@ -413,6 +469,8 @@ struct Builder<'a> {
     clusters: Vec<Cluster>,
     /// Можно ли перенести строку после байта с этим номером.
     breaks: Vec<bool>,
+    /// Объекты кусков (`None` у обычного текста).
+    objects: Vec<Option<InlineObject>>,
     /// Заданные позиции табуляции по возрастанию, без черт.
     stops: Vec<TabStop>,
 }
@@ -447,6 +505,7 @@ impl<'a> Builder<'a> {
             clusters: Vec::new(),
             breaks,
             stops,
+            objects: spans.iter().map(|s| s.object.clone()).collect(),
         };
         builder.shape(spans);
         builder
@@ -459,6 +518,19 @@ impl<'a> Builder<'a> {
         for (index, span) in spans.iter().enumerate() {
             let span_range = offset..offset + span.text.len();
             offset = span_range.end;
+            if let Some(object) = &span.object {
+                // Объект — один неделимый кластер на весь кусок.
+                if !span_range.is_empty() {
+                    self.clusters.push(Cluster {
+                        level: levels[span_range.start].number(),
+                        range: span_range,
+                        width: object.width,
+                        span: index,
+                        kind: Kind::Object,
+                    });
+                }
+                continue;
+            }
             // Куски одного направления между табуляциями и разрывами.
             let mut piece_start = span_range.start;
             for (i, c) in span.text.char_indices() {
@@ -599,6 +671,14 @@ impl<'a> Builder<'a> {
                     // после неё не переносим.
                     has_content |= !stop.default || stop.position <= line_end + EPSILON;
                 }
+                Kind::Object => {
+                    state.add_text(cluster.width, false);
+                    if has_content && state.x() > line_end + EPSILON {
+                        let end = last_break.filter(|&b| b > start).unwrap_or(i);
+                        return (end, LineEnd::Wrap);
+                    }
+                    has_content = true;
+                }
                 Kind::Text { space, .. } => {
                     let separator =
                         self.text[cluster.range.clone()].contains(self.format.decimal_separator);
@@ -667,6 +747,7 @@ impl<'a> Builder<'a> {
                     cluster.width,
                     self.text[cluster.range.clone()].contains(format.decimal_separator),
                 ),
+                Kind::Object => state.add_text(cluster.width, false),
                 Kind::Break(_) => {}
             }
         }
@@ -696,7 +777,7 @@ impl<'a> Builder<'a> {
             }
             Align::Distribute if extra > 0.0 => {
                 let gaps: Vec<usize> = (after_tab..content_end.saturating_sub(1))
-                    .filter(|&i| matches!(clusters[i].kind, Kind::Text { .. }))
+                    .filter(|&i| matches!(clusters[i].kind, Kind::Text { .. } | Kind::Object))
                     .collect();
                 for &i in &gaps {
                     widths[i] += extra / gaps.len() as f32;
@@ -760,6 +841,17 @@ impl<'a> Builder<'a> {
                         span: cluster.span,
                     }));
                 }
+                Kind::Object => {
+                    let object = self.objects.get(cluster.span).cloned().flatten();
+                    items.push(LineItem::Object(ObjectItem {
+                        at: cluster.range.start,
+                        x,
+                        width: cluster.width,
+                        height: object.as_ref().map_or(0.0, |o| o.height),
+                        span: cluster.span,
+                        image: object.and_then(|o| o.image),
+                    }));
+                }
                 Kind::Break(_) => {}
             }
             x += widths[i];
@@ -773,13 +865,22 @@ impl<'a> Builder<'a> {
             _ => self.text.len()..self.text.len(),
         };
         let (ascent, descent, leading) = self.line_height(start..end, mark_style);
+        // Рисунок стоит на базовой линии и поднимает строку.
+        let object_height = items
+            .iter()
+            .filter_map(|item| match item {
+                LineItem::Object(object) => Some(object.height),
+                _ => None,
+            })
+            .fold(0.0, f32::max);
         Line {
             range,
             x: line_start + offset,
             width: widths[..content_end].iter().sum(),
-            ascent,
+            ascent: ascent.max(object_height),
             descent,
             leading,
+            object_height,
             items,
             end: kind,
         }
@@ -1162,6 +1263,7 @@ mod tests {
             .map(|item| match item {
                 LineItem::Text(t) => &p.text[t.run.range.clone()],
                 LineItem::Tab(_) => "\t",
+                LineItem::Object(_) => "\u{fffc}",
             })
             .collect();
         // Слева направо: «abc », иврит, « def».
@@ -1196,11 +1298,50 @@ mod tests {
             .map(|item| match item {
                 LineItem::Text(t) => (t.span, t.run.size),
                 LineItem::Tab(t) => (t.span, 0.0),
+                LineItem::Object(o) => (o.span, 0.0),
             })
             .collect();
         assert_eq!(spans, [(0, 10.0), (1, 20.0)]);
         // Высота строки — по самому крупному шрифту.
         assert!(p.lines[0].ascent > 15.0);
+    }
+
+    #[test]
+    fn pictures_stand_in_the_line_like_big_letters() {
+        let picture = |width| {
+            TextSpan::object(
+                InlineObject {
+                    width,
+                    height: 50.0,
+                    image: None,
+                },
+                mono(),
+            )
+        };
+        let p = lay(
+            &[
+                TextSpan::new("ab ", mono()),
+                picture(60.0),
+                TextSpan::new(" cd ", mono()),
+                picture(120.0),
+            ],
+            &ParagraphFormat::new(150.0),
+        );
+        // Второй рисунок не влез и ушёл на новую строку.
+        assert_eq!(p.lines.len(), 2, "{:?}", p.lines);
+        let LineItem::Object(first) = &p.lines[0].items[1] else {
+            panic!("{:?}", p.lines[0].items);
+        };
+        assert_eq!(first.at, 3);
+        assert!((first.x - 18.0).abs() < 0.1, "{}", first.x);
+        assert!(close(first.width, 60.0));
+        // Строка поднялась до верха рисунка.
+        assert!(close(p.lines[0].ascent, 50.0));
+        let LineItem::Object(second) = &p.lines[1].items[0] else {
+            panic!("{:?}", p.lines[1].items);
+        };
+        assert!(close(second.x, 0.0));
+        assert_eq!(&p.text[second.at..], "\u{fffc}");
     }
 
     #[test]

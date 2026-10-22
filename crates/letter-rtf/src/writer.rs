@@ -359,7 +359,8 @@ impl Writer {
                     RunContent::Break(BreakKind::Line) => out.push_str("\\line "),
                     RunContent::Break(BreakKind::Page) => out.push_str("\\page "),
                     RunContent::Break(BreakKind::Column) => out.push_str("\\column "),
-                    RunContent::Unknown(_) => {}
+                    // Рисунки в RTF пока не записываются.
+                    RunContent::Picture(_) | RunContent::Unknown(_) => {}
                 }
             }
             out.push('}');

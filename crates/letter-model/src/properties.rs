@@ -110,7 +110,8 @@ impl Document {
 fn count_block(block: &Block, stats: &mut Statistics) {
     match block {
         Block::Paragraph(p) => {
-            let text = p.plain_text();
+            // Рисунки — не знаки и не слова.
+            let text = p.plain_text().replace(crate::OBJECT_CHAR, "");
             let words = text.split_whitespace().count();
             let characters = text.chars().filter(|c| !c.is_whitespace()).count();
             // Разрывы строк и страниц — не знаки, пробелы и табуляции — знаки.

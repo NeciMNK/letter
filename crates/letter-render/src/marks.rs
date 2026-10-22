@@ -84,6 +84,7 @@ pub fn formatting_marks(page: &Page) -> Vec<Mark> {
                     marks.push(mark(MarkKind::Tab, tab.x + tab.width / 2.0, size));
                     end = end.max(tab.x + tab.width);
                 }
+                LineItem::Object(object) => end = end.max(object.x + object.width),
             }
         }
         let last = match line.line.end {

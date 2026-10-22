@@ -289,7 +289,7 @@ fn content(
             }
         }
         for item in &run.content {
-            if !matches!(item, RunContent::Unknown(_)) {
+            if !matches!(item, RunContent::Unknown(_) | RunContent::Picture(_)) {
                 last_break = false;
             }
             match item {
@@ -302,7 +302,8 @@ fn content(
                 RunContent::Break(_) => {
                     out.push_str("<br style=\"page-break-before:always\">");
                 }
-                RunContent::Unknown(_) => {}
+                // Рисунки в HTML пока не записываются.
+                RunContent::Picture(_) | RunContent::Unknown(_) => {}
             }
         }
         for tag in open.iter().rev() {

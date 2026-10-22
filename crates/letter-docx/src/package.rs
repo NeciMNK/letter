@@ -137,6 +137,8 @@ pub(crate) fn rels_part_for(part: &str) -> String {
 /// Связь между частями пакета.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Relationship {
+    /// Имя связи (`rId5`): по нему на связь ссылается часть.
+    pub id: String,
     /// Тип связи (URI).
     pub kind: String,
     /// Имя части-цели внутри архива.
@@ -149,6 +151,7 @@ fn parse_relationships(rels: &xml::Element, base_dir: &str) -> Vec<Relationship>
         .filter(|e| e.local == "Relationship")
         .filter(|e| attr(e, "TargetMode") != Some("External"))
         .filter_map(|e| {
+            let id = attr(e, "Id").unwrap_or_default().to_string();
             let kind = attr(e, "Type")?.to_string();
             let target = attr(e, "Target")?;
             let target = if target.starts_with('/') || base_dir.is_empty() {
@@ -156,7 +159,7 @@ fn parse_relationships(rels: &xml::Element, base_dir: &str) -> Vec<Relationship>
             } else {
                 normalize_part_name(&format!("{base_dir}/{target}"))
             };
-            Some(Relationship { kind, target })
+            Some(Relationship { id, kind, target })
         })
         .collect()
 }

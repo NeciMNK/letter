@@ -128,19 +128,27 @@ fn table() {
 }
 
 #[test]
-fn image_is_kept_as_unknown() {
+fn inline_image_is_read() {
     let doc = fixture("image.docx");
-    let drawing = paragraphs(&doc)
+    let picture = paragraphs(&doc)
         .iter()
         .flat_map(|p| p.runs())
         .flat_map(|r| &r.content)
         .find_map(|c| match c {
-            RunContent::Unknown(raw) if raw.local_name() == "drawing" => Some(raw),
+            RunContent::Picture(picture) => Some(picture),
             _ => None,
         })
-        .expect("drawing");
-    assert!(drawing.as_str().contains("r:embed"));
-    assert!(drawing.as_str().contains("xmlns:r="));
+        .expect("picture");
+    // 1828800 × 1097280 EMU = 144 × 86,4 пт.
+    assert_eq!((picture.width, picture.height), (1_828_800, 1_097_280));
+    assert_eq!(picture.relationship.as_deref(), Some("rId9"));
+    let image = picture.image.as_ref().expect("image bytes");
+    assert_eq!(image.name, "word/media/image1.png");
+    assert!(image.bytes.starts_with(b"\x89PNG"));
+    let raw = picture.raw.as_ref().expect("raw drawing");
+    assert!(raw.as_str().contains("r:embed"));
+    assert!(raw.as_str().contains("xmlns:r="));
+    assert!(doc.plain_text().contains('\u{fffc}'));
 }
 
 #[test]

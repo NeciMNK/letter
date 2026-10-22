@@ -634,11 +634,7 @@ fn run_at(doc: &Document, at: Position) -> Option<(&letter_model::Paragraph, Opt
         let len: usize = run
             .content
             .iter()
-            .map(|c| match c {
-                letter_model::RunContent::Text(t) => t.len(),
-                letter_model::RunContent::Unknown(_) => 0,
-                _ => 1,
-            })
+            .map(letter_model::RunContent::text_len)
             .sum();
         if chosen.is_none() || (len > 0 && pos < at.offset) {
             chosen = Some(&run.props);
@@ -711,11 +707,7 @@ fn run_props_in(paragraph: &Paragraph, from: usize, to: usize) -> impl Iterator<
         let len: usize = run
             .content
             .iter()
-            .map(|c| match c {
-                letter_model::RunContent::Text(t) => t.len(),
-                letter_model::RunContent::Unknown(_) => 0,
-                _ => 1,
-            })
+            .map(letter_model::RunContent::text_len)
             .sum();
         let (a, b) = (pos, pos + len);
         pos = b;

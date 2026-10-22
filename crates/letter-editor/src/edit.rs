@@ -317,11 +317,7 @@ pub fn paragraph_mut(doc: &mut Document, index: usize) -> Option<&mut Paragraph>
 
 /// Длина элемента в тексте абзаца.
 fn item_len(item: &RunContent) -> usize {
-    match item {
-        RunContent::Text(t) => t.len(),
-        RunContent::Tab | RunContent::Break(_) => 1,
-        RunContent::Unknown(_) => 0,
-    }
+    item.text_len()
 }
 
 pub(crate) fn plain_text(paragraph: &Paragraph) -> String {
@@ -333,6 +329,7 @@ pub(crate) fn plain_text(paragraph: &Paragraph) -> String {
                 RunContent::Tab => text.push('\t'),
                 RunContent::Break(BreakKind::Line) => text.push('\n'),
                 RunContent::Break(_) => text.push('\u{c}'),
+                RunContent::Picture(_) => text.push(letter_model::OBJECT_CHAR),
                 RunContent::Unknown(_) => {}
             }
         }
@@ -628,6 +625,37 @@ mod tests {
         let runs: Vec<String> = p.runs().map(Run::plain_text).collect();
         assert_eq!(runs, vec!["ЖabX", "cdY"]);
         assert_eq!(p.runs().nth(1).map(|r| r.props.bold), Some(Some(true)));
+    }
+
+    #[test]
+    fn picture_is_one_letter() {
+        let picture = letter_model::Picture {
+            width: 12_700,
+            height: 12_700,
+            image: None,
+            relationship: Some("rId1".into()),
+            raw: None,
+        };
+        let mut d = doc(vec![Paragraph::from_runs([Run {
+            props: Default::default(),
+            content: vec![
+                RunContent::Text("ab".into()),
+                RunContent::Picture(picture),
+                RunContent::Text("cd".into()),
+            ],
+        }])]);
+        assert_eq!(texts(&d), vec!["ab\u{fffc}cd"]);
+        // Текст за рисунком: после трёх байтов знака объекта.
+        let p = insert_text(&mut d, Position::new(0, 5), "X");
+        assert_eq!(p, Position::new(0, 6));
+        assert_eq!(texts(&d), vec!["ab\u{fffc}Xcd"]);
+        // Enter сразу за рисунком: рисунок остаётся в первом абзаце.
+        let p = split_paragraph(&mut d, Position::new(0, 5));
+        assert_eq!(texts(&d), vec!["ab\u{fffc}", "Xcd"]);
+        // Backspace после рисунка удаляет его целиком.
+        delete_backward(&mut d, Position::new(0, 5));
+        assert_eq!(texts(&d), vec!["ab", "Xcd"]);
+        assert_eq!(p, Position::new(1, 0));
     }
 
     #[test]

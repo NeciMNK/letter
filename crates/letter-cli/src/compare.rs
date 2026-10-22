@@ -60,7 +60,8 @@ pub fn reference_lines(pdf: &[PdfPage], layout: &DocumentLayout) -> Vec<CompareL
     out
 }
 
-/// Наши строки с текстом (пустые абзацы в PDF не видны). Строки на
+/// Наши строки с текстом (пустые абзацы и рисунки в PDF как текст не
+/// видны). Строки на
 /// одной высоте (ячейки одной строки таблицы) соединяются через пробел
 /// слева направо — так их выдаёт и разбор PDF.
 pub fn layout_lines(layout: &DocumentLayout) -> Vec<CompareLine> {
@@ -69,6 +70,7 @@ pub fn layout_lines(layout: &DocumentLayout) -> Vec<CompareLine> {
         let page_start = out.len();
         for line in &page.lines {
             let text = line.text.get(line.line.range.clone()).unwrap_or_default();
+            let text = text.replace(letter_model::OBJECT_CHAR, "");
             if text.trim().is_empty() {
                 continue;
             }

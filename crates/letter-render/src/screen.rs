@@ -9,10 +9,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use egui::epaint::{Mesh, Shadow};
-use egui::{Color32, ColorImage, Context, Painter, Pos2, Rect, TextureHandle, TextureOptions};
+use egui::{
+    Color32, ColorImage, Context, Painter, Pos2, Rect, TextureHandle, TextureId, TextureOptions,
+};
 use letter_layout::{FontLibrary, Page};
+use letter_model::ImageData;
 
 use crate::glyphs::{GlyphCache, GlyphImage, GlyphKey, GlyphPixels};
+use crate::picture::{PLACEHOLDER_BORDER, PLACEHOLDER_FILL, decode, fit_within};
 use crate::scene::{DrawItem, Rgba, page_scene};
 
 /// Цвет фона вокруг листов (как в Word в режиме разметки).
@@ -73,6 +77,9 @@ pub struct PagePainter {
     texture: Option<TextureHandle>,
     shelves: Shelves,
     slots: HashMap<GlyphKey, Option<Slot>>,
+    /// Текстуры картинок рисунков (`None` — картинку не удалось
+    /// распаковать, рисуется заглушка).
+    pictures: Vec<(Arc<ImageData>, Option<TextureHandle>)>,
 }
 
 impl std::fmt::Debug for PagePainter {
@@ -80,6 +87,7 @@ impl std::fmt::Debug for PagePainter {
         f.debug_struct("PagePainter")
             .field("cache", &self.cache)
             .field("slots", &self.slots.len())
+            .field("pictures", &self.pictures.len())
             .finish()
     }
 }
@@ -165,11 +173,48 @@ impl PagePainter {
                     };
                     mesh.add_rect_with_uv(screen, uv, tint);
                 }
+                DrawItem::Picture {
+                    x,
+                    y,
+                    width,
+                    height,
+                    image,
+                } => {
+                    let r = Rect::from_min_max(to_screen(x, y), to_screen(x + width, y + height));
+                    match image.and_then(|data| self.picture(&ctx, data)) {
+                        Some(texture) => {
+                            let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                            painter.image(texture, r, uv, Color32::WHITE);
+                        }
+                        None => paint_placeholder(painter, r),
+                    }
+                }
             }
         }
         if let Some(mesh) = mesh {
             painter.add(mesh);
         }
+    }
+
+    /// Текстура картинки (распаковывает и загружает при первом показе).
+    fn picture(&mut self, ctx: &Context, data: Arc<ImageData>) -> Option<TextureId> {
+        if let Some((_, texture)) = self.pictures.iter().find(|(d, _)| Arc::ptr_eq(d, &data)) {
+            return texture.as_ref().map(TextureHandle::id);
+        }
+        let max_side = ctx.input(|i| i.max_texture_side).min(u32::MAX as usize) as u32;
+        let texture = decode(&data).map(|image| {
+            let image = fit_within(image, max_side);
+            let size = [image.width as usize, image.height as usize];
+            let pixels = ColorImage::from_rgba_unmultiplied(size, &image.pixels);
+            ctx.load_texture(
+                format!("letter-picture-{}", data.name),
+                pixels,
+                TextureOptions::LINEAR,
+            )
+        });
+        let id = texture.as_ref().map(TextureHandle::id);
+        self.pictures.push((data, texture));
+        id
     }
 
     /// Место глифа в атласе (загружает, если ещё нет) и сам глиф.
@@ -225,6 +270,16 @@ impl PagePainter {
         self.slots.insert(key, slot);
         slot.map(|s| (s, glyph))
     }
+}
+
+/// Заглушка на месте картинки, которую нельзя показать: серый
+/// прямоугольник с рамкой и косым крестом.
+fn paint_placeholder(painter: &Painter, r: Rect) {
+    let border = egui::Stroke::new(1.0, color32(PLACEHOLDER_BORDER));
+    painter.rect_filled(r, 0.0, color32(PLACEHOLDER_FILL));
+    painter.rect_stroke(r, 0.0, border, egui::StrokeKind::Inside);
+    painter.line_segment([r.left_top(), r.right_bottom()], border);
+    painter.line_segment([r.right_top(), r.left_bottom()], border);
 }
 
 fn color32(c: Rgba) -> Color32 {

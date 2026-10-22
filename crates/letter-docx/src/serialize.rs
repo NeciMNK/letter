@@ -185,6 +185,7 @@ pub(crate) fn document_xml(doc: &Document) -> String {
             .as_ref()
             .map(|s| s.main_root_attributes.as_slice()),
     );
+    NEW_PICTURES.with(|n| n.set(0));
     let mut children = Children::new(DOCUMENT_ORDER);
     children.raw(&doc.unknown);
     children.push("body", body(&doc.sections));
@@ -342,6 +343,13 @@ pub(crate) fn paragraph_props(props: &ParagraphProps, section: Option<&SectionPr
     optional_element("w:pPr", &children.finish())
 }
 
+thread_local! {
+    /// Сколько новых рисунков уже записано в документ: по этому счётчику
+    /// им даются номера `wp:docPr`, которые не совпадают с номерами
+    /// рисунков из исходного файла (Word нумерует их с 1).
+    static NEW_PICTURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn run_xml(run: &Run) -> String {
     let mut out = run_props(&run.props);
     for item in &run.content {
@@ -351,6 +359,13 @@ fn run_xml(run: &Run) -> String {
             RunContent::Break(BreakKind::Line) => out.push_str("<w:br/>"),
             RunContent::Break(BreakKind::Page) => out.push_str(r#"<w:br w:type="page"/>"#),
             RunContent::Break(BreakKind::Column) => out.push_str(r#"<w:br w:type="column"/>"#),
+            RunContent::Picture(picture) => {
+                let id = NEW_PICTURES.with(|n| {
+                    n.set(n.get() + 1);
+                    n.get()
+                });
+                out.push_str(&crate::picture::picture_xml(picture, 10_000 + id));
+            }
             RunContent::Unknown(raw) => out.push_str(raw.as_str()),
         }
     }

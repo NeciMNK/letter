@@ -39,8 +39,8 @@ use letter_model::{
 
 use crate::fonts::FontLibrary;
 use crate::lines::{
-    Align, Line, LineEnd, LineItem, ParagraphFormat, TabKind, TabLeader, TabStop, TextSpan,
-    break_lines,
+    Align, InlineObject, Line, LineEnd, LineItem, ParagraphFormat, TabKind, TabLeader, TabStop,
+    TextSpan, break_lines,
 };
 use crate::shaping::{Shaper, TextStyle};
 use crate::spacing::{LineRule, ParagraphBlock, ParagraphSpacing, effective_spacing, gap_between};
@@ -511,6 +511,26 @@ pub(crate) struct Prepared {
     label: Option<Arc<ListMark>>,
 }
 
+/// Добавляет кусок текста фрагмента: с учётом «все прописные» и разных
+/// шрифтов для разных видов письменности.
+fn push_text(
+    spans: &mut Vec<TextSpan>,
+    span_props: &mut Vec<ResolvedRunProps>,
+    text: &str,
+    resolved: &ResolvedRunProps,
+) {
+    for (shown, small) in letter_case(text, resolved) {
+        for (piece, family) in split_by_font_slot(&shown, &resolved.fonts) {
+            let mut style = text_style(resolved, family);
+            if small {
+                style.size *= SMALL_CAPS_SCALE;
+            }
+            spans.push(TextSpan::new(piece, style));
+            span_props.push(resolved.clone());
+        }
+    }
+}
+
 /// Переводит абзац модели в типы вёрстки и разбивает на строки.
 fn prepare(
     doc: &Document,
@@ -534,19 +554,26 @@ fn prepare(
                 RunContent::Break(letter_model::BreakKind::Line) => text.push('\n'),
                 // Колонок пока нет: разрыв колонки — как разрыв страницы.
                 RunContent::Break(_) => text.push('\u{c}'),
+                RunContent::Picture(picture) => {
+                    push_text(
+                        &mut spans,
+                        &mut span_props,
+                        &std::mem::take(&mut text),
+                        &resolved,
+                    );
+                    let object = InlineObject {
+                        width: picture.width_points(),
+                        height: picture.height_points(),
+                        image: picture.image.clone(),
+                    };
+                    let style = text_style(&resolved, &resolved.fonts.h_ansi);
+                    spans.push(TextSpan::object(object, style));
+                    span_props.push(resolved.clone());
+                }
                 RunContent::Unknown(_) => {}
             }
         }
-        for (shown, small) in letter_case(&text, &resolved) {
-            for (piece, family) in split_by_font_slot(&shown, &resolved.fonts) {
-                let mut style = text_style(&resolved, family);
-                if small {
-                    style.size *= SMALL_CAPS_SCALE;
-                }
-                spans.push(TextSpan::new(piece, style));
-                span_props.push(resolved.clone());
-            }
-        }
+        push_text(&mut spans, &mut span_props, &text, &resolved);
     }
     let mark = doc.resolve_run_in(&paragraph.props, &RunProps::default(), table);
     let mark_style = text_style(&mark, &mark.fonts.h_ansi);
@@ -680,6 +707,7 @@ fn list_mark(
             ascent: 0.0,
             descent: 0.0,
             leading: 0.0,
+            object_height: 0.0,
             items: Vec::new(),
             end: LineEnd::Paragraph,
         });
@@ -722,6 +750,10 @@ fn list_mark(
             LineItem::Tab(t) => {
                 t.x += x;
                 t.span = 0;
+            }
+            LineItem::Object(o) => {
+                o.x += x;
+                o.span = 0;
             }
         }
     }

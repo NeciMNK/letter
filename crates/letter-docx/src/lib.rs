@@ -20,6 +20,7 @@ mod error;
 mod names;
 mod numbering;
 mod package;
+mod picture;
 mod properties;
 mod serialize;
 mod settings;
@@ -33,7 +34,9 @@ use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, Write};
 use std::path::Path;
 
-use letter_model::{Document, SourcePackage, SourcePart};
+use std::sync::Arc;
+
+use letter_model::{Document, ImageData, SourcePackage, SourcePart};
 
 pub use error::{ReadError, WriteError};
 
@@ -98,7 +101,9 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
         core_part.clone(),
         app_part.clone(),
     ];
+    let images = package.relationships(&main);
     let mut source = read_source(&mut package, &rebuilt)?;
+    attach_images(&mut doc, &images, &source);
     source.main_part = main;
     source.styles_part = styles_part;
     source.numbering_part = numbering_part;
@@ -143,6 +148,40 @@ fn read_source<R: Read + Seek>(
         source.content_types = types.overrides;
     }
     Ok(source)
+}
+
+/// Даёт рисункам байты картинок по их связям (`r:embed`). Части
+/// картинок остаются и в [`SourcePackage`]: при сохранении они
+/// записываются оттуда.
+fn attach_images(
+    doc: &mut Document,
+    relationships: &[package::Relationship],
+    source: &SourcePackage,
+) {
+    let mut loaded: Vec<(&str, Option<Arc<ImageData>>)> = Vec::new();
+    doc.for_each_picture_mut(|picture| {
+        let Some(id) = picture.relationship.as_deref() else {
+            return;
+        };
+        if let Some((_, image)) = loaded.iter().find(|(known, _)| *known == id) {
+            picture.image = image.clone();
+            return;
+        }
+        let image = relationships
+            .iter()
+            .find(|r| r.id == id && r.kind.ends_with("/image"))
+            .and_then(|r| source.part(&r.target))
+            .map(|part| {
+                Arc::new(ImageData {
+                    name: part.name.clone(),
+                    bytes: part.data.clone(),
+                })
+            });
+        picture.image = image.clone();
+        if let Some(r) = relationships.iter().find(|r| r.id == id) {
+            loaded.push((r.id.as_str(), image));
+        }
+    });
 }
 
 /// Читает и разбирает часть, связанную с `part` связью вида `kind`;

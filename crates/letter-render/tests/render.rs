@@ -31,7 +31,7 @@ fn scene_has_glyphs_and_decorations() {
         .iter()
         .filter_map(|i| match i {
             DrawItem::Glyph { color, .. } => Some(*color),
-            DrawItem::Rect { .. } => None,
+            _ => None,
         })
         .collect();
     // Глифов не меньше, чем непробельных букв в строке (лигатуры
@@ -107,7 +107,7 @@ fn indexes_are_smaller_and_shifted() {
         .into_iter()
         .filter_map(|i| match i {
             DrawItem::Glyph { key, y, .. } => Some((key.size_64, y)),
-            DrawItem::Rect { .. } => None,
+            _ => None,
         })
         .collect();
     let [(normal, base), (sup, sup_y), (sub, sub_y)] = glyphs[..] else {
@@ -182,7 +182,7 @@ fn hidden_wide_and_colored_underline() {
         .iter()
         .filter_map(|i| match i {
             DrawItem::Glyph { key, .. } => Some(key.width_percent),
-            DrawItem::Rect { .. } => None,
+            _ => None,
         })
         .collect();
     // Скрытая «a» не рисуется, «b» растянута.
@@ -194,4 +194,88 @@ fn hidden_wide_and_colored_underline() {
             ..
         }
     )));
+}
+
+#[test]
+fn inline_picture_is_drawn() {
+    let library = FontLibrary::embedded_only();
+    let mut cache = GlyphCache::new();
+    let doc = layout("image.docx", &library);
+    let page = &doc.pages[0];
+    let scale = SCREEN_PIXELS_PER_POINT;
+    let (x, y, width, height) = page_scene(page, scale, &library, &mut cache)
+        .into_iter()
+        .find_map(|i| match i {
+            DrawItem::Picture {
+                x,
+                y,
+                width,
+                height,
+                image,
+            } => {
+                assert!(image.is_some());
+                Some((x, y, width, height))
+            }
+            _ => None,
+        })
+        .expect("picture");
+    // 2 × 1,2 дюйма = 144 × 86,4 пт.
+    assert!((width - 144.0 * scale).abs() < 0.5, "{width}");
+    assert!((height - 86.4 * scale).abs() < 0.5, "{height}");
+    let image = render_page(page, scale, &library, &mut cache);
+    // В середине рисунка — оранжевый круг.
+    let center = image
+        .pixel((x + width / 2.0) as u32, (y + height / 2.0) as u32)
+        .unwrap();
+    assert!(
+        center[0] > 200 && center[1] > 90 && center[1] < 150 && center[2] < 40,
+        "{center:?}"
+    );
+    // Строка с рисунком выше строки текста: следующая строка ниже рисунка.
+    let next = page
+        .lines
+        .iter()
+        .find(|l| l.text.starts_with("Text after"))
+        .unwrap();
+    assert!(
+        next.top * scale >= y + height - 0.5,
+        "{} < {}",
+        next.top * scale,
+        y + height
+    );
+}
+
+#[test]
+fn broken_picture_becomes_a_placeholder() {
+    use std::sync::Arc;
+
+    use letter_model::{Block, Document, ImageData, Paragraph, Picture, Run, RunContent};
+    let library = FontLibrary::embedded_only();
+    let mut cache = GlyphCache::new();
+    let mut doc = Document::new();
+    let picture = Picture {
+        width: 72 * 12_700,
+        height: 36 * 12_700,
+        image: Some(Arc::new(ImageData {
+            name: "word/media/image1.emf".into(),
+            bytes: vec![1, 2, 3],
+        })),
+        relationship: None,
+        raw: None,
+    };
+    doc.sections[0].blocks = vec![Block::from(Paragraph::from_runs([Run {
+        props: Default::default(),
+        content: vec![RunContent::Picture(picture)],
+    }]))];
+    let layout = layout_document(&doc, &mut Shaper::new(), &library);
+    let page = &layout.pages[0];
+    let line = &page.lines[0];
+    let image = render_page(page, 1.0, &library, &mut cache);
+    // Середина верхней половины заглушки — светло-серая заливка.
+    let x = (line.x + 36.0) as u32;
+    let y = (line.baseline - 30.0) as u32;
+    assert_eq!(
+        image.pixel(x, y),
+        Some(letter_render::picture::PLACEHOLDER_FILL)
+    );
 }

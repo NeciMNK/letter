@@ -53,8 +53,13 @@ fn texts(doc: &Document) -> Vec<String> {
 }
 
 /// Текст без разрывов страниц: в ODF разрыв — свойство следующего абзаца.
+/// Тексты абзацев без разрывов страниц и без рисунков (рисунки в ODT
+/// пока не записываются).
 fn texts_without_page_breaks(doc: &Document) -> Vec<String> {
-    texts(doc).iter().map(|t| t.replace('\u{c}', "")).collect()
+    texts(doc)
+        .iter()
+        .map(|t| t.replace(['\u{c}', letter_model::OBJECT_CHAR], ""))
+        .collect()
 }
 
 fn round_trip(doc: &Document) -> Document {

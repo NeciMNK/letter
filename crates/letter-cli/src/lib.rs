@@ -327,6 +327,14 @@ fn dump_run(out: &mut String, depth: usize, run: &Run) {
             RunContent::Unknown(raw) => {
                 let _ = write!(content, "<{}>", raw.name());
             }
+            RunContent::Picture(picture) => {
+                let _ = write!(
+                    content,
+                    "<рисунок {:.1}×{:.1} пт>",
+                    picture.width_points(),
+                    picture.height_points()
+                );
+            }
             RunContent::Tab => content.push('\t'),
             RunContent::Break(BreakKind::Line) => content.push('\n'),
             RunContent::Break(BreakKind::Page) => content.push_str("<разрыв страницы>"),
