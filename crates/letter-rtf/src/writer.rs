@@ -315,6 +315,8 @@ impl Writer {
             page_break_before: Some(resolved.page_break_before),
             widow_control: Some(resolved.widow_control),
             tabs: resolved.tabs.clone(),
+            borders: None,
+            shading: None,
             unknown: Vec::new(),
         };
         out.push_str(&paragraph_props_text(&explicit));

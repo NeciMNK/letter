@@ -15,8 +15,8 @@
 
 use crate::{
     Alignment, Borders, Color, Document, FirstLineIndent, HalfPoints, Highlight, LineSpacing,
-    NumberingRef, ParagraphProps, RunFonts, RunProps, Style, StyleKind, Styles, TabStop,
-    TabStopKind, TableProps, ThemeFont, Twips, Underline, VerticalAlign,
+    NumberingRef, ParagraphBorders, ParagraphProps, RunFonts, RunProps, Shading, Style, StyleKind,
+    Styles, TabStop, TabStopKind, TableProps, ThemeFont, Twips, Underline, VerticalAlign,
 };
 
 /// Шрифт, который используется, если ни один слой его не задал.
@@ -61,6 +61,10 @@ pub struct ResolvedParagraphProps {
     pub tabs: Vec<TabStop>,
     /// Список и уровень (`numId`, `ilvl`), если абзац в списке.
     pub numbering: Option<(u32, u8)>,
+    /// Границы абзаца из всех слоёв по сторонам.
+    pub borders: ParagraphBorders,
+    /// Заливка абзаца.
+    pub shading: Option<Shading>,
 }
 
 /// Итоговые шрифты фрагмента: ссылки на тему заменены именами.
@@ -197,7 +201,11 @@ impl Document {
 
         let mut acc = ParagraphProps::default();
         let mut tabs: Vec<TabStop> = Vec::new();
+        let mut borders = ParagraphBorders::default();
         for layer in layers {
+            if let Some(layer) = &layer.borders {
+                borders.overlay(layer);
+            }
             for stop in &layer.tabs {
                 tabs.retain(|t| t.position != stop.position);
                 if stop.kind != TabStopKind::Clear {
@@ -219,6 +227,7 @@ impl Document {
             overlay(&mut acc.keep_lines, &layer.keep_lines);
             overlay(&mut acc.page_break_before, &layer.page_break_before);
             overlay(&mut acc.widow_control, &layer.widow_control);
+            overlay(&mut acc.shading, &layer.shading);
         }
         tabs.sort_by_key(|t| t.position);
         ResolvedParagraphProps {
@@ -237,6 +246,8 @@ impl Document {
             widow_control: acc.widow_control.unwrap_or(true),
             tabs,
             numbering,
+            borders,
+            shading: acc.shading,
         }
     }
 

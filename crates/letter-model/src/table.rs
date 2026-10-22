@@ -8,6 +8,8 @@
 use crate::{Alignment, Borders, Paragraph, RawXml, Shading, Twips};
 
 /// Элемент раздела или ячейки таблицы.
+// Почти все блоки — абзацы, поэтому прятать абзац в `Box` невыгодно.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
     /// Абзац.

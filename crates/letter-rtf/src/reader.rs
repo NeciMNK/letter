@@ -899,6 +899,8 @@ impl Reader {
             page_break_before: Some(para.page_break_before),
             widow_control: Some(para.widow_control),
             tabs: para.tabs.clone(),
+            borders: None,
+            shading: None,
             unknown: Vec::new(),
         }
     }
@@ -1111,6 +1113,8 @@ impl Reader {
             page_break_before: para.page_break_before.then_some(true),
             widow_control: para.widow_control.then_some(true),
             tabs: para.tabs.clone(),
+            borders: None,
+            shading: None,
             unknown: Vec::new(),
         }
     }

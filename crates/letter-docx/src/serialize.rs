@@ -16,6 +16,7 @@ use crate::document::{W_NS, is_w_ns};
 use crate::names::{
     ALIGNMENTS, HIGHLIGHTS, TAB_KINDS, TAB_LEADERS, THEME_FONTS, UNDERLINES, name_of,
 };
+use crate::table::{paragraph_borders_xml, shading_xml};
 use crate::xml;
 
 /// Пространство имён связей (`r:id`).
@@ -386,6 +387,12 @@ pub(crate) fn paragraph_props(props: &ParagraphProps, section: Option<&SectionPr
         if let Some(on) = value {
             children.push(name, toggle(&format!("w:{name}"), on));
         }
+    }
+    if let Some(borders) = &props.borders {
+        children.push("pBdr", paragraph_borders_xml(borders));
+    }
+    if let Some(shading) = &props.shading {
+        children.push("shd", shading_xml(shading));
     }
     if !props.tabs.is_empty() {
         let mut tabs = String::new();

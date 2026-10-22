@@ -34,6 +34,11 @@
 //!   под короткой чертой (место под него отнимается у текста); концевые
 //!   сноски — после текста документа.
 //!
+//! - границы и заливка абзацев: линии стоят снаружи текста на расстоянии
+//!   `w:space`, место под верхнюю и нижнюю линии добавляется к абзацу;
+//!   подряд идущие абзацы с одинаковыми границами обводятся одной рамкой,
+//!   между ними — линия `w:between`.
+//!
 //! Пока не учитываются: деление длинной сноски между страницами и
 //! непонятые элементы внутри абзаца.
 
@@ -41,11 +46,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use letter_model::{
-    Alignment, Anchor, AnchorAlign, Block, Document, EMU_PER_POINT, FirstLineIndent, HeaderFooter,
-    HeaderFooterKind, HorizontalFrom, ImageData, LevelSuffix, LineSpacing, ListCounters, ListLabel,
-    NoteKind, Numbering, PageSize, Paragraph, Placement, ResolvedFonts, ResolvedRunProps,
-    RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Settings, Styles,
-    TabStopKind, Theme, Twips, VerticalAlign, VerticalFrom, Wrap,
+    Alignment, Anchor, AnchorAlign, Block, Border, Document, EMU_PER_POINT, FirstLineIndent,
+    HeaderFooter, HeaderFooterKind, HorizontalFrom, ImageData, LevelSuffix, LineSpacing,
+    ListCounters, ListLabel, NoteKind, Numbering, PageSize, Paragraph, ParagraphBorders, Placement,
+    ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps, RunContent, RunFonts, RunProps,
+    Section, SectionProps, SectionStart, Settings, Styles, TabStopKind, Theme, Twips,
+    VerticalAlign, VerticalFrom, Wrap,
 };
 
 use crate::fields;
@@ -94,7 +100,7 @@ pub struct Page {
     pub margins: Margins,
     /// Строки текста сверху вниз (в таблице — по ячейкам).
     pub lines: Vec<PageLine>,
-    /// Заливка ячеек и линии границ таблиц.
+    /// Заливка ячеек и абзацев, линии границ таблиц и абзацев.
     pub shapes: Vec<Shape>,
     /// Плавающие рисунки в порядке привязки.
     pub floats: Vec<Float>,
@@ -581,6 +587,7 @@ fn flow(
             Block::Unknown(_) => i += 1,
         }
     }
+    pager.flush_frame();
 }
 
 /// Колонтитул, свёрстанный от своего верха.
@@ -1019,6 +1026,7 @@ fn points(t: Twips) -> f32 {
 }
 
 /// Абзац, готовый к раскладке.
+#[derive(Clone)]
 pub(crate) struct Prepared {
     text: Arc<str>,
     /// Строки общие с [`PageLine::line`]: страницы не копируют глифы.
@@ -1042,6 +1050,88 @@ pub(crate) struct Prepared {
     gaps: Vec<f32>,
     /// Ссылки на обычные сноски: место в тексте (байты) и номер сноски.
     notes: Vec<(usize, String)>,
+    /// Границы и заливка абзаца (вне таблиц).
+    frame: Option<Arc<Frame>>,
+}
+
+/// Границы и заливка абзаца: видимые линии, цвет заливки и отступы
+/// текста от краёв колонки, пт. Подряд идущие абзацы с одинаковыми
+/// границами обводятся одной рамкой.
+#[derive(Debug, Clone, PartialEq)]
+struct Frame {
+    top: Option<Border>,
+    left: Option<Border>,
+    bottom: Option<Border>,
+    right: Option<Border>,
+    between: Option<Border>,
+    fill: Option<(u8, u8, u8)>,
+    indent_left: f32,
+    indent_right: f32,
+}
+
+impl Frame {
+    /// Рамка абзаца с оформлением `props`; `None`, если нет ни линий,
+    /// ни заливки.
+    fn of(props: &ResolvedParagraphProps) -> Option<Frame> {
+        let b = &props.borders;
+        let visible = |side: &Option<Border>| ParagraphBorders::visible(side).cloned();
+        let frame = Frame {
+            top: visible(&b.top),
+            left: visible(&b.left),
+            bottom: visible(&b.bottom),
+            right: visible(&b.right),
+            between: visible(&b.between),
+            fill: props.shading.as_ref().and_then(|s| s.background()),
+            indent_left: points(props.indent_left),
+            indent_right: points(props.indent_right),
+        };
+        let lines = [&frame.top, &frame.left, &frame.bottom, &frame.right];
+        (lines.iter().any(|l| l.is_some()) || frame.fill.is_some()).then_some(frame)
+    }
+
+    /// Толщина линии вместе с её отступом от текста, пт.
+    fn pad(border: &Option<Border>) -> f32 {
+        border
+            .as_ref()
+            .map_or(0.0, |b| b.width_points() + b.space.unwrap_or(0) as f32)
+    }
+}
+
+/// Рамка абзацев, начатая на странице: собирается, пока следующие
+/// абзацы с той же рамкой идут подряд, и рисуется целиком.
+struct FrameRun {
+    frame: Arc<Frame>,
+    page: usize,
+    /// Края текста, пт от угла листа.
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+    /// Рисовать линию сверху и снизу (рамка не продолжается с прошлой
+    /// страницы и не уходит на следующую).
+    top_edge: bool,
+    bottom_edge: bool,
+    /// Где линии между абзацами.
+    between: Vec<f32>,
+}
+
+/// Абзац `p` с местом под линии рамки: `top` пт над первой строкой
+/// и `bottom` под строкой `last`.
+fn padded(p: Arc<Prepared>, top: f32, bottom: f32, last: usize) -> Arc<Prepared> {
+    if top <= 0.0 && bottom <= 0.0 || p.lines.is_empty() {
+        return p;
+    }
+    let mut p = Arc::unwrap_or_clone(p);
+    let last = last.min(p.lines.len() - 1);
+    p.gaps.resize(p.lines.len(), 0.0);
+    if let (Some(gap), Some(height)) = (p.gaps.first_mut(), p.heights.first_mut()) {
+        *gap += top;
+        *height += top;
+    }
+    if let Some(height) = p.heights.get_mut(last) {
+        *height += bottom;
+    }
+    Arc::new(p)
 }
 
 /// Текст и оформление абзаца для разбиения на строки.
@@ -1310,6 +1400,11 @@ fn prepare(
         .as_ref()
         .map(|(_, l)| (l.ascent, l.descent, l.leading));
     raise_first_line(&mut broken.lines, label_height);
+    let frame = if table.is_none() {
+        Frame::of(&props).map(Arc::new)
+    } else {
+        None
+    };
     Prepared {
         text: broken.text.into(),
         heights: broken
@@ -1335,6 +1430,7 @@ fn prepare(
         }),
         gaps: Vec::new(),
         notes,
+        frame,
     }
 }
 
@@ -1660,6 +1756,8 @@ struct Pager {
     page_notes: Vec<(String, NoteBox)>,
     /// Место под сноски внизу текущей страницы (с чертой), пт.
     notes_height: f32,
+    /// Рамка абзацев, которая ещё может продолжиться.
+    frame_run: Option<FrameRun>,
 }
 
 /// Сколько места занимают колонтитулы раздела: для каждого вида страниц
@@ -2220,9 +2318,27 @@ impl Pager {
             })
             .collect();
 
+        // Место под линии рамки: сверху — у первого абзаца рамки (у
+        // следующих — под линию между абзацами), снизу — у последнего.
+        let frame = p.frame.clone();
+        let same = |j: Option<usize>| {
+            frame.is_some()
+                && j.and_then(|j| prepared.get(j))
+                    .is_some_and(|q| q.frame == frame)
+        };
+        let joins = (same(i.checked_sub(1)), same(Some(i + 1)));
+        let (top_pad, bottom_pad) = match &frame {
+            Some(f) => (
+                Frame::pad(if joins.0 { &f.between } else { &f.top }),
+                if joins.1 { 0.0 } else { Frame::pad(&f.bottom) },
+            ),
+            None => (0.0, 0.0),
+        };
+        let mut last = segments.last().map_or(0, |s| s.end.saturating_sub(1));
+
         // Обтекание рисунков — только у абзацев без разрывов страницы.
         let wraps = segments.len() == 1 && !ends_with_break && !ends_with_column;
-        let mut current = Arc::clone(p);
+        let mut current = padded(Arc::clone(p), top_pad, bottom_pad, last);
         let mut first_segment = true;
         for (s, segment) in segments.iter().enumerate() {
             if s > 0 {
@@ -2242,9 +2358,11 @@ impl Pager {
                 };
                 if wraps && next == segment.start {
                     let top = self.y + before_now;
-                    current = self
+                    let wrapped = self
                         .wrap(p, top, paragraph_index, shaper, library)
                         .map_or_else(|| Arc::clone(p), Arc::new);
+                    last = wrapped.lines.len().saturating_sub(1);
+                    current = padded(wrapped, top_pad, bottom_pad, last);
                     segment.end = current.lines.len();
                 }
                 let heights = &current.heights;
@@ -2294,8 +2412,13 @@ impl Pager {
                     }
                 }
                 self.y += before_now;
+                let chunk_top = self.y;
                 for k in next..next + fit {
                     self.push_line(&current, k, paragraph_index);
+                }
+                if let Some(frame) = &frame {
+                    let edges = (next == 0, (next..next + fit).contains(&last));
+                    self.frame_chunk(frame, (chunk_top, self.y), edges, joins);
                 }
                 next += fit;
                 if next < segment.end {
@@ -2405,7 +2528,114 @@ impl Pager {
             source: Arc::clone(&p.source),
             gaps,
             notes: p.notes.clone(),
+            frame: p.frame.clone(),
         })
+    }
+
+    /// Строки абзаца с рамкой `frame` от `top` до `bottom` встали на
+    /// страницу; `edges` — среди них первая и последняя строки абзаца,
+    /// `joins` — у предыдущего и следующего абзацев та же рамка.
+    fn frame_chunk(
+        &mut self,
+        frame: &Arc<Frame>,
+        (top, bottom): (f32, f32),
+        (first, last): (bool, bool),
+        joins: (bool, bool),
+    ) {
+        let page = self.pages.len().saturating_sub(1);
+        let x = self.column_x();
+        let (left, right) = (
+            x + frame.indent_left,
+            x + self.column_width() - frame.indent_right,
+        );
+        if let Some(run) = &mut self.frame_run
+            && first
+            && joins.0
+            && run.page == page
+            && (run.left - left).abs() < EPSILON
+        {
+            if frame.between.is_some() {
+                run.between.push(top);
+            }
+            run.bottom = bottom;
+            run.bottom_edge = last && !joins.1;
+            return;
+        }
+        self.flush_frame();
+        self.frame_run = Some(FrameRun {
+            frame: Arc::clone(frame),
+            page,
+            left,
+            right,
+            top,
+            bottom,
+            top_edge: first && !joins.0,
+            bottom_edge: last && !joins.1,
+            between: Vec::new(),
+        });
+    }
+
+    /// Рисует собранную рамку: заливку под текстом и линии вокруг него
+    /// (снаружи, на расстоянии `w:space` от текста).
+    fn flush_frame(&mut self) {
+        let Some(run) = self.frame_run.take() else {
+            return;
+        };
+        let Some(page) = self.pages.get_mut(run.page) else {
+            return;
+        };
+        let f = &run.frame;
+        let width = |b: &Option<Border>| b.as_ref().map_or(0.0, Border::width_points);
+        let space = |b: &Option<Border>| b.as_ref().map_or(0.0, |b| b.space.unwrap_or(0) as f32);
+        let (inner_left, inner_right) = (run.left - space(&f.left), run.right + space(&f.right));
+        let (outer_left, outer_right) =
+            (inner_left - width(&f.left), inner_right + width(&f.right));
+        let rule = |b: &Border, x: f32, y: f32, w: f32, h: f32| Shape {
+            x,
+            y,
+            width: w,
+            height: h,
+            color: match b.color {
+                Some(letter_model::Color::Rgb(r, g, b)) => (r, g, b),
+                _ => (0, 0, 0),
+            },
+            kind: ShapeKind::Rule,
+        };
+        if let Some(color) = f.fill {
+            page.shapes.push(Shape {
+                x: inner_left,
+                y: run.top,
+                width: inner_right - inner_left,
+                height: run.bottom - run.top,
+                color,
+                kind: ShapeKind::Fill,
+            });
+        }
+        let across = outer_right - outer_left;
+        if let (true, Some(b)) = (run.top_edge, &f.top) {
+            page.shapes
+                .push(rule(b, outer_left, run.top, across, b.width_points()));
+        }
+        if let (true, Some(b)) = (run.bottom_edge, &f.bottom) {
+            let w = b.width_points();
+            page.shapes
+                .push(rule(b, outer_left, run.bottom - w, across, w));
+        }
+        if let Some(b) = &f.between {
+            for &y in &run.between {
+                page.shapes
+                    .push(rule(b, outer_left, y, across, b.width_points()));
+            }
+        }
+        let height = run.bottom - run.top;
+        if let Some(b) = &f.left {
+            page.shapes
+                .push(rule(b, outer_left, run.top, b.width_points(), height));
+        }
+        if let Some(b) = &f.right {
+            page.shapes
+                .push(rule(b, inner_right, run.top, b.width_points(), height));
+        }
     }
 
     fn push_line(&mut self, p: &Prepared, k: usize, paragraph: usize) {
@@ -2416,7 +2646,8 @@ impl Pager {
         };
         let gap = p.gaps.get(k).copied().unwrap_or(0.0);
         let (above, top, full_height) = (self.y, self.y + gap, height);
-        let height = full_height - gap;
+        // Под последней строкой может быть место под линию рамки.
+        let height = (full_height - gap).min(p.spacing.line.height(line));
         let column_x = self.column_x();
         let placed = PageLine {
             line: Arc::clone(line),
@@ -3428,6 +3659,54 @@ mod tests {
             .find(|l| l.paragraph == 4)
             .expect("абзац после таблицы");
         assert!((after.top - 3.0 * LINE).abs() < 1e-3);
+    }
+
+    #[test]
+    fn paragraph_borders_and_shading() {
+        use letter_model::{Border, Color, ParagraphBorders, Shading};
+        let line = Border {
+            space: Some(1),
+            ..Border::single(8)
+        };
+        let mut boxed = ParagraphBorders::frame(line.clone());
+        boxed.between = Some(line);
+        let framed = |text: &str| {
+            let mut p = para(text);
+            p.props.borders = Some(boxed.clone());
+            p.props.shading = Some(Shading::fill(Color::Rgb(0, 200, 0)));
+            p
+        };
+        let layout = lay(&doc(vec![framed("a"), framed("b"), para("c")]));
+        let page = &layout.pages[0];
+        let tops: Vec<f32> = page.lines.iter().map(|l| l.top).collect();
+        // Над рамкой и между абзацами — линия 1 пт и отступ 1 пт, под
+        // рамкой — так же; у строк своя высота.
+        let expected = [2.0, 2.0 + LINE + 2.0, 2.0 + 2.0 * LINE + 4.0];
+        for (top, want) in tops.iter().zip(expected) {
+            assert!((top - want).abs() < 1e-3, "{tops:?}");
+        }
+        assert!(page.lines.iter().all(|l| (l.height - LINE).abs() < 1e-3));
+        let rules: Vec<&Shape> = page
+            .shapes
+            .iter()
+            .filter(|s| s.kind == ShapeKind::Rule)
+            .collect();
+        // Сверху, снизу, между абзацами, слева и справа — одна рамка.
+        assert_eq!(rules.len(), 5);
+        let fills: Vec<&Shape> = page
+            .shapes
+            .iter()
+            .filter(|s| s.kind == ShapeKind::Fill)
+            .collect();
+        assert_eq!(fills.len(), 1);
+        assert!((fills[0].y).abs() < 1e-3);
+        assert!((fills[0].height - (2.0 * LINE + 6.0)).abs() < 1e-3);
+        // Абзац без рамки её не получает.
+        let mut plain = doc(vec![para("a")]);
+        plain.sections[0].blocks.push(framed("b").into());
+        let layout = lay(&plain);
+        assert!(layout.pages[0].lines[0].top.abs() < 1e-3);
+        assert_eq!(layout.pages[0].shapes.len(), 5);
     }
 
     #[test]

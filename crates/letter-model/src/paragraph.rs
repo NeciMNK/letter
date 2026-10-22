@@ -1,7 +1,7 @@
 //! Абзацы ([`Paragraph`]) и оформление абзаца ([`ParagraphProps`]).
 
 use crate::NumberingRef;
-use crate::{RawXml, Run, Twips};
+use crate::{ParagraphBorders, RawXml, Run, Shading, Twips};
 
 /// Абзац: последовательность фрагментов текста с общим оформлением абзаца.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -107,6 +107,10 @@ pub struct ParagraphProps {
     /// Позиции табуляции. Пусто — в этом слое не заданы. Позиция вида
     /// [`TabStopKind::Clear`] убирает унаследованную от стиля.
     pub tabs: Vec<TabStop>,
+    /// Границы абзаца.
+    pub borders: Option<ParagraphBorders>,
+    /// Заливка абзаца.
+    pub shading: Option<Shading>,
     /// Свойства, которые программа пока не понимает, в порядке из файла.
     pub unknown: Vec<RawXml>,
 }
