@@ -13,6 +13,7 @@ const EXPECTED: &[&str] = &[
     "table.docx",
     "image.docx",
     "floating.docx",
+    "sections.docx",
     "header-footer.docx",
     "ru-en.docx",
     "pages.docx",

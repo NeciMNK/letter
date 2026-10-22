@@ -55,7 +55,9 @@ pub use run::{
     BreakKind, Color, Highlight, OBJECT_CHAR, Run, RunContent, RunFonts, RunProps, ThemeColor,
     ThemeFont, Underline, VerticalAlign,
 };
-pub use section::{Orientation, PageMargins, PageSize, Section, SectionProps};
+pub use section::{
+    Columns, Orientation, PageMargins, PageSize, Section, SectionProps, SectionStart,
+};
 pub use style::{DocDefaults, Style, StyleKind, Styles};
 pub use table::{
     Block, CellMargins, CellProps, CellVerticalAlign, HeightRule, RowHeight, RowProps, Table,

@@ -35,8 +35,8 @@ use letter_model::{
     Alignment, Anchor, AnchorAlign, Block, Document, EMU_PER_POINT, FirstLineIndent,
     HorizontalFrom, ImageData, LevelSuffix, LineSpacing, ListCounters, ListLabel, Numbering,
     PageSize, Paragraph, Placement, ResolvedFonts, ResolvedRunProps, RunContent, RunFonts,
-    RunProps, Section, Settings, Styles, TabStopKind, Theme, Twips, VerticalAlign, VerticalFrom,
-    Wrap,
+    RunProps, Section, SectionProps, SectionStart, Settings, Styles, TabStopKind, Theme, Twips,
+    VerticalAlign, VerticalFrom, Wrap,
 };
 
 use crate::fonts::FontLibrary;
@@ -298,7 +298,9 @@ pub fn layout_document_cached(
     // Все абзацы документа с шириной текста: раздела или ячейки.
     let mut all: Vec<Item<'_>> = Vec::new();
     for section in &doc.sections {
-        let width = Geometry::of(section).text_width();
+        let width = section_columns(section, &Geometry::of(section))
+            .first()
+            .map_or(0.0, |c| c.1);
         collect_paragraphs(doc, &section.blocks, width, None, &mut all);
     }
     let labels = list_labels(doc, &all);
@@ -374,7 +376,9 @@ pub fn layout_document_cached(
     };
     for section in &doc.sections {
         let geometry = Geometry::of(section);
-        pager.start_section(geometry);
+        let columns = section_columns(section, &geometry);
+        let column_width = columns.first().map_or(0.0, |c| c.1);
+        pager.start_section(geometry, &section.props, columns);
         let mut i = 0;
         let blocks = &section.blocks;
         while i < blocks.len() {
@@ -412,7 +416,7 @@ pub fn layout_document_cached(
                     i += span;
                 }
                 Block::Table(table) => {
-                    let rows = build_rows(&mut ctx, table, 0.0, geometry.text_width());
+                    let rows = build_rows(&mut ctx, table, 0.0, column_width);
                     pager.place_table(rows);
                     i += 1;
                 }
@@ -421,8 +425,12 @@ pub fn layout_document_cached(
         }
     }
     if pager.pages.is_empty() {
-        pager.start_section(Geometry::of(&Section::default()));
+        let section = Section::default();
+        let geometry = Geometry::of(&section);
+        let columns = section_columns(&section, &geometry);
+        pager.start_section(geometry, &section.props, columns);
     }
+    pager.close_columns();
     cache.entries = entries;
     cache.rebuilt = rebuilt;
     DocumentLayout { pages: pager.pages }
@@ -542,6 +550,19 @@ fn place_float(
     }
 }
 
+/// Колонки раздела: левый край от левого поля и ширина, пт.
+fn section_columns(section: &Section, g: &Geometry) -> Vec<(f32, f32)> {
+    let width = g.text_width().max(1.0);
+    match &section.props.columns {
+        Some(columns) if columns.count > 1 || !columns.widths.is_empty() => columns
+            .layout(Twips((width * 20.0).round() as i32))
+            .into_iter()
+            .map(|(x, w)| (points(x), points(w)))
+            .collect(),
+        _ => vec![(0.0, width)],
+    }
+}
+
 /// Размеры листа и полей раздела, пт.
 #[derive(Debug, Clone, Copy)]
 struct Geometry {
@@ -652,6 +673,18 @@ impl Obstacle {
     }
 }
 
+/// Номер колонки, в которой стоит последняя из строк `lines`.
+fn column_of_last(lines: &[PageLine], columns: &[(f32, f32)], left: f32) -> usize {
+    let x = lines.last().map_or(left, |l| l.x);
+    columns
+        .iter()
+        .position(|c| (left + c.0 - x).abs() < EPSILON)
+        .unwrap_or(0)
+}
+
+/// Толщина линии между колонками, пт.
+const SEPARATOR_WIDTH: f32 = 0.5;
+
 /// Самое узкое место рядом с рисунком, в которое ещё ставится текст, пт.
 const MIN_ROOM: f32 = 18.0;
 
@@ -735,7 +768,7 @@ fn prepare(
                 RunContent::Text(t) => text.push_str(t),
                 RunContent::Tab => text.push('\t'),
                 RunContent::Break(letter_model::BreakKind::Line) => text.push('\n'),
-                // Колонок пока нет: разрыв колонки — как разрыв страницы.
+                RunContent::Break(letter_model::BreakKind::Column) => text.push('\u{b}'),
                 RunContent::Break(_) => text.push('\u{c}'),
                 RunContent::Picture(picture) => {
                     push_text(
@@ -1146,18 +1179,217 @@ struct Pager {
     /// Верх абзаца на странице (для рисунков «от абзаца»): номер абзаца,
     /// номер страницы и верх его первой строки на ней.
     paragraph_top: Option<(usize, usize, f32)>,
+    /// Колонки текущего раздела: левый край от поля и ширина, пт.
+    columns: Vec<(f32, f32)>,
+    /// Колонка, в которой идёт текст.
+    column: usize,
+    /// Верх колонок на странице (ниже верхнего поля, если раздел начался
+    /// посреди страницы).
+    column_top: f32,
+    /// Самый низ текста в колонках на странице.
+    column_bottom: f32,
+    /// Линия между колонками.
+    separator: bool,
+    /// Предыдущий абзац кончился разрывом колонки: следующий начнёт
+    /// новую колонку.
+    column_pending: bool,
+    /// С какой строки и какой фигуры страницы начались колонки на ней.
+    region_start: (usize, usize),
 }
 
 impl Pager {
-    fn start_section(&mut self, geometry: Geometry) {
-        self.geometry = Some(geometry);
-        self.new_page(false);
+    /// Начинает раздел: с новой страницы (чётной или нечётной — тогда,
+    /// может быть, после пустой) или на текущей, ниже текста предыдущего
+    /// раздела («на текущей странице» при том же размере листа).
+    fn start_section(
+        &mut self,
+        geometry: Geometry,
+        props: &SectionProps,
+        columns: Vec<(f32, f32)>,
+    ) {
+        let start = props.start.unwrap_or_default();
+        let same_sheet = self.pages.last().is_some_and(|p| {
+            (p.width - geometry.width).abs() < EPSILON
+                && (p.height - geometry.height).abs() < EPSILON
+        });
+        let separator = props.columns.as_ref().is_some_and(|c| c.separator);
+        match start {
+            SectionStart::Continuous | SectionStart::NextColumn if same_sheet => {
+                self.balance_columns();
+                self.close_columns();
+                let top = self.column_bottom.max(self.y);
+                self.geometry = Some(geometry);
+                self.columns = columns;
+                self.separator = separator;
+                self.column = 0;
+                self.column_top = top;
+                self.column_bottom = top;
+                self.y = top;
+                self.region_start = self
+                    .pages
+                    .last()
+                    .map_or((0, 0), |p| (p.lines.len(), p.shapes.len()));
+            }
+            _ => {
+                self.close_columns();
+                self.geometry = Some(geometry);
+                self.columns = columns;
+                self.separator = separator;
+                self.new_page(false);
+                let even = self.pages.len().is_multiple_of(2);
+                let wrong = match start {
+                    SectionStart::EvenPage => !even,
+                    SectionStart::OddPage => even,
+                    _ => false,
+                };
+                // Чётность не та: эта страница остаётся пустой.
+                if wrong {
+                    self.new_page(false);
+                }
+            }
+        }
+    }
+
+    /// Левый край текущей колонки, пт от края листа.
+    fn column_x(&self) -> f32 {
+        self.geometry.map_or(0.0, |g| g.margins.left)
+            + self.columns.get(self.column).map_or(0.0, |c| c.0)
+    }
+
+    /// Ширина текущей колонки, пт.
+    fn column_width(&self) -> f32 {
+        self.columns
+            .get(self.column)
+            .map(|c| c.1)
+            .or_else(|| self.geometry.map(|g| g.text_width()))
+            .unwrap_or(0.0)
+    }
+
+    /// Следующая колонка, а после последней — новая страница.
+    fn next_column_or_page(&mut self, soft: bool) {
+        if self.column + 1 < self.columns.len() {
+            self.column_bottom = self.column_bottom.max(self.y);
+            self.column += 1;
+            self.y = self.column_top;
+            self.has_content = false;
+            self.soft_top = soft;
+            self.break_pending = false;
+            self.column_pending = false;
+            self.previous_after = 0.0;
+        } else {
+            self.new_page(soft);
+        }
+    }
+
+    /// Выравнивает колонки по высоте перед разделом «на текущей
+    /// странице», как Word: строки текущей страницы, начиная с начала
+    /// колонок, раскладываются заново так, чтобы колонки вышли примерно
+    /// одной высоты. Колонки с таблицами и рисунками остаются как есть.
+    fn balance_columns(&mut self) {
+        let count = self.columns.len();
+        let (first_line, first_shape) = self.region_start;
+        let left = self.geometry.map_or(0.0, |g| g.margins.left);
+        let (top, bottom) = (self.column_top, self.bottom());
+        let columns = self.columns.clone();
+        let Some(page) = self.pages.last_mut() else {
+            return;
+        };
+        if count < 2
+            || self.column == 0 && self.y <= top + EPSILON
+            || page.shapes.len() > first_shape
+            || !page.floats.is_empty()
+            || page.lines.len() <= first_line
+        {
+            return;
+        }
+        // Место каждой строки по порядку: промежуток над ней в её колонке
+        // и высота.
+        let lines = &mut page.lines[first_line..];
+        let mut slots = Vec::with_capacity(lines.len());
+        let mut previous: Option<(f32, f32)> = None;
+        for line in lines.iter() {
+            let gap = match previous {
+                Some((x, bottom)) if (x - line.x).abs() < EPSILON => (line.top - bottom).max(0.0),
+                _ => 0.0,
+            };
+            slots.push((gap, line.height));
+            previous = Some((line.x, line.top + line.height));
+        }
+        let total: f32 = slots.iter().map(|(g, h)| g + h).sum();
+        let tallest = slots.iter().map(|s| s.1).fold(0.0, f32::max);
+        let target = (total / count as f32).max(tallest);
+        let mut placed = Vec::with_capacity(slots.len());
+        let (mut column, mut y) = (0, 0.0);
+        for (i, &(gap, height)) in slots.iter().enumerate() {
+            let gap = if y == 0.0 { 0.0 } else { gap };
+            if i > 0 && y + gap + height > target + EPSILON && column + 1 < count {
+                column += 1;
+                y = 0.0;
+            }
+            let gap = if y == 0.0 { 0.0 } else { gap };
+            placed.push((column, top + y + gap));
+            y += gap + height;
+        }
+        let lowest = placed
+            .iter()
+            .zip(&slots)
+            .map(|((_, t), (_, h))| t + h)
+            .fold(top, f32::max);
+        if lowest > bottom + EPSILON {
+            return;
+        }
+        for (line, (column, new_top)) in lines.iter_mut().zip(placed) {
+            let shift = new_top - line.top;
+            line.top = new_top;
+            line.baseline += shift;
+            line.x = left + columns.get(column).map_or(0.0, |c| c.0);
+        }
+        self.column = column_of_last(&page.lines[first_line..], &columns, left);
+        self.column_bottom = lowest;
+        self.y = lowest;
+    }
+
+    /// Линии между заполненными колонками на текущей странице. После
+    /// этого текст снова идёт с первой колонки.
+    fn close_columns(&mut self) {
+        let bottom = self.column_bottom.max(self.y);
+        let used = std::mem::take(&mut self.column);
+        if !self.separator || used == 0 || bottom <= self.column_top + EPSILON {
+            return;
+        }
+        let left = self.geometry.map_or(0.0, |g| g.margins.left);
+        let rules: Vec<Shape> = self
+            .columns
+            .windows(2)
+            .take(used)
+            .map(|pair| {
+                let (a, b) = (pair[0], pair[1]);
+                let x = left + (a.0 + a.1 + b.0) / 2.0;
+                Shape {
+                    x: x - SEPARATOR_WIDTH / 2.0,
+                    y: self.column_top,
+                    width: SEPARATOR_WIDTH,
+                    height: bottom - self.column_top,
+                    color: (0, 0, 0),
+                    kind: ShapeKind::Rule,
+                }
+            })
+            .collect();
+        if let Some(page) = self.pages.last_mut() {
+            page.shapes.extend(rules);
+        }
     }
 
     fn new_page(&mut self, soft: bool) {
         let Some(g) = self.geometry else {
             return;
         };
+        self.close_columns();
+        self.column = 0;
+        self.column_top = g.margins.top;
+        self.column_bottom = g.margins.top;
+        self.column_pending = false;
+        self.region_start = (0, 0);
         self.pages.push(Page {
             width: g.width,
             height: g.height,
@@ -1249,21 +1481,24 @@ impl Pager {
         if self.break_pending && self.has_content {
             self.new_page(true);
         }
+        if self.column_pending && self.has_content {
+            self.next_column_or_page(true);
+        }
         if p.page_break_before && self.has_content {
             self.new_page(false);
         }
         if p.keep_next && self.has_content {
             let chain = self.keep_chain_height(prepared, blocks, i);
             if self.y + chain > self.bottom() + EPSILON && chain <= self.page_height() {
-                self.new_page(true);
+                self.next_column_or_page(true);
             }
         }
 
-        // Куски абзаца между разрывами страницы.
+        // Куски абзаца между разрывами страницы и колонки.
         let mut segments = Vec::new();
         let mut start = 0;
         for (k, line) in p.lines.iter().enumerate() {
-            if line.end == LineEnd::Page {
+            if matches!(line.end, LineEnd::Page | LineEnd::Column) {
                 segments.push(start..k + 1);
                 start = k + 1;
             }
@@ -1275,22 +1510,41 @@ impl Pager {
         // странице с разрывом (Word не переносит пустую строку на новую
         // страницу), новую страницу начнёт следующий абзац.
         let mut ends_with_break = false;
+        let mut ends_with_column = false;
         if segments.len() > 1
             && segments.last().is_some_and(|last| {
                 last.len() == 1 && p.lines.get(last.start).is_some_and(|l| l.range.is_empty())
             })
         {
             segments.pop();
-            ends_with_break = true;
+            let column = segments
+                .last()
+                .and_then(|s| p.lines.get(s.end.wrapping_sub(1)))
+                .is_some_and(|l| l.end == LineEnd::Column);
+            ends_with_break = !column;
+            ends_with_column = column;
         }
+        // Чем кончается кусок: разрывом колонки или страницы.
+        let column_break: Vec<bool> = segments
+            .iter()
+            .map(|s| {
+                p.lines
+                    .get(s.end.wrapping_sub(1))
+                    .is_some_and(|l| l.end == LineEnd::Column)
+            })
+            .collect();
 
         // Обтекание рисунков — только у абзацев без разрывов страницы.
-        let wraps = segments.len() == 1 && !ends_with_break;
+        let wraps = segments.len() == 1 && !ends_with_break && !ends_with_column;
         let mut current = Arc::clone(p);
         let mut first_segment = true;
         for (s, segment) in segments.iter().enumerate() {
             if s > 0 {
-                self.new_page(false);
+                if column_break.get(s - 1).copied().unwrap_or(false) {
+                    self.next_column_or_page(false);
+                } else {
+                    self.new_page(false);
+                }
             }
             let mut segment = segment.clone();
             let mut next = segment.start;
@@ -1327,7 +1581,7 @@ impl Pager {
                         && self.has_content
                         && whole + before <= self.page_height()
                     {
-                        self.new_page(true);
+                        self.next_column_or_page(true);
                         continue;
                     }
                     if p.widow_control && remaining > 1 {
@@ -1342,7 +1596,7 @@ impl Pager {
                     }
                     if fit == 0 {
                         if self.has_content {
-                            self.new_page(true);
+                            self.next_column_or_page(true);
                             continue;
                         }
                         // На пустой странице — хоть одна строка.
@@ -1355,7 +1609,7 @@ impl Pager {
                 }
                 next += fit;
                 if next < segment.end {
-                    self.new_page(true);
+                    self.next_column_or_page(true);
                 }
             }
             first_segment = false;
@@ -1364,6 +1618,7 @@ impl Pager {
         self.previous_after = after;
         self.has_content = true;
         self.break_pending = ends_with_break;
+        self.column_pending = ends_with_column;
     }
 
     /// Абзац `p`, разбитый на строки заново вокруг плавающих рисунков
@@ -1386,7 +1641,7 @@ impl Pager {
             .map(|page| page.floats.iter().filter_map(Obstacle::of).collect())
             .unwrap_or_default();
         obstacles.extend(p.floats.iter().filter_map(|f| {
-            Obstacle::of(&place_float(f, &g, top, top, g.margins.left, paragraph))
+            Obstacle::of(&place_float(f, &g, top, top, self.column_x(), paragraph))
         }));
         let bottom = self.bottom();
         obstacles.retain(|o| o.bottom > top + EPSILON && o.top < bottom);
@@ -1395,7 +1650,8 @@ impl Pager {
         }
         let source = &p.source;
         let rule = p.spacing.line;
-        let (from, to) = (g.margins.left, g.width - g.margins.right);
+        let from = self.column_x();
+        let to = from + self.column_width();
         let fallback = source.mark_style.size * 1.2;
         let mut gaps: Vec<f32> = Vec::new();
         let mut y = top;
@@ -1470,9 +1726,10 @@ impl Pager {
         let gap = p.gaps.get(k).copied().unwrap_or(0.0);
         let (above, top, full_height) = (self.y, self.y + gap, height);
         let height = full_height - gap;
+        let column_x = self.column_x();
         let placed = PageLine {
             line: Arc::clone(line),
-            x: g.margins.left,
+            x: column_x,
             top,
             height,
             baseline: top + p.spacing.line.baseline_offset(line, height),
@@ -1496,7 +1753,7 @@ impl Pager {
             .iter()
             .filter(|f| line.range.contains(&f.at) || (last && f.at >= line.range.end))
             .map(|f| {
-                let char_x = g.margins.left + anchor_x(line, f.at);
+                let char_x = column_x + anchor_x(line, f.at);
                 place_float(f, &g, top, paragraph_top, char_x, paragraph)
             })
             .collect();
@@ -1515,6 +1772,9 @@ impl Pager {
     fn place_table(&mut self, rows: Vec<RowBox>) {
         if self.break_pending && self.has_content {
             self.new_page(true);
+        }
+        if self.column_pending && self.has_content {
+            self.next_column_or_page(true);
         }
         let headers: Vec<RowBox> = rows.iter().take_while(|r| r.header).cloned().collect();
         let header_height: f32 = headers.iter().map(|r| r.height).sum();
@@ -1563,11 +1823,12 @@ impl Pager {
         self.has_content = true;
         self.previous_after = 0.0;
         self.break_pending = false;
+        self.column_pending = false;
     }
 
     /// Новая страница посреди таблицы, с повторёнными заголовками.
     fn table_page(&mut self, headers: &[RowBox], repeat: bool) {
-        self.new_page(true);
+        self.next_column_or_page(true);
         if repeat {
             for header in headers {
                 self.draw(header, true, true);
@@ -1577,14 +1838,12 @@ impl Pager {
 
     /// Рисует строку таблицы с текущего места и сдвигает его вниз.
     fn draw(&mut self, row: &RowBox, top_edge: bool, bottom_edge: bool) {
-        let Some(g) = self.geometry else {
-            return;
-        };
+        let left = self.column_x();
         let top = self.y;
         let mut canvas = PageCanvas {
             page: self.pages.last_mut(),
         };
-        draw_row(row, g.margins.left, top, top_edge, bottom_edge, &mut canvas);
+        draw_row(row, left, top, top_edge, bottom_edge, &mut canvas);
         self.y += row.height;
         self.has_content = true;
     }
@@ -1654,7 +1913,7 @@ mod tests {
                     left: Twips(0),
                     ..PageMargins::default()
                 }),
-                unknown: Vec::new(),
+                ..SectionProps::default()
             },
             blocks: paragraphs.into_iter().map(Block::from).collect(),
         }];
@@ -1880,6 +2139,142 @@ mod tests {
         // По центру листа 200 пт и по нижнему краю листа 57,6 пт.
         assert!(close(front.x, 90.0) && close(front.y, 47.6));
         assert!(close(front.width, 20.0) && close(front.height, 10.0));
+    }
+
+    /// Колонки без промежутка.
+    fn columns(count: u16, separator: bool) -> Option<letter_model::Columns> {
+        Some(letter_model::Columns {
+            count,
+            space: Twips(0),
+            separator,
+            widths: Vec::new(),
+        })
+    }
+
+    /// Левые края и номера абзацев строк каждой страницы.
+    fn places(layout: &DocumentLayout) -> Vec<Vec<(f32, usize)>> {
+        layout
+            .pages
+            .iter()
+            .map(|p| p.lines.iter().map(|l| (l.x, l.paragraph)).collect())
+            .collect()
+    }
+
+    #[test]
+    fn text_flows_through_columns() {
+        let mut d = doc(singles(12));
+        d.sections[0].props.columns = columns(2, true);
+        let layout = lay(&d);
+        let pages = places(&layout);
+        assert_eq!(pages.len(), 2);
+        // Пять строк в первой колонке, пять во второй (на 100 пт правее).
+        let xs: Vec<f32> = pages[0].iter().map(|l| l.0).collect();
+        assert_eq!(
+            xs,
+            [0.0, 0.0, 0.0, 0.0, 0.0, 100.0, 100.0, 100.0, 100.0, 100.0]
+        );
+        assert!((layout.pages[0].lines[5].top).abs() < 1e-3);
+        assert_eq!(pages[1], [(0.0, 10), (0.0, 11)]);
+        // Строки ужаты до ширины колонки.
+        assert!(
+            layout.pages[0]
+                .lines
+                .iter()
+                .all(|l| l.line.x + l.line.width <= 100.0 + 1e-3)
+        );
+        // Линия между колонками — только на первой странице (на второй
+        // текст в одной колонке).
+        let rules = |page: &Page| {
+            page.shapes
+                .iter()
+                .filter(|s| s.kind == ShapeKind::Rule)
+                .map(|s| (s.x + s.width / 2.0, s.height))
+                .collect::<Vec<_>>()
+        };
+        let first = rules(&layout.pages[0]);
+        assert_eq!(first.len(), 1);
+        assert!((first[0].0 - 100.0).abs() < 1e-3 && (first[0].1 - 5.0 * LINE).abs() < 1e-3);
+        assert!(rules(&layout.pages[1]).is_empty());
+    }
+
+    #[test]
+    fn column_break_starts_the_next_column() {
+        let mut broken = para("a");
+        broken.content.push(letter_model::Inline::Run(Run {
+            props: RunProps::default(),
+            content: vec![
+                RunContent::Break(BreakKind::Column),
+                RunContent::Text("b".into()),
+            ],
+        }));
+        let mut d = doc(vec![broken, para("c")]);
+        d.sections[0].props.columns = columns(2, false);
+        assert_eq!(places(&lay(&d)), [vec![(0.0, 0), (100.0, 0), (100.0, 1)]]);
+        // Без колонок разрыв колонки — новая страница.
+        d.sections[0].props.columns = None;
+        assert_eq!(pages(&lay(&d)), [vec![0], vec![0, 1]]);
+    }
+
+    #[test]
+    fn columns_are_balanced_before_a_continuous_section() {
+        let mut d = doc(Vec::new());
+        let mut first = doc(singles(4)).sections.remove(0);
+        first.props.columns = columns(2, true);
+        let mut second = doc(vec![para("after")]).sections.remove(0);
+        second.props.start = Some(SectionStart::Continuous);
+        d.sections = vec![first, second];
+        let layout = lay(&d);
+        let page = &layout.pages[0];
+        let found: Vec<(f32, f32)> = page.lines.iter().map(|l| (l.x, l.top)).collect();
+        let close =
+            |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3;
+        let expected = [
+            (0.0, 0.0),
+            (0.0, LINE),
+            (100.0, 0.0),
+            (100.0, LINE),
+            // Новый раздел — под колонками, во всю ширину.
+            (0.0, 2.0 * LINE),
+        ];
+        assert_eq!(found.len(), expected.len());
+        assert!(
+            found.iter().zip(expected).all(|(a, b)| close(*a, b)),
+            "{found:?}"
+        );
+        let rule = page
+            .shapes
+            .iter()
+            .find(|s| s.kind == ShapeKind::Rule)
+            .unwrap();
+        assert!((rule.height - 2.0 * LINE).abs() < 1e-3);
+    }
+
+    #[test]
+    fn sections_start_where_they_say() {
+        let section = |text: &str, start: Option<SectionStart>| {
+            let mut s = doc(vec![para(text)]).sections.remove(0);
+            s.props.start = start;
+            s
+        };
+        let mut d = doc(Vec::new());
+        d.sections = vec![
+            section("a", None),
+            section("b", Some(SectionStart::Continuous)),
+            section("c", Some(SectionStart::OddPage)),
+            section("d", Some(SectionStart::EvenPage)),
+            section("e", Some(SectionStart::NextPage)),
+        ];
+        let layout = lay(&d);
+        // «b» — на той же странице под «a»; «c» — на третьей (вторая
+        // пустая); «d» — на четвёртой; «e» — на пятой.
+        assert_eq!(
+            pages(&layout),
+            [vec![0, 1], vec![], vec![2], vec![3], vec![4]]
+        );
+        assert!((layout.pages[0].lines[1].top - LINE).abs() < 1e-3);
+        // «На текущей странице» с другим размером листа — новая страница.
+        d.sections[1].props.page_size = Some(PageSize::A4);
+        assert_eq!(pages(&lay(&d))[..2], [vec![0], vec![1]]);
     }
 
     #[test]

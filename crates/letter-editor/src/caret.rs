@@ -107,7 +107,10 @@ pub fn line_stops(line: &PageLine) -> Vec<CaretStop> {
 /// Строка кончается знаком разрыва: позиция после него — на следующей
 /// строке.
 fn breaks_after(line: &PageLine) -> bool {
-    matches!(line.line.end, LineEnd::Break | LineEnd::Page)
+    matches!(
+        line.line.end,
+        LineEnd::Break | LineEnd::Page | LineEnd::Column
+    )
 }
 
 /// Границы графем в куске `range` текста, с обоими концами.

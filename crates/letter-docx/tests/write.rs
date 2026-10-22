@@ -11,11 +11,12 @@ use std::path::PathBuf;
 use letter_docx::{read_bytes, write_bytes};
 use letter_model::{
     Alignment, Block, Border, Borders, BreakKind, CellMargins, CellProps, CellVerticalAlign, Color,
-    DocDefaults, Document, FirstLineIndent, HalfPoints, HeightRule, Highlight, Indentation, Inline,
-    LineSpacing, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, RowHeight, RowProps,
-    Run, RunContent, RunFonts, RunProps, Section, SectionProps, Shading, Spacing, Style, StyleKind,
-    Styles, TabLeader, TabStop, TabStopKind, Table, TableCell, TableLayout, TableProps, TableRow,
-    TableWidth, ThemeColor, ThemeFont, Twips, Underline, VerticalAlign, VerticalMerge,
+    Columns, DocDefaults, Document, FirstLineIndent, HalfPoints, HeightRule, Highlight,
+    Indentation, Inline, LineSpacing, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml,
+    RowHeight, RowProps, Run, RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart,
+    Shading, Spacing, Style, StyleKind, Styles, TabLeader, TabStop, TabStopKind, Table, TableCell,
+    TableLayout, TableProps, TableRow, TableWidth, ThemeColor, ThemeFont, Twips, Underline,
+    VerticalAlign, VerticalMerge,
 };
 
 const FIXTURES: &[&str] = &[
@@ -27,6 +28,7 @@ const FIXTURES: &[&str] = &[
     "table.docx",
     "image.docx",
     "floating.docx",
+    "sections.docx",
     "header-footer.docx",
     "ru-en.docx",
 ];
@@ -251,8 +253,15 @@ fn everything() -> Document {
         props: SectionProps {
             page_size: Some(PageSize::A4.rotated()),
             margins: Some(PageMargins::default()),
+            start: Some(SectionStart::Continuous),
+            columns: Some(Columns {
+                count: 2,
+                space: Twips(567),
+                separator: true,
+                widths: Vec::new(),
+            }),
             unknown: vec![RawXml::new(
-                r#"<w:cols xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:space="708"/>"#,
+                r#"<w:docGrid xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:linePitch="360"/>"#,
             )],
         },
         blocks: vec![
@@ -347,6 +356,13 @@ fn everything() -> Document {
         props: SectionProps {
             page_size: Some(PageSize::LETTER),
             margins: None,
+            start: Some(SectionStart::OddPage),
+            columns: Some(Columns {
+                count: 2,
+                space: Twips(0),
+                separator: false,
+                widths: vec![(Twips(3000), Twips(400)), (Twips(5000), Twips(0))],
+            }),
             unknown: Vec::new(),
         },
         blocks: vec![Paragraph::text("второй раздел").into()],
