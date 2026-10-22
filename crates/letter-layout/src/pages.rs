@@ -58,8 +58,8 @@ use letter_model::{
 use crate::fields;
 use crate::fonts::FontLibrary;
 use crate::lines::{
-    Align, InlineObject, Line, LineEnd, LineItem, LineRoom, ParagraphFormat, TabKind, TabLeader,
-    TabStop, TextSpan, break_lines, break_lines_around,
+    Align, Hyphenation, InlineObject, Line, LineEnd, LineItem, LineRoom, ParagraphFormat, TabKind,
+    TabLeader, TabStop, TextSpan, break_lines, break_lines_around,
 };
 use crate::notes::NoteNumbers;
 use crate::shaping::{ShapedRun, Shaper, TextStyle};
@@ -1541,6 +1541,13 @@ fn prepare(
         Alignment::Distribute => Align::Distribute,
     };
     format.default_tab = points(doc.settings.default_tab_stop);
+    let settings = &doc.settings;
+    format.hyphenation =
+        (settings.auto_hyphenation && !props.suppress_auto_hyphens).then(|| Hyphenation {
+            zone: points(settings.hyphenation_zone),
+            limit: settings.consecutive_hyphen_limit,
+            caps: !settings.do_not_hyphenate_caps,
+        });
     format.tab_stops = props
         .tabs
         .iter()

@@ -129,6 +129,8 @@ pub enum Icon {
     PageColor,
     /// Символ: омега.
     Symbol,
+    /// Расстановка переносов: стрелка к краю строки.
+    Hyphenation,
     /// Границы страниц: уголки рамки.
     PageBorders,
     /// Удалить строки, столбцы или таблицу.
@@ -239,6 +241,7 @@ impl Icon {
             Icon::Watermark => ("stamp", '\u{E3BB}'),
             Icon::PageColor => ("palette", '\u{E1DD}'),
             Icon::Symbol => ("omega", '\u{E619}'),
+            Icon::Hyphenation => ("arrow-right-to-line", '\u{E459}'),
             Icon::PageBorders => ("scan", '\u{E257}'),
             Icon::DeleteTable => ("grid-2x2-x", '\u{E5E5}'),
             Icon::InsertAbove => ("between-horizontal-start", '\u{E592}'),
@@ -423,7 +426,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 59] = [
+    const ALL: [Icon; 60] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -483,6 +486,7 @@ mod tests {
         Icon::PageColor,
         Icon::PageBorders,
         Icon::Symbol,
+        Icon::Hyphenation,
     ];
 
     #[test]

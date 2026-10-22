@@ -317,6 +317,7 @@ impl Writer {
             tabs: resolved.tabs.clone(),
             borders: None,
             shading: None,
+            suppress_auto_hyphens: None,
             unknown: Vec::new(),
         };
         out.push_str(&paragraph_props_text(&explicit));

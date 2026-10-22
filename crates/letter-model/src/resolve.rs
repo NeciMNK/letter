@@ -65,6 +65,8 @@ pub struct ResolvedParagraphProps {
     pub borders: ParagraphBorders,
     /// Заливка абзаца.
     pub shading: Option<Shading>,
+    /// Автоматический перенос слов в абзаце запрещён.
+    pub suppress_auto_hyphens: bool,
 }
 
 /// Итоговые шрифты фрагмента: ссылки на тему заменены именами.
@@ -228,6 +230,7 @@ impl Document {
             overlay(&mut acc.page_break_before, &layer.page_break_before);
             overlay(&mut acc.widow_control, &layer.widow_control);
             overlay(&mut acc.shading, &layer.shading);
+            overlay(&mut acc.suppress_auto_hyphens, &layer.suppress_auto_hyphens);
         }
         tabs.sort_by_key(|t| t.position);
         ResolvedParagraphProps {
@@ -248,6 +251,7 @@ impl Document {
             numbering,
             borders,
             shading: acc.shading,
+            suppress_auto_hyphens: acc.suppress_auto_hyphens.unwrap_or(false),
         }
     }
 

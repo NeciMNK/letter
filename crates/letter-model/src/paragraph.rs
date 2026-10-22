@@ -111,6 +111,8 @@ pub struct ParagraphProps {
     pub borders: Option<ParagraphBorders>,
     /// Заливка абзаца.
     pub shading: Option<Shading>,
+    /// «Запретить автоматический перенос слов» (`w:suppressAutoHyphens`).
+    pub suppress_auto_hyphens: Option<bool>,
     /// Свойства, которые программа пока не понимает, в порядке из файла.
     pub unknown: Vec<RawXml>,
 }

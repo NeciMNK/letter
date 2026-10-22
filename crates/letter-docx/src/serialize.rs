@@ -388,6 +388,7 @@ pub(crate) fn paragraph_props(props: &ParagraphProps, section: Option<&SectionPr
         ("keepLines", props.keep_lines),
         ("pageBreakBefore", props.page_break_before),
         ("widowControl", props.widow_control),
+        ("suppressAutoHyphens", props.suppress_auto_hyphens),
     ];
     for (name, value) in toggles {
         if let Some(on) = value {

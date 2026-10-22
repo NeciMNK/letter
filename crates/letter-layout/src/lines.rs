@@ -182,6 +182,33 @@ pub struct ParagraphFormat {
     pub default_tab: f32,
     /// Десятичный разделитель для табуляции «по разделителю».
     pub decimal_separator: char,
+    /// Автоматическая расстановка переносов (`None` — выключена).
+    pub hyphenation: Option<Hyphenation>,
+}
+
+/// Настройки автоматической расстановки переносов.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hyphenation {
+    /// Ширина зоны переноса, пт: слово переносится, только если без
+    /// переноса справа в строке осталось бы не меньше места.
+    pub zone: f32,
+    /// Не больше стольких строк подряд кончаются переносом; 0 — без
+    /// ограничения.
+    pub limit: u32,
+    /// Переносить слова из прописных букв.
+    pub caps: bool,
+}
+
+impl Default for Hyphenation {
+    /// Как в Word: зона 0,25 дюйма, без ограничения, прописные
+    /// переносятся.
+    fn default() -> Hyphenation {
+        Hyphenation {
+            zone: 18.0,
+            limit: 0,
+            caps: true,
+        }
+    }
 }
 
 impl ParagraphFormat {
@@ -196,6 +223,7 @@ impl ParagraphFormat {
             tab_stops: Vec::new(),
             default_tab: 36.0,
             decimal_separator: '.',
+            hyphenation: None,
         }
     }
 
@@ -524,9 +552,23 @@ struct Builder<'a> {
     stops: Vec<TabStop>,
     /// Место для текущей строки, если его сужает плавающий рисунок.
     room: Option<LineRoom>,
-    /// Глифы дефиса для кластеров с мягким переносом (U+00AD): дефис
-    /// виден, только если строка перенесена на этом месте.
-    hyphens: HashMap<usize, ShapedGlyph>,
+    /// Дефисы переноса по номерам кластеров, после которых можно
+    /// перенести строку с дефисом: мягкий перенос (U+00AD) или место
+    /// автоматического переноса в слове. Дефис виден, только если строка
+    /// перенесена на этом месте.
+    hyphens: HashMap<usize, Hyphen>,
+    /// Где в тексте можно автоматически перенести слово, байты.
+    auto_points: Vec<bool>,
+    /// Сколько строк подряд перед текущей кончаются переносом.
+    hyphen_streak: u32,
+}
+
+/// Дефис переноса после кластера.
+#[derive(Debug, Clone, Copy)]
+struct Hyphen {
+    glyph: ShapedGlyph,
+    /// Место автоматического переноса (а не мягкий перенос).
+    auto: bool,
 }
 
 impl<'a> Builder<'a> {
@@ -543,6 +585,10 @@ impl<'a> Builder<'a> {
                 breaks[at] = true;
             }
         }
+        let auto_points = match &format.hyphenation {
+            Some(h) => hyphenation_points(&text, h.caps),
+            None => Vec::new(),
+        };
         let mut stops: Vec<TabStop> = format
             .tab_stops
             .iter()
@@ -562,6 +608,8 @@ impl<'a> Builder<'a> {
             objects: spans.iter().map(|s| s.object.clone()).collect(),
             room: None,
             hyphens: HashMap::new(),
+            auto_points,
+            hyphen_streak: 0,
         };
         builder.shape(spans);
         builder
@@ -698,13 +746,16 @@ impl<'a> Builder<'a> {
                     .map(|g| g.x_advance)
                     .sum();
                 let space = self.text[range.clone()].chars().all(is_hanging_space);
-                if self.text[range.clone()].ends_with(SOFT_HYPHEN)
+                let soft = self.text[range.clone()].ends_with(SOFT_HYPHEN);
+                let auto = !soft && self.auto_points.get(range.end).copied().unwrap_or(false);
+                if (soft || auto)
                     && run.level % 2 == 0
                     && let Some(glyph) = self.hyphen_glyph(&run, &source.style)
                 {
                     let cluster = range.start;
+                    let glyph = ShapedGlyph { cluster, ..glyph };
                     self.hyphens
-                        .insert(self.clusters.len(), ShapedGlyph { cluster, ..glyph });
+                        .insert(self.clusters.len(), Hyphen { glyph, auto });
                 }
                 self.clusters.push(Cluster {
                     range,
@@ -718,20 +769,29 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// Глиф дефиса тем же шрифтом, что и кусок `run`.
+    /// Глиф дефиса тем же шрифтом, что и кусок `run` (если кусок набран
+    /// запасным шрифтом, например кириллица — шрифтом с кириллицей, то
+    /// и дефис им же).
     fn hyphen_glyph(&mut self, run: &ShapedRun, style: &TextStyle) -> Option<ShapedGlyph> {
-        let runs = self.shaper.shape_range(self.library, "-", 0..1, 0, style);
-        match runs.as_slice() {
-            [hyphen] if hyphen.font.id == run.font.id && hyphen.glyphs.len() == 1 => {
-                hyphen.glyphs.first().copied()
+        let fallback = TextStyle {
+            family: run.font.family.clone(),
+            ..style.clone()
+        };
+        for style in [style, &fallback] {
+            let runs = self.shaper.shape_range(self.library, "-", 0..1, 0, style);
+            if let [hyphen] = runs.as_slice()
+                && hyphen.font.id == run.font.id
+                && hyphen.glyphs.len() == 1
+            {
+                return hyphen.glyphs.first().copied();
             }
-            _ => None,
         }
+        None
     }
 
     /// Ширина дефиса, который появится при переносе после кластера `i`.
     fn hyphen_width(&self, i: usize) -> f32 {
-        self.hyphens.get(&i).map_or(0.0, |g| g.x_advance)
+        self.hyphens.get(&i).map_or(0.0, |h| h.glyph.x_advance)
     }
 
     /// Следующая позиция табуляции после `x`.
@@ -794,8 +854,25 @@ impl<'a> Builder<'a> {
     fn fit(&mut self, start: usize, first: bool) -> (usize, LineEnd) {
         let line_end = self.line_end();
         let mut state = TabState::new(self.line_start(first));
+        // Последнее место переноса и последнее — без автоматического
+        // переноса слова (с местом, где кончается текст).
         let mut last_break = None;
+        let mut last_plain: Option<(usize, f32)> = None;
         let mut has_content = false;
+        let hyphenation = self.format.hyphenation;
+        let auto_allowed =
+            hyphenation.is_some_and(|h| h.limit == 0 || self.hyphen_streak < h.limit);
+        // Где перенести строку, если кластер `i` не влез. Слово
+        // переносится, только если без этого справа осталось бы не
+        // меньше зоны переноса.
+        let wrap_at = |i: usize, last_break: Option<usize>, last_plain: Option<(usize, f32)>| {
+            let end = last_break.filter(|&b| b > start);
+            let plain = last_plain.filter(|&(b, _)| b > start);
+            match (end, plain, hyphenation) {
+                (Some(b), Some((p, x)), Some(h)) if b != p && line_end - x < h.zone => p,
+                _ => end.unwrap_or(i),
+            }
+        };
         for (i, cluster) in self.clusters.iter().enumerate().skip(start) {
             match cluster.kind {
                 Kind::Break(end) => return (i + 1, end),
@@ -814,8 +891,7 @@ impl<'a> Builder<'a> {
                 Kind::Object => {
                     state.add_text(cluster.width, false);
                     if has_content && state.x() > line_end + EPSILON {
-                        let end = last_break.filter(|&b| b > start).unwrap_or(i);
-                        return (end, LineEnd::Wrap);
+                        return (wrap_at(i, last_break, last_plain), LineEnd::Wrap);
                     }
                     has_content = true;
                 }
@@ -825,20 +901,23 @@ impl<'a> Builder<'a> {
                     state.add_text(cluster.width, separator);
                     if !space {
                         if has_content && state.x() > line_end + EPSILON {
-                            let end = last_break.filter(|&b| b > start).unwrap_or(i);
-                            return (end, LineEnd::Wrap);
+                            return (wrap_at(i, last_break, last_plain), LineEnd::Wrap);
                         }
                         has_content = true;
                     }
                 }
             }
-            // После мягкого переноса строку можно разорвать, только если
+            // На переносе с дефисом строку можно разорвать, только если
             // влезет и появившийся дефис.
-            if self.breaks[cluster.range.end]
-                && (!self.hyphens.contains_key(&i)
-                    || state.x() + self.hyphen_width(i) <= line_end + EPSILON)
+            let hyphen = self.hyphens.get(&i);
+            let auto = hyphen.is_some_and(|h| h.auto);
+            if (self.breaks[cluster.range.end] || (auto && auto_allowed))
+                && hyphen.is_none_or(|h| state.x() + h.glyph.x_advance <= line_end + EPSILON)
             {
                 last_break = Some(i + 1);
+                if !auto {
+                    last_plain = Some((i + 1, state.x()));
+                }
             }
         }
         (self.clusters.len(), LineEnd::Paragraph)
@@ -872,6 +951,11 @@ impl<'a> Builder<'a> {
         if let Some(i) = hyphen {
             widths[i] += self.hyphen_width(start + i);
         }
+        self.hyphen_streak = if hyphen.is_some() {
+            self.hyphen_streak + 1
+        } else {
+            0
+        };
         let mut state = TabState::new(line_start);
         let mut leaders = vec![TabLeader::None; clusters.len()];
         let mut pending: Option<usize> = None;
@@ -1074,9 +1158,9 @@ impl<'a> Builder<'a> {
             }
         }
         if let Some(i) = hyphen.filter(|i| group.contains(i))
-            && let Some(glyph) = self.hyphens.get(&(start + i))
+            && let Some(hyphen) = self.hyphens.get(&(start + i))
         {
-            glyphs.push((Some(i), *glyph));
+            glyphs.push((Some(i), hyphen.glyph));
         }
         // Растяжку получает последний глиф кластера.
         for &i in group {
@@ -1141,6 +1225,49 @@ impl<'a> Builder<'a> {
 
 /// Пробел, который может висеть в конце строки. Неразрывные пробелы
 /// ведут себя как буквы.
+/// Места автоматического переноса в тексте (байты): между слогами слов
+/// русского и английского языка. Слова с мягким переносом не трогаются,
+/// как в Word; слова из прописных букв — только если `caps`.
+fn hyphenation_points(text: &str, caps: bool) -> Vec<bool> {
+    let mut points = vec![false; text.len() + 1];
+    // Слова — куски из букв; слово, в котором есть мягкий перенос, не
+    // переносится автоматически.
+    let mut words: Vec<(usize, usize, bool)> = Vec::new();
+    for (at, c) in text.char_indices() {
+        let end = at + c.len_utf8();
+        match words.last_mut() {
+            Some((_, e, soft)) if *e == at && (c.is_alphabetic() || c == SOFT_HYPHEN) => {
+                *e = end;
+                *soft |= c == SOFT_HYPHEN;
+            }
+            _ if c.is_alphabetic() => words.push((at, end, false)),
+            _ => {}
+        }
+    }
+    for (from, to, soft) in words {
+        let word = &text[from..to];
+        if soft || (!caps && word.chars().all(|c| !c.is_lowercase())) {
+            continue;
+        }
+        let lang = if word.chars().any(|c| matches!(c, '\u{400}'..='\u{4ff}')) {
+            hypher::Lang::Russian
+        } else if word.chars().all(|c| c.is_ascii_alphabetic()) {
+            hypher::Lang::English
+        } else {
+            continue;
+        };
+        let mut offset = from;
+        let mut syllables = hypher::hyphenate(word, lang).peekable();
+        while let Some(syllable) = syllables.next() {
+            offset += syllable.len();
+            if syllables.peek().is_some() {
+                points[offset] = true;
+            }
+        }
+    }
+    points
+}
+
 /// Мягкий перенос: невидим, но строку можно перенести на нём с дефисом.
 const SOFT_HYPHEN: char = '\u{ad}';
 
@@ -1271,6 +1398,103 @@ mod tests {
         // Неразрывный пробел не даёт переноса.
         let p = lay_text("ab\u{a0}cd", &ParagraphFormat::new(MONO * 3.0 + 0.001));
         assert_eq!(line_texts(&p), ["ab\u{a0}", "cd"]);
+    }
+
+    /// Видимые глифы строки.
+    fn visible_glyphs(line: &Line) -> usize {
+        line.items
+            .iter()
+            .map(|item| match item {
+                LineItem::Text(t) => t.run.glyphs.iter().filter(|g| g.x_advance > 0.0).count(),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    /// Самое длинное начало слова `word` до места переноса, которое
+    /// с дефисом занимает не больше `room` знаков.
+    fn best_prefix(word: &str, lang: hypher::Lang, room: usize) -> String {
+        let mut prefix = String::new();
+        let mut best = String::new();
+        let syllables: Vec<&str> = hypher::hyphenate(word, lang).collect();
+        for syllable in &syllables[..syllables.len() - 1] {
+            prefix.push_str(syllable);
+            if prefix.chars().count() < room {
+                best = prefix.clone();
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn words_are_hyphenated_automatically() {
+        let mut format = ParagraphFormat::new(MONO * 10.0 + 0.001);
+        format.hyphenation = Some(Hyphenation {
+            zone: 0.0,
+            ..Hyphenation::default()
+        });
+        let p = lay_text("aa hyphenation", &format);
+        let prefix = best_prefix("hyphenation", hypher::Lang::English, 10 - 3);
+        assert!(!prefix.is_empty());
+        let first = format!("aa {prefix}");
+        assert_eq!(line_texts(&p)[0], first);
+        // Дефис виден в конце строки и считается в ширину.
+        assert_eq!(visible_glyphs(&p.lines[0]), first.chars().count() + 1);
+        assert!(close(
+            p.lines[0].width,
+            MONO * (first.chars().count() + 1) as f32
+        ));
+        // Русский.
+        let p = lay_text("ну переносы", &format);
+        let prefix = best_prefix("переносы", hypher::Lang::Russian, 10 - 3);
+        assert_eq!(line_texts(&p)[0], format!("ну {prefix}"));
+        // Широкая зона: перенос не нужен, слово целиком на новой строке.
+        format.hyphenation = Some(Hyphenation {
+            zone: MONO * 20.0,
+            ..Hyphenation::default()
+        });
+        let p = lay_text("aa hyphenation", &format);
+        assert_eq!(line_texts(&p)[0], "aa ");
+        // Без настройки переносов нет.
+        let p = lay_text("aa hyphenation", &ParagraphFormat::new(MONO * 10.0 + 0.001));
+        assert_eq!(line_texts(&p)[0], "aa ");
+        // Слова из прописных — только если разрешено.
+        format.hyphenation = Some(Hyphenation {
+            zone: 0.0,
+            caps: false,
+            ..Hyphenation::default()
+        });
+        let p = lay_text("aa HYPHENATION", &format);
+        assert_eq!(line_texts(&p)[0], "aa ");
+    }
+
+    #[test]
+    fn consecutive_hyphens_are_limited() {
+        let text = "hyphenation ".repeat(12);
+        let mut format = ParagraphFormat::new(MONO * 16.0 + 0.001);
+        format.hyphenation = Some(Hyphenation {
+            zone: 0.0,
+            ..Hyphenation::default()
+        });
+        let ends = |p: &ParagraphLines| -> Vec<bool> {
+            p.lines
+                .iter()
+                .map(|l| {
+                    let t = &p.text[l.range.clone()];
+                    !t.ends_with(' ') && l.end == LineEnd::Wrap
+                })
+                .collect()
+        };
+        let free = ends(&lay_text(&text, &format));
+        assert!(free.windows(2).any(|w| w[0] && w[1]), "{free:?}");
+        format.hyphenation = Some(Hyphenation {
+            zone: 0.0,
+            limit: 1,
+            ..Hyphenation::default()
+        });
+        let limited = ends(&lay_text(&text, &format));
+        assert!(limited.iter().any(|&h| h));
+        assert!(!limited.windows(2).any(|w| w[0] && w[1]), "{limited:?}");
     }
 
     #[test]

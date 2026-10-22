@@ -12,12 +12,13 @@ use crate::ribbon::{RibbonCommand, RibbonInfo, group};
 
 /// Подсказки клавиш вкладки «Макет» (для проверки).
 #[cfg(test)]
-pub const KEYTIPS: [&str; 5] = [
+pub const KEYTIPS: [&str; 6] = [
     "keytip-layout-margins",
     "keytip-layout-orientation",
     "keytip-layout-size",
     "keytip-layout-columns",
     "keytip-layout-breaks",
+    "keytip-layout-hyphenation",
 ];
 
 /// Готовые поля: имя и поля сверху, справа, снизу, слева (твипы).
@@ -172,6 +173,27 @@ pub fn layout(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                     let button = ui.add_enabled(!info.in_table, egui::Button::new(tr(label)));
                     if button.clicked() {
                         push(ui, Command::SectionBreak(start));
+                    }
+                }
+            },
+        );
+        menu_button(
+            ui,
+            Icon::Hyphenation,
+            tr("hyphenation"),
+            tr("hyphenation-hint"),
+            "keytip-layout-hyphenation",
+            enabled,
+            |ui| {
+                for (label, on) in [("hyphenation-none", false), ("hyphenation-auto", true)] {
+                    if ui
+                        .add(egui::Button::selectable(
+                            info.auto_hyphenation == on,
+                            tr(label),
+                        ))
+                        .clicked()
+                    {
+                        push(ui, Command::AutoHyphenation(on));
                     }
                 }
             },

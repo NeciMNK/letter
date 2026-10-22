@@ -135,6 +135,17 @@ pub struct Settings {
     /// «Разные колонтитулы для чётных и нечётных страниц»
     /// (`w:evenAndOddHeaders`).
     pub even_and_odd_headers: bool,
+    /// Автоматическая расстановка переносов (`w:autoHyphenation`).
+    pub auto_hyphenation: bool,
+    /// Ширина зоны переноса (`w:hyphenationZone`): слово переносится,
+    /// только если без переноса справа осталось бы больше места.
+    pub hyphenation_zone: Twips,
+    /// Не больше стольких строк подряд кончаются переносом
+    /// (`w:consecutiveHyphenLimit`); 0 — без ограничения.
+    pub consecutive_hyphen_limit: u32,
+    /// «Переносы в словах из прописных букв» выключены
+    /// (`w:doNotHyphenateCaps`).
+    pub do_not_hyphenate_caps: bool,
 }
 
 impl Default for Settings {
@@ -145,6 +156,10 @@ impl Default for Settings {
             add_paragraph_spacing: false,
             compatibility_mode: 12,
             even_and_odd_headers: false,
+            auto_hyphenation: false,
+            hyphenation_zone: Twips(360),
+            consecutive_hyphen_limit: 0,
+            do_not_hyphenate_caps: false,
         }
     }
 }
