@@ -99,6 +99,8 @@ pub struct ParagraphValues {
     pub keep_lines: bool,
     /// «С новой страницы».
     pub page_break_before: bool,
+    /// «Запретить автоматический перенос слов».
+    pub suppress_auto_hyphens: bool,
 }
 
 impl ParagraphValues {
@@ -132,6 +134,7 @@ impl ParagraphValues {
             keep_next: props.keep_next,
             keep_lines: props.keep_lines,
             page_break_before: props.page_break_before,
+            suppress_auto_hyphens: props.suppress_auto_hyphens,
         }
     }
 
@@ -174,6 +177,10 @@ impl ParagraphValues {
             keep_next: changed(self.keep_next, initial.keep_next),
             keep_lines: changed(self.keep_lines, initial.keep_lines),
             page_break_before: changed(self.page_break_before, initial.page_break_before),
+            suppress_auto_hyphens: changed(
+                self.suppress_auto_hyphens,
+                initial.suppress_auto_hyphens,
+            ),
         }
     }
 }
@@ -392,6 +399,8 @@ fn pagination_tab(ui: &mut Ui, v: &mut ParagraphValues) {
     ui.checkbox(&mut v.keep_next, tr("paragraph-keep-next"));
     ui.checkbox(&mut v.keep_lines, tr("paragraph-keep-lines"));
     ui.checkbox(&mut v.page_break_before, tr("paragraph-page-break"));
+    ui.separator();
+    ui.checkbox(&mut v.suppress_auto_hyphens, tr("paragraph-no-hyphens"));
 }
 
 /// Образец: соседние абзацы серыми полосками, этот — тёмными, с его

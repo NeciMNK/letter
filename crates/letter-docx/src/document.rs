@@ -268,6 +268,7 @@ pub(crate) fn read_paragraph_props(
                 "contextualSpacing" => set(&mut props.contextual_spacing, toggle(child)),
                 "keepNext" => set(&mut props.keep_next, toggle(child)),
                 "keepLines" => set(&mut props.keep_lines, toggle(child)),
+                "suppressAutoHyphens" => set(&mut props.suppress_auto_hyphens, toggle(child)),
                 "pageBreakBefore" => set(&mut props.page_break_before, toggle(child)),
                 "widowControl" => set(&mut props.widow_control, toggle(child)),
                 "tabs" if props.tabs.is_empty() => {
@@ -1096,7 +1097,7 @@ mod tests {
                 <w:ind w:left="720" w:right="360" w:hanging="360" w:firstLine="100"/>
                 <w:spacing w:before="240" w:after="120" w:line="276" w:lineRule="auto"/>
                 <w:contextualSpacing/><w:keepNext/><w:keepLines w:val="0"/>
-                <w:pageBreakBefore/><w:widowControl w:val="false"/>
+                <w:pageBreakBefore/><w:widowControl w:val="false"/><w:suppressAutoHyphens/>
                 <w:tabs><w:tab w:val="clear" w:pos="720"/><w:tab w:val="end" w:leader="dot" w:pos="9350"/></w:tabs>
                 <w:framePr/>
             </w:pPr></w:p>"#,
@@ -1116,6 +1117,7 @@ mod tests {
         assert_eq!(p.contextual_spacing, Some(true));
         assert_eq!(p.keep_next, Some(true));
         assert_eq!(p.keep_lines, Some(false));
+        assert_eq!(p.suppress_auto_hyphens, Some(true));
         assert_eq!(p.page_break_before, Some(true));
         assert_eq!(p.widow_control, Some(false));
         assert_eq!(

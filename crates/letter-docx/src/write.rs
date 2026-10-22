@@ -209,9 +209,17 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
         replaced.push(name.clone());
     }
 
-    // Цвет страницы Word показывает, только если в настройках есть
-    // флаг `w:displayBackgroundShape`.
-    if doc.background.is_some() {
+    // Настройки, которые мы меняем: расстановка переносов и флаг
+    // `w:displayBackgroundShape`, без которого Word не показывает цвет
+    // страницы. Остальное в части не трогается.
+    let existing = links.existing(&main, &["/settings"]);
+    let original = existing
+        .as_deref()
+        .and_then(|name| source.part(name))
+        .map(|p| p.data.as_slice());
+    if let Some(xml) =
+        crate::settings::updated_settings(original, &doc.settings, doc.background.is_some())
+    {
         let name = links.find_or_add(
             &main,
             REL_SETTINGS,
@@ -219,12 +227,9 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
             &join(base_dir, "settings.xml"),
             false,
         );
-        let original = source.part(&name).map(|p| p.data.as_slice());
-        if let Some(xml) = crate::settings::with_background_shape(original) {
-            parts.push((name.clone(), xml.into_bytes().into()));
-            ensure_override(&mut overrides, &name, CT_SETTINGS);
-            replaced.push(name);
-        }
+        parts.push((name.clone(), xml.into_bytes().into()));
+        ensure_override(&mut overrides, &name, CT_SETTINGS);
+        replaced.push(name);
     }
 
     let core = &doc.properties.core;
@@ -592,6 +597,16 @@ impl<'a> Links<'a> {
         };
         push_relationship(&mut self.changed[index].1, kind, &name);
         name
+    }
+
+    /// Имя цели связи части `from` с типом, который оканчивается на один
+    /// из `suffixes`, если такая связь уже есть; ничего не добавляет.
+    fn existing(&self, from: &str, suffixes: &[&str]) -> Option<String> {
+        let rels_name = rels_part_for(from);
+        match self.changed.iter().find(|(n, _)| *n == rels_name) {
+            Some((_, rels)) => find(rels, suffixes),
+            None => find(&self.load(from, &rels_name), suffixes),
+        }
     }
 
     /// Ведёт ли связь `id` части `from` к картинке `image`: связь

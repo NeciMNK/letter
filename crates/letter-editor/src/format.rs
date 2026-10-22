@@ -515,6 +515,8 @@ pub struct ParagraphChanges {
     pub keep_lines: Option<bool>,
     /// «С новой страницы».
     pub page_break_before: Option<bool>,
+    /// «Запретить автоматический перенос слов».
+    pub suppress_auto_hyphens: Option<bool>,
 }
 
 impl ParagraphChanges {
@@ -653,6 +655,10 @@ pub fn format_paragraphs(
                 set(&mut props.keep_next, changes.keep_next);
                 set(&mut props.keep_lines, changes.keep_lines);
                 set(&mut props.page_break_before, changes.page_break_before);
+                set(
+                    &mut props.suppress_auto_hyphens,
+                    changes.suppress_auto_hyphens,
+                );
             }
             ParagraphFormat::Shading(fill) => {
                 let in_style = styled.as_ref().is_some_and(|s| s.shading.is_some());

@@ -1450,6 +1450,7 @@ impl Viewer {
                                 | Command::PageSetup(_)
                                 | Command::PageColor(_)
                                 | Command::Watermark(_)
+                                | Command::AutoHyphenation(_)
                                 | Command::HeaderFooter { .. }
                                 | Command::InsertPicture(_)
                         )
@@ -1728,6 +1729,7 @@ impl Viewer {
                 .map(PictureWrap::of);
             info.section =
                 letter_editor::section_props(&document.doc, document.cursor.paragraph).cloned();
+            info.auto_hyphenation = document.doc.settings.auto_hyphenation;
             if let Some(story) = &document.story
                 && let Some(header) = story.header()
             {

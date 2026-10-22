@@ -1,6 +1,6 @@
 //! Настройки документа (`word/settings.xml`). Пока в основном только
 //! читаются: часть при сохранении возвращается в файл без изменений,
-//! кроме флага «показывать цвет страницы».
+//! кроме флага «показывать цвет страницы» и расстановки переносов.
 
 use letter_model::Settings;
 
@@ -8,57 +8,160 @@ use crate::document::{W_NS, is_w_ns, parse_twips, toggle};
 use crate::serialize::{element_with, xml_part};
 use crate::xml::{self, Element};
 
-/// Элементы `w:settings`, которые по схеме стоят перед
-/// `w:displayBackgroundShape`.
-const BEFORE_BACKGROUND: &[&str] = &[
+/// Порядок дочерних элементов `w:settings` по схеме (CT_Settings) до
+/// последнего элемента, который мы пишем.
+const SETTINGS_ORDER: &[&str] = &[
     "writeProtection",
     "view",
     "zoom",
     "removePersonalInformation",
     "removeDateAndTime",
     "doNotDisplayPageBoundaries",
+    "displayBackgroundShape",
+    "printPostScriptOverText",
+    "printFractionalCharacterWidth",
+    "printFormsData",
+    "embedTrueTypeFonts",
+    "embedSystemFonts",
+    "saveSubsetFonts",
+    "saveFormsData",
+    "mirrorMargins",
+    "alignBordersAndEdges",
+    "bordersDoNotSurroundHeader",
+    "bordersDoNotSurroundFooter",
+    "gutterAtTop",
+    "hideSpellingErrors",
+    "hideGrammaticalErrors",
+    "activeWritingStyle",
+    "proofState",
+    "formsDesign",
+    "attachedTemplate",
+    "linkStyles",
+    "stylePaneFormatFilter",
+    "stylePaneSortMethod",
+    "documentType",
+    "mailMerge",
+    "revisionView",
+    "trackRevisions",
+    "doNotTrackMoves",
+    "doNotTrackFormatting",
+    "documentProtection",
+    "autoFormatOverride",
+    "styleLockTheme",
+    "styleLockQFSet",
+    "defaultTabStop",
+    "autoHyphenation",
+    "consecutiveHyphenLimit",
+    "hyphenationZone",
+    "doNotHyphenateCaps",
 ];
 
-/// Часть настроек с флагом `w:displayBackgroundShape` (без него Word не
-/// показывает цвет страницы). `original` — часть из исходного файла;
-/// `None` в ответе — флаг там уже есть, менять нечего.
-pub(crate) fn with_background_shape(original: Option<&[u8]>) -> Option<String> {
+/// Новая часть настроек, если в исходной (`original`) нужно что-то
+/// поменять: флаг `w:displayBackgroundShape` (если у документа есть цвет
+/// страницы, `background`) и настройки расстановки переносов из
+/// `settings`. `None` — менять нечего. Остальные элементы части
+/// остаются как были.
+pub(crate) fn updated_settings(
+    original: Option<&[u8]>,
+    settings: &Settings,
+    background: bool,
+) -> Option<String> {
     let root = original
         .and_then(|bytes| xml::parse(bytes).ok())
         .filter(|root| root.is_w("settings"));
-    let Some(root) = root else {
-        let attrs = [("xmlns:w".to_string(), W_NS.to_string())];
-        let flag = "<w:displayBackgroundShape/>";
-        return Some(xml_part(&element_with("w:settings", &attrs, flag)));
+    let current = root.as_ref().map(read_settings).unwrap_or_default();
+    let has_flag = root
+        .as_ref()
+        .is_some_and(|r| r.elements().any(|e| e.is_w("displayBackgroundShape")));
+    let same = |a: &Settings, b: &Settings| {
+        a.auto_hyphenation == b.auto_hyphenation
+            && a.hyphenation_zone == b.hyphenation_zone
+            && a.consecutive_hyphen_limit == b.consecutive_hyphen_limit
+            && a.do_not_hyphenate_caps == b.do_not_hyphenate_caps
     };
-    if root.elements().any(|e| e.is_w("displayBackgroundShape")) {
+    if same(&current, settings) && (has_flag || !background) {
         return None;
     }
     let prefix = root
-        .qname
-        .split_once(':')
-        .map_or(String::new(), |(p, _)| format!("{p}:"));
-    let flag = format!("<{prefix}displayBackgroundShape/>");
-    let children: Vec<&Element> = root.elements().collect();
-    let at = children
-        .iter()
-        .rposition(|e| is_w_ns(e.ns.as_deref()) && BEFORE_BACKGROUND.contains(&e.local.as_str()))
-        .map_or(0, |i| i + 1);
-    let mut content = String::new();
-    for (i, child) in children.iter().enumerate() {
-        if i == at {
-            content.push_str(&flag);
+        .as_ref()
+        .and_then(|r| r.qname.split_once(':'))
+        .map_or("w:".to_string(), |(p, _)| format!("{p}:"));
+    let w = |name: &str, val: Option<String>| match val {
+        Some(v) => format!(r#"<{prefix}{name} {prefix}val="{v}"/>"#),
+        None => format!("<{prefix}{name}/>"),
+    };
+    // Наши элементы: имя и новое содержимое (`None` — убрать).
+    let ours: [(&str, Option<String>); 5] = [
+        (
+            "displayBackgroundShape",
+            (background || has_flag).then(|| w("displayBackgroundShape", None)),
+        ),
+        (
+            "autoHyphenation",
+            settings
+                .auto_hyphenation
+                .then(|| w("autoHyphenation", None)),
+        ),
+        (
+            "consecutiveHyphenLimit",
+            (settings.consecutive_hyphen_limit > 0).then(|| {
+                w(
+                    "consecutiveHyphenLimit",
+                    Some(settings.consecutive_hyphen_limit.to_string()),
+                )
+            }),
+        ),
+        (
+            "hyphenationZone",
+            (settings.hyphenation_zone != Settings::default().hyphenation_zone).then(|| {
+                w(
+                    "hyphenationZone",
+                    Some(settings.hyphenation_zone.0.to_string()),
+                )
+            }),
+        ),
+        (
+            "doNotHyphenateCaps",
+            settings
+                .do_not_hyphenate_caps
+                .then(|| w("doNotHyphenateCaps", None)),
+        ),
+    ];
+    let rank = |name: &str| SETTINGS_ORDER.iter().position(|n| *n == name);
+    // Чужие элементы — как есть, со своим местом по схеме (непонятые —
+    // после наших).
+    let mut items: Vec<(usize, String)> = Vec::new();
+    if let Some(root) = &root {
+        let mut last = 0;
+        for child in root.elements() {
+            let known = is_w_ns(child.ns.as_deref());
+            if known && ours.iter().any(|(n, _)| *n == child.local) {
+                continue;
+            }
+            if known && let Some(r) = rank(&child.local) {
+                last = r;
+            } else if known {
+                last = SETTINGS_ORDER.len();
+            }
+            items.push((last, child.to_xml_fragment()));
         }
-        content.push_str(&child.to_xml_fragment());
     }
-    if at == children.len() {
-        content.push_str(&flag);
+    for (name, xml) in ours {
+        if let (Some(xml), Some(r)) = (xml, rank(name)) {
+            let at = items
+                .iter()
+                .position(|(k, _)| *k > r)
+                .unwrap_or(items.len());
+            items.insert(at, (r, xml));
+        }
     }
-    Some(xml_part(&element_with(
-        &root.qname,
-        &root.root_attributes(),
-        &content,
-    )))
+    let content: String = items.into_iter().map(|(_, x)| x).collect();
+    let attrs = match &root {
+        Some(root) => root.root_attributes(),
+        None => vec![("xmlns:w".to_string(), W_NS.to_string())],
+    };
+    let qname = root.as_ref().map_or("w:settings", |r| r.qname.as_str());
+    Some(xml_part(&element_with(qname, &attrs, &content)))
 }
 
 /// Читает нужные вёрстке настройки. Непонятое и испорченное заменяется
@@ -78,6 +181,24 @@ pub(crate) fn read_settings(root: &Element) -> Settings {
             }
             "evenAndOddHeaders" => {
                 settings.even_and_odd_headers = toggle(child).unwrap_or(false);
+            }
+            "autoHyphenation" => settings.auto_hyphenation = toggle(child).unwrap_or(false),
+            "doNotHyphenateCaps" => {
+                settings.do_not_hyphenate_caps = toggle(child).unwrap_or(false);
+            }
+            "hyphenationZone" => {
+                if let Some(t) = child
+                    .w_attr("val")
+                    .and_then(parse_twips)
+                    .filter(|t| t.0 > 0)
+                {
+                    settings.hyphenation_zone = t;
+                }
+            }
+            "consecutiveHyphenLimit" => {
+                if let Some(n) = child.w_attr("val").and_then(|v| v.trim().parse().ok()) {
+                    settings.consecutive_hyphen_limit = n;
+                }
             }
             "compat" => {
                 for flag in child
@@ -110,15 +231,20 @@ mod tests {
     #[test]
     fn background_flag_goes_after_zoom() {
         let source = r#"<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:zoom w:percent="100"/><w:defaultTabStop w:val="720"/></w:settings>"#;
-        let xml = with_background_shape(Some(source.as_bytes())).unwrap_or_default();
+        let plain = Settings::default();
+        let xml = updated_settings(Some(source.as_bytes()), &plain, true).unwrap_or_default();
         let zoom = xml.find("zoom").unwrap_or(usize::MAX);
         let flag = xml.find("displayBackgroundShape").unwrap_or(0);
         let tab = xml.find("defaultTabStop").unwrap_or(0);
         assert!(zoom < flag && flag < tab, "{xml}");
-        let again = with_background_shape(Some(xml.as_bytes()));
+        let again = updated_settings(Some(xml.as_bytes()), &plain, true);
         assert_eq!(again, None);
         // Без исходной части — новая часть только с флагом.
-        let new = with_background_shape(None).unwrap_or_default();
+        assert_eq!(
+            updated_settings(Some(source.as_bytes()), &plain, false),
+            None
+        );
+        let new = updated_settings(None, &plain, true).unwrap_or_default();
         assert!(new.contains("<w:displayBackgroundShape/>"));
         assert_eq!(read(""), Settings::default());
     }
@@ -150,5 +276,42 @@ mod tests {
                <w:compat><w:doNotUseHTMLParagraphAutoSpacing w:val="0"/></w:compat>"#,
         );
         assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn hyphenation_is_read_and_written() {
+        let s = read(
+            r#"<w:autoHyphenation/><w:consecutiveHyphenLimit w:val="2"/>
+               <w:hyphenationZone w:val="425"/><w:doNotHyphenateCaps/>"#,
+        );
+        assert!(s.auto_hyphenation && s.do_not_hyphenate_caps);
+        assert_eq!(s.consecutive_hyphen_limit, 2);
+        assert_eq!(s.hyphenation_zone, Twips(425));
+
+        let source = r#"<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:zoom w:percent="100"/><w:defaultTabStop w:val="720"/><w:characterSpacingControl w:val="doNotCompress"/><w:compat/></w:settings>"#;
+        let on = Settings {
+            auto_hyphenation: true,
+            hyphenation_zone: Twips(425),
+            ..Settings::default()
+        };
+        let xml = updated_settings(Some(source.as_bytes()), &on, false).unwrap_or_default();
+        let at = |name: &str| xml.find(name).unwrap_or(usize::MAX);
+        assert!(at("defaultTabStop") < at("autoHyphenation"), "{xml}");
+        assert!(at("autoHyphenation") < at("hyphenationZone"), "{xml}");
+        assert!(
+            at("hyphenationZone") < at("characterSpacingControl"),
+            "{xml}"
+        );
+        assert!(at("characterSpacingControl") < at("compat"), "{xml}");
+        let reread = read_settings(&xml::parse(xml.as_bytes()).unwrap());
+        assert_eq!(reread.default_tab_stop, Twips(720));
+        assert!(reread.auto_hyphenation);
+        assert_eq!(reread.hyphenation_zone, Twips(425));
+        // Сохранённое ещё раз — без изменений; выключение убирает элементы.
+        assert_eq!(updated_settings(Some(xml.as_bytes()), &on, false), None);
+        let off =
+            updated_settings(Some(xml.as_bytes()), &Settings::default(), false).unwrap_or_default();
+        assert!(!off.contains("autoHyphenation") && !off.contains("hyphenationZone"));
+        assert!(off.contains("characterSpacingControl"));
     }
 }

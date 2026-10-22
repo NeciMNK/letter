@@ -901,6 +901,7 @@ impl Reader {
             tabs: para.tabs.clone(),
             borders: None,
             shading: None,
+            suppress_auto_hyphens: None,
             unknown: Vec::new(),
         }
     }
@@ -1115,6 +1116,7 @@ impl Reader {
             tabs: para.tabs.clone(),
             borders: None,
             shading: None,
+            suppress_auto_hyphens: None,
             unknown: Vec::new(),
         }
     }

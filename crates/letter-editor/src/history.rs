@@ -9,7 +9,7 @@
 
 use letter_model::{
     Alignment, Anchor, Block, BreakKind, Color, Document, HeaderFooter, HeaderFooterKind,
-    Hyperlink, Note, NoteKind, Picture, Section, SectionStart,
+    Hyperlink, Note, NoteKind, Picture, Section, SectionStart, Settings,
 };
 
 use crate::clipboard::{insert_fragment, insert_plain_text};
@@ -174,6 +174,8 @@ pub enum Command {
     UpdateToc(Box<FieldContext>),
     /// «Цвет страницы»; `None` — «Нет цвета».
     PageColor(Option<Color>),
+    /// «Расстановка переносов»: автоматическая (`true`) или нет.
+    AutoHyphenation(bool),
     /// «Подложка» с этой надписью во всех верхних колонтитулах; `None` —
     /// «Удалить подложку».
     Watermark(Option<String>),
@@ -231,6 +233,11 @@ enum Patch {
         before: Option<Color>,
         after: Option<Color>,
     },
+    /// Настройки документа.
+    Settings {
+        before: Box<Settings>,
+        after: Box<Settings>,
+    },
 }
 
 impl Patch {
@@ -277,6 +284,9 @@ impl Patch {
             }
             Patch::Background { before, after } => {
                 doc.background = if undo { *before } else { *after };
+            }
+            Patch::Settings { before, after } => {
+                doc.settings = if undo { before } else { after }.as_ref().clone();
             }
         }
     }
@@ -342,6 +352,15 @@ impl History {
                         },
                         selection,
                     );
+                }
+                return selection;
+            }
+            Command::AutoHyphenation(on) => {
+                if doc.settings.auto_hyphenation != on {
+                    let before = Box::new(doc.settings.clone());
+                    doc.settings.auto_hyphenation = on;
+                    let after = Box::new(doc.settings.clone());
+                    self.push(Patch::Settings { before, after }, selection);
                 }
                 return selection;
             }
@@ -663,6 +682,7 @@ impl History {
             | Command::DeleteBookmark(_)
             | Command::SetNote { .. }
             | Command::PageColor(_)
+            | Command::AutoHyphenation(_)
             | Command::Watermark(_) => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
@@ -696,6 +716,7 @@ impl History {
             Patch::Sections { before, after, .. } => before == after,
             Patch::Notes { before, after, .. } => before == after,
             Patch::Background { before, after } => before == after,
+            Patch::Settings { before, after } => before == after,
         };
         if unchanged {
             return after;
@@ -1147,6 +1168,22 @@ mod tests {
         assert_eq!(d, original);
         h.redo(&mut d);
         assert_eq!(d.sections.len(), 2);
+    }
+
+    #[test]
+    fn auto_hyphenation_can_be_undone() {
+        let mut d = doc(&["a"]);
+        let mut h = History::new();
+        h.run(&mut d, caret(0, 0), Command::AutoHyphenation(true));
+        assert!(d.settings.auto_hyphenation);
+        assert!(h.can_undo());
+        // Повтор того же ничего не добавляет в историю.
+        h.run(&mut d, caret(0, 0), Command::AutoHyphenation(true));
+        h.undo(&mut d);
+        assert!(!d.settings.auto_hyphenation);
+        assert!(!h.can_undo());
+        h.redo(&mut d);
+        assert!(d.settings.auto_hyphenation);
     }
 
     #[test]

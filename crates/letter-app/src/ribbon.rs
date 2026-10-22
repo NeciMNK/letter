@@ -288,6 +288,8 @@ pub struct RibbonInfo {
     pub story: Option<bool>,
     /// У раздела открытого колонтитула особый колонтитул первой страницы.
     pub title_page: bool,
+    /// В документе включена автоматическая расстановка переносов.
+    pub auto_hyphenation: bool,
 }
 
 /// Состояние ленты.

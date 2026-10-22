@@ -237,6 +237,7 @@ fn everything() -> Document {
         keep_lines: Some(false),
         page_break_before: Some(true),
         widow_control: Some(false),
+        suppress_auto_hyphens: Some(true),
         tabs: vec![
             TabStop {
                 position: Twips(720),
@@ -431,6 +432,10 @@ fn everything() -> Document {
         styles: vec![normal, heading, mine, grid],
         unknown: Vec::new(),
     };
+    doc.settings.auto_hyphenation = true;
+    doc.settings.hyphenation_zone = Twips(425);
+    doc.settings.consecutive_hyphen_limit = 2;
+    doc.settings.do_not_hyphenate_caps = true;
     doc
 }
 

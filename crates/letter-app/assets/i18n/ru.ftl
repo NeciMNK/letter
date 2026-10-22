@@ -218,6 +218,7 @@ paragraph-keep-next = Не отрывать от следующего
 paragraph-left = Слева:
 paragraph-line-spacing = Междустрочный:
 paragraph-page-break = С новой страницы
+paragraph-no-hyphens = Запретить автоматический перенос слов
 paragraph-pagination = Разбивка на страницы
 paragraph-right = Справа:
 paragraph-settings = Параметры абзаца
@@ -680,3 +681,10 @@ special-trademark = Товарный знак
 special-section = Параграф
 special-paragraph = Абзац
 special-ellipsis = Многоточие
+
+# Расстановка переносов
+hyphenation = Расстановка переносов
+hyphenation-hint = Переносить слова по слогам в конце строк, чтобы текст лёг ровнее
+hyphenation-none = Нет
+hyphenation-auto = Авто
+keytip-layout-hyphenation = Н

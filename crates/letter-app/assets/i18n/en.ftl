@@ -218,6 +218,7 @@ paragraph-keep-next = Keep with next
 paragraph-left = Left:
 paragraph-line-spacing = Line spacing:
 paragraph-page-break = Page break before
+paragraph-no-hyphens = Don't hyphenate
 paragraph-pagination = Pagination
 paragraph-right = Right:
 paragraph-settings = Paragraph Settings
@@ -688,3 +689,10 @@ special-trademark = Trademark
 special-section = Section
 special-paragraph = Paragraph
 special-ellipsis = Ellipsis
+
+# Hyphenation
+hyphenation = Hyphenation
+hyphenation-hint = Break words between syllables at the ends of lines for a more even text
+hyphenation-none = None
+hyphenation-auto = Automatic
+keytip-layout-hyphenation = H
