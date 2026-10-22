@@ -18,7 +18,10 @@
 //! - «не отрывать от следующего»: цепочка таких абзацев и начало
 //!   следующего абзаца переносятся вместе;
 //! - «запрет висячих строк»: первая строка абзаца не остаётся одна
-//!   внизу страницы, последняя — одна вверху следующей.
+//!   внизу страницы, последняя — одна вверху следующей;
+//! - у пунктов списка перед первой строкой стоит номер или маркер
+//!   ([`ListMark`]), текст начинается после него — за табуляцией,
+//!   пробелом или сразу.
 //!
 //! Пока не учитываются: колонтитулы, сноски, колонки, таблицы (их
 //! абзацы идут подряд на всю ширину), рисунки, гиперссылки и другие
@@ -27,14 +30,15 @@
 use std::sync::Arc;
 
 use letter_model::{
-    Alignment, Block, Document, FirstLineIndent, LineSpacing, PageSize, Paragraph, ResolvedFonts,
-    ResolvedRunProps, RunContent, RunProps, Section, Settings, Styles, TabStopKind, Theme, Twips,
-    VerticalAlign,
+    Alignment, Block, Document, FirstLineIndent, LevelSuffix, LineSpacing, ListCounters, ListLabel,
+    Numbering, PageSize, Paragraph, ResolvedFonts, ResolvedRunProps, RunContent, RunFonts,
+    RunProps, Section, Settings, Styles, TabStopKind, Theme, Twips, VerticalAlign,
 };
 
 use crate::fonts::FontLibrary;
 use crate::lines::{
-    Align, Line, LineEnd, ParagraphFormat, TabKind, TabLeader, TabStop, TextSpan, break_lines,
+    Align, Line, LineEnd, LineItem, ParagraphFormat, TabKind, TabLeader, TabStop, TextSpan,
+    break_lines,
 };
 use crate::shaping::{Shaper, TextStyle};
 use crate::spacing::{LineRule, ParagraphBlock, ParagraphSpacing, effective_spacing, gap_between};
@@ -98,6 +102,20 @@ pub struct PageLine {
     /// Оформление кусков текста абзаца: [`crate::TextItem::span`] —
     /// номер в этом списке (цвет, подчёркивание и т. п.).
     pub spans: Arc<[ResolvedRunProps]>,
+    /// Номер или маркер пункта списка — только у первой строки абзаца.
+    pub label: Option<Arc<ListMark>>,
+}
+
+/// Номер или маркер пункта списка, готовый к рисованию.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListMark {
+    /// Текст номера («1.», «•»).
+    pub text: String,
+    /// Глифы; горизонтальные координаты — от левого поля, как у строки.
+    /// `span` у кусков — 0.
+    pub items: Vec<LineItem>,
+    /// Оформление номера.
+    pub props: ResolvedRunProps,
 }
 
 /// Раскладывает документ по страницам.
@@ -116,7 +134,7 @@ pub fn layout_document(
 pub struct LayoutCache {
     /// Стили, настройки и тема, с которыми свёрстаны абзацы: если они
     /// изменились, всё верстается заново.
-    context: Option<(Styles, Settings, Theme)>,
+    context: Option<(Styles, Settings, Theme, Numbering)>,
     /// Абзацы по порядку в документе.
     entries: Vec<Entry>,
     /// Сколько абзацев разбито на строки заново в последний раз.
@@ -136,6 +154,8 @@ struct Entry {
     paragraph: Paragraph,
     /// Ширина текста, пт (`f32::to_bits`, чтобы сравнивать точно).
     width: u32,
+    /// Номер пункта списка: зависит от абзацев выше.
+    label: Option<ListLabel>,
     prepared: Arc<Prepared>,
 }
 
@@ -148,15 +168,24 @@ pub fn layout_document_cached(
     library: &FontLibrary,
     cache: &mut LayoutCache,
 ) -> DocumentLayout {
-    let context_same = cache
-        .context
-        .as_ref()
-        .is_some_and(|(styles, settings, theme)| {
-            *styles == doc.styles && *settings == doc.settings && *theme == doc.theme
-        });
+    let context_same =
+        cache
+            .context
+            .as_ref()
+            .is_some_and(|(styles, settings, theme, numbering)| {
+                *styles == doc.styles
+                    && *settings == doc.settings
+                    && *theme == doc.theme
+                    && *numbering == doc.numbering
+            });
     if !context_same {
         cache.entries.clear();
-        cache.context = Some((doc.styles.clone(), doc.settings.clone(), doc.theme.clone()));
+        cache.context = Some((
+            doc.styles.clone(),
+            doc.settings.clone(),
+            doc.theme.clone(),
+            doc.numbering.clone(),
+        ));
     }
 
     // Все абзацы документа с шириной текста своего раздела.
@@ -169,24 +198,26 @@ pub fn layout_document_cached(
         section_sizes.push(paragraphs.len());
         all.extend(paragraphs.into_iter().map(|p| (p, width)));
     }
+    let labels = list_labels(doc, &all);
 
     // Совпадающие начало и конец со старой вёрсткой.
     let old = std::mem::take(&mut cache.entries);
-    let same = |entry: &Entry, (paragraph, width): (&Paragraph, f32)| {
-        entry.width == width.to_bits() && entry.paragraph == *paragraph
+    let same = |entry: &Entry, k: usize| {
+        let (paragraph, width) = all[k];
+        entry.width == width.to_bits() && entry.paragraph == *paragraph && entry.label == labels[k]
     };
     let prefix = old
         .iter()
-        .zip(&all)
-        .take_while(|(entry, new)| same(entry, **new))
+        .enumerate()
+        .take_while(|&(k, entry)| k < all.len() && same(entry, k))
         .count();
     let limit = old.len().min(all.len()) - prefix;
     let suffix = old
         .iter()
         .rev()
-        .zip(all.iter().rev())
+        .zip((0..all.len()).rev())
         .take(limit)
-        .take_while(|(entry, new)| same(entry, **new))
+        .take_while(|&(entry, k)| same(entry, k))
         .count();
     let mut old: Vec<Option<Entry>> = old.into_iter().map(Some).collect();
     let old_len = old.len();
@@ -202,10 +233,13 @@ pub fn layout_document_cached(
         };
         let entry = reused.unwrap_or_else(|| {
             rebuilt += 1;
+            let label = labels[k].clone();
+            let prepared = prepare(doc, paragraph, label.as_ref(), width, shaper, library);
             Entry {
                 paragraph: paragraph.clone(),
                 width: width.to_bits(),
-                prepared: Arc::new(prepare(doc, paragraph, width, shaper, library)),
+                label,
+                prepared: Arc::new(prepared),
             }
         });
         entries.push(entry);
@@ -245,6 +279,20 @@ pub fn layout_document_cached(
     cache.entries = entries;
     cache.rebuilt = rebuilt;
     DocumentLayout { pages: pager.pages }
+}
+
+/// Номера пунктов списков у абзацев по порядку.
+fn list_labels(doc: &Document, all: &[(&Paragraph, f32)]) -> Vec<Option<ListLabel>> {
+    if doc.numbering.is_empty() {
+        return vec![None; all.len()];
+    }
+    let mut counters = ListCounters::default();
+    all.iter()
+        .map(|(paragraph, _)| {
+            let (id, level) = doc.resolve_paragraph(&paragraph.props).numbering?;
+            counters.next(&doc.numbering, id, level)
+        })
+        .collect()
 }
 
 /// Абзацы раздела по порядку; абзацы таблиц — подряд.
@@ -327,12 +375,14 @@ struct Prepared {
     keep_lines: bool,
     page_break_before: bool,
     widow_control: bool,
+    label: Option<Arc<ListMark>>,
 }
 
 /// Переводит абзац модели в типы вёрстки и разбивает на строки.
 fn prepare(
     doc: &Document,
     paragraph: &Paragraph,
+    label: Option<&ListLabel>,
     width: f32,
     shaper: &mut Shaper,
     library: &FontLibrary,
@@ -421,7 +471,14 @@ fn prepare(
         },
         contextual: props.contextual_spacing,
     };
-    let broken = break_lines(shaper, library, &spans, &mark_style, &format);
+    let label = label.map(|label| list_mark(doc, paragraph, label, &mut format, shaper, library));
+    let mut broken = break_lines(shaper, library, &spans, &mark_style, &format);
+    // Номер другим шрифтом может сделать первую строку выше.
+    if let (Some((_, height)), Some(first)) = (&label, broken.lines.first_mut()) {
+        first.ascent = first.ascent.max(height.ascent);
+        first.descent = first.descent.max(height.descent);
+        first.leading = first.leading.max(height.leading);
+    }
     Prepared {
         text: broken.text.into(),
         heights: broken
@@ -437,6 +494,160 @@ fn prepare(
         keep_lines: props.keep_lines,
         page_break_before: props.page_break_before,
         widow_control: props.widow_control,
+        label: label.map(|(mark, _)| Arc::new(mark)),
+    }
+}
+
+/// Номер пункта списка: глифы на своём месте и высота его строки.
+/// Начало первой строки абзаца в `format` сдвигается за номер.
+fn list_mark(
+    doc: &Document,
+    paragraph: &Paragraph,
+    label: &ListLabel,
+    format: &mut ParagraphFormat,
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+) -> (ListMark, Line) {
+    let level = &label.level;
+    let mut run = level.run.clone();
+    let symbols = |family: &Option<String>| family.as_deref().and_then(symbol_font);
+    let font = symbols(&run.fonts.ascii).or_else(|| symbols(&run.fonts.h_ansi));
+    let text = match font {
+        // Знаки из шрифтов Symbol и Wingdings заменяются похожими знаками
+        // Юникода обычным шрифтом: самих этих шрифтов обычно нет.
+        Some(font) => {
+            run.fonts = RunFonts::default();
+            label.text.chars().map(|c| symbol_char(font, c)).collect()
+        }
+        None => label.text.clone(),
+    };
+    let props = doc.resolve_run(&paragraph.props, &run);
+    let mut shown = text;
+    if level.suffix == Some(LevelSuffix::Space) {
+        // Неразрывный пробел: обычный «висел» бы и не считался в ширину.
+        shown.push('\u{a0}');
+    }
+    let spans: Vec<TextSpan> = split_by_font_slot(&shown, &props.fonts)
+        .into_iter()
+        .map(|(piece, family)| TextSpan::new(piece, text_style(&props, family)))
+        .collect();
+    let mark_style = text_style(&props, &props.fonts.h_ansi);
+    let wide = ParagraphFormat::new(1.0e6);
+    let mut line = break_lines(shaper, library, &spans, &mark_style, &wide)
+        .lines
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| Line {
+            range: 0..0,
+            x: 0.0,
+            width: 0.0,
+            ascent: 0.0,
+            descent: 0.0,
+            leading: 0.0,
+            items: Vec::new(),
+            end: LineEnd::Paragraph,
+        });
+    let width: f32 = line.items.iter().map(LineItem::width).sum();
+    let start = format.left_indent + format.first_line_indent;
+    let x = match level.alignment {
+        Some(Alignment::Center) => start - width / 2.0,
+        Some(Alignment::Right) => start - width,
+        _ => start,
+    };
+    let end = x + width;
+    let text_start = match level.suffix.unwrap_or(LevelSuffix::Tab) {
+        LevelSuffix::Tab => {
+            // Табуляция до ближайшей позиции: заданной в абзаце, отступа
+            // выступа или шага по умолчанию.
+            let set = format
+                .tab_stops
+                .iter()
+                .filter(|t| t.kind != TabKind::Bar)
+                .map(|t| t.position);
+            let hanging = (format.first_line_indent < 0.0).then_some(format.left_indent);
+            let next = set
+                .chain(hanging)
+                .filter(|&p| p > end + 0.01)
+                .min_by(f32::total_cmp);
+            next.unwrap_or_else(|| {
+                let step = format.default_tab.max(1.0);
+                ((end / step).floor() + 1.0) * step
+            })
+        }
+        LevelSuffix::Space | LevelSuffix::Nothing => end,
+    };
+    format.first_line_indent = text_start - format.left_indent;
+    for item in &mut line.items {
+        match item {
+            LineItem::Text(t) => {
+                t.x += x;
+                t.span = 0;
+            }
+            LineItem::Tab(t) => {
+                t.x += x;
+                t.span = 0;
+            }
+        }
+    }
+    let mark = ListMark {
+        text: shown.trim_end_matches('\u{a0}').to_string(),
+        items: std::mem::take(&mut line.items),
+        props,
+    };
+    (mark, line)
+}
+
+/// Шрифт со знаками на месте букв, у которого знаки маркеров лежат
+/// в области `U+F000`–`U+F0FF`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SymbolFont {
+    Symbol,
+    Wingdings,
+}
+
+fn symbol_font(family: &str) -> Option<SymbolFont> {
+    let family = family.to_lowercase();
+    if family == "symbol" {
+        Some(SymbolFont::Symbol)
+    } else if family.starts_with("wingdings") {
+        Some(SymbolFont::Wingdings)
+    } else {
+        None
+    }
+}
+
+/// Знак Юникода, похожий на знак шрифта Symbol или Wingdings.
+fn symbol_char(font: SymbolFont, c: char) -> char {
+    let code = c as u32;
+    let byte = if (0xF020..=0xF0FF).contains(&code) {
+        code - 0xF000
+    } else if (0x20..=0xFF).contains(&code) {
+        code
+    } else {
+        return c;
+    };
+    match (font, byte) {
+        (SymbolFont::Symbol, 0xB7) => '•',
+        (SymbolFont::Symbol, 0xA8) => '♦',
+        (SymbolFont::Symbol, 0xA7) => '♣',
+        (SymbolFont::Symbol, 0xA9) => '♥',
+        (SymbolFont::Symbol, 0xAA) => '♠',
+        (SymbolFont::Symbol, 0xAE) => '→',
+        (SymbolFont::Symbol, 0x2D) => '−',
+        (SymbolFont::Wingdings, 0x6C) => '●',
+        (SymbolFont::Wingdings, 0x6E) => '■',
+        (SymbolFont::Wingdings, 0x71) => '❑',
+        (SymbolFont::Wingdings, 0x76) => '❖',
+        (SymbolFont::Wingdings, 0x9F) => '•',
+        (SymbolFont::Wingdings, 0xA1) => '○',
+        (SymbolFont::Wingdings, 0xA7) => '▪',
+        (SymbolFont::Wingdings, 0xA8) => '◻',
+        (SymbolFont::Wingdings, 0xD8) => '➢',
+        (SymbolFont::Wingdings, 0xE0) => '➢',
+        (SymbolFont::Wingdings, 0xFC) => '✓',
+        (SymbolFont::Wingdings, 0xFE) => '☑',
+        // Остальные знаки — обычный маркер.
+        _ => '•',
     }
 }
 
@@ -777,6 +988,7 @@ impl Pager {
             paragraph,
             text: p.text.clone(),
             spans: p.spans.clone(),
+            label: if k == 0 { p.label.clone() } else { None },
         };
         if let Some(page) = self.pages.last_mut() {
             page.lines.push(placed);
@@ -1151,5 +1363,114 @@ mod tests {
             },
         );
         assert_eq!(baseline_rise(&raised), 3.0);
+    }
+
+    /// Документ со списком «%1.» с отступом 36 пт и выступом 18 пт.
+    fn list_doc(paragraphs: Vec<Paragraph>, suffix: Option<LevelSuffix>) -> Document {
+        use letter_model::{
+            AbstractNumbering, Indentation, ListLevel, NumberFormat, NumberingInstance,
+        };
+        let mut doc = doc(paragraphs);
+        doc.numbering = Numbering {
+            abstracts: vec![AbstractNumbering {
+                id: 0,
+                levels: vec![ListLevel {
+                    start: Some(1),
+                    format: Some(NumberFormat::Decimal),
+                    text: Some("%1.".into()),
+                    suffix,
+                    paragraph: letter_model::ParagraphProps {
+                        indentation: Indentation {
+                            left: Some(Twips(720)),
+                            first_line: Some(FirstLineIndent::Hanging(Twips(360))),
+                            ..Indentation::default()
+                        },
+                        ..Default::default()
+                    },
+                    ..ListLevel::default()
+                }],
+                ..Default::default()
+            }],
+            instances: vec![NumberingInstance {
+                id: 1,
+                abstract_id: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        doc
+    }
+
+    fn item(text: &str) -> Paragraph {
+        let mut p = para(text);
+        p.props.numbering = Some(letter_model::NumberingRef {
+            id: Some(1),
+            level: Some(0),
+        });
+        p
+    }
+
+    #[test]
+    fn list_items_get_numbers() {
+        let doc = list_doc(vec![item("a"), para("b"), item("c")], None);
+        let layout = lay(&doc);
+        let lines = &layout.pages[0].lines;
+        let label = |i: usize| lines[i].label.as_ref().map(|l| l.text.clone());
+        assert_eq!(label(0).as_deref(), Some("1."));
+        assert_eq!(label(1), None);
+        assert_eq!(label(2).as_deref(), Some("2."));
+        // Номер — в начале выступа, текст — за табуляцией на отступе.
+        let mark = lines[0].label.as_ref().map(|l| l.items[0].x());
+        assert_eq!(mark, Some(18.0));
+        assert_eq!(lines[0].line.x, 36.0);
+        assert_eq!(lines[1].line.x, 0.0);
+    }
+
+    #[test]
+    fn number_followed_by_space_or_nothing() {
+        let x = |suffix| {
+            let layout = lay(&list_doc(vec![item("a")], Some(suffix)));
+            let line = &layout.pages[0].lines[0];
+            let mark = line
+                .label
+                .as_ref()
+                .map(|l| l.items.iter().map(LineItem::width).sum::<f32>());
+            (line.line.x - 18.0, mark.unwrap_or_default())
+        };
+        let (nothing, width) = x(LevelSuffix::Nothing);
+        assert!((nothing - width).abs() < 0.01, "{nothing} {width}");
+        let (space, wider) = x(LevelSuffix::Space);
+        assert!(
+            wider > width && (space - wider).abs() < 0.01,
+            "{space} {wider}"
+        );
+    }
+
+    #[test]
+    fn numbers_below_a_change_are_relaid() {
+        let mut document = list_doc(vec![item("a"), item("b"), item("c")], None);
+        let library = FontLibrary::embedded_only();
+        let mut shaper = Shaper::new();
+        let mut cache = LayoutCache::default();
+        layout_document_cached(&document, &mut shaper, &library, &mut cache);
+        // Первый пункт больше не в списке: номера ниже меняются.
+        document.sections[0].blocks[0] = Block::from(para("a"));
+        let cached = layout_document_cached(&document, &mut shaper, &library, &mut cache);
+        assert_eq!(cache.rebuilt(), 3);
+        assert_eq!(cached, lay(&document));
+        let labels: Vec<_> = cached.pages[0]
+            .lines
+            .iter()
+            .map(|l| l.label.as_ref().map(|l| l.text.clone()))
+            .collect();
+        assert_eq!(labels, [None, Some("1.".into()), Some("2.".into())]);
+    }
+
+    #[test]
+    fn symbol_bullets_become_unicode() {
+        assert_eq!(symbol_char(SymbolFont::Symbol, '\u{f0b7}'), '•');
+        assert_eq!(symbol_char(SymbolFont::Wingdings, '\u{f0a7}'), '▪');
+        assert_eq!(symbol_font("Wingdings 2"), Some(SymbolFont::Wingdings));
+        assert_eq!(symbol_font("Courier New"), None);
     }
 }

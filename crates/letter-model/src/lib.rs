@@ -33,8 +33,8 @@ mod units;
 
 pub use document::{Document, Settings};
 pub use numbering::{
-    AbstractNumbering, LevelOverride, LevelSuffix, ListLevel, NumberFormat, Numbering,
-    NumberingInstance, NumberingRef,
+    AbstractNumbering, LevelOverride, LevelSuffix, ListCounters, ListLabel, ListLevel,
+    NumberFormat, Numbering, NumberingInstance, NumberingRef,
 };
 pub use package::{SourcePackage, SourcePart};
 pub use paragraph::{

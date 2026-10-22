@@ -8,6 +8,8 @@
 //! нумерацию заново. Абзац ссылается на список номером и уровнем
 //! ([`NumberingRef`]).
 
+use std::collections::{HashMap, HashSet};
+
 use crate::{Alignment, ParagraphProps, RawXml, RunProps};
 
 /// Определения списков документа.
@@ -190,6 +192,108 @@ impl Numbering {
     }
 }
 
+/// Номер пункта списка, готовый к показу.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListLabel {
+    /// Текст номера: «2.», «1.3», «iv)» или знак маркера.
+    pub text: String,
+    /// Уровень списка, к которому относится пункт (выравнивание,
+    /// отделитель, шрифт номера).
+    pub level: ListLevel,
+}
+
+/// Счётчики списков: пункты по порядку документа превращаются в номера.
+///
+/// Как в Word, списки (`w:num`) с одним абстрактным списком считают
+/// подряд, а переопределение начала (`w:startOverride`) начинает счёт
+/// заново, когда список встречается впервые.
+#[derive(Debug, Clone, Default)]
+pub struct ListCounters {
+    /// Текущие номера уровней по абстрактному списку; `None` — уровень
+    /// ещё не начат.
+    counters: HashMap<u32, [Option<u32>; 9]>,
+    /// Списки, которые уже встречались.
+    seen: HashSet<u32>,
+}
+
+impl ListCounters {
+    /// Следующий пункт списка `id` уровня `level`: увеличивает счётчик и
+    /// возвращает номер. `None` — такого списка или уровня нет.
+    pub fn next(&mut self, numbering: &Numbering, id: u32, level: u8) -> Option<ListLabel> {
+        let instance = numbering.instance(id)?;
+        let level = level.min(8);
+        let definition = numbering.level(id, level)?;
+        let counters = self
+            .counters
+            .entry(instance.abstract_id)
+            .or_insert([None; 9]);
+        if self.seen.insert(id) {
+            for o in &instance.overrides {
+                if (o.start.is_some() || o.definition.is_some())
+                    && let Some(c) = counters.get_mut(usize::from(o.level))
+                {
+                    *c = None;
+                }
+            }
+        }
+        let start = |l: u8| numbering.level(id, l).and_then(|d| d.start).unwrap_or(0);
+        let i = usize::from(level);
+        counters[i] = Some(match counters[i] {
+            Some(n) => n.saturating_add(1),
+            None => start(level),
+        });
+        // Более глубокие уровни начинаются заново, если `w:lvlRestart`
+        // не говорит иначе (0 — не начинать заново никогда, N — после
+        // уровня N и выше).
+        for deeper in level + 1..9 {
+            let restart = numbering.level(id, deeper).and_then(|d| d.restart);
+            let reset = match restart {
+                Some(0) => false,
+                Some(after) => level < after,
+                None => true,
+            };
+            if reset {
+                counters[usize::from(deeper)] = None;
+            }
+        }
+        let current = *counters;
+        let legal = definition.legal == Some(true);
+        let mut text = String::new();
+        let mut chars = definition
+            .text
+            .as_deref()
+            .unwrap_or_default()
+            .chars()
+            .peekable();
+        while let Some(c) = chars.next() {
+            let placeholder = chars
+                .peek()
+                .and_then(|d| d.to_digit(10))
+                .filter(|d| c == '%' && (1..=9).contains(d));
+            let Some(n) = placeholder else {
+                text.push(c);
+                continue;
+            };
+            chars.next();
+            let l = (n - 1) as u8;
+            let value = current[usize::from(l)].unwrap_or_else(|| start(l));
+            let format = if legal {
+                NumberFormat::Decimal
+            } else {
+                numbering
+                    .level(id, l)
+                    .and_then(|d| d.format)
+                    .unwrap_or(NumberFormat::Decimal)
+            };
+            text.push_str(&format.format(value));
+        }
+        Some(ListLabel {
+            text,
+            level: definition,
+        })
+    }
+}
+
 impl NumberFormat {
     /// Номер `n` в этом виде: `3` → «3», «iii», «C», «В».
     pub fn format(&self, n: u32) -> String {
@@ -339,5 +443,76 @@ mod tests {
         );
         assert!(!numbering.is_empty());
         assert!(Numbering::default().is_empty());
+    }
+
+    #[test]
+    fn counting_items() {
+        let level = |level: u8, format, text: &str| ListLevel {
+            level,
+            start: Some(1),
+            format: Some(format),
+            text: Some(text.to_string()),
+            ..ListLevel::default()
+        };
+        let mut never = level(2, NumberFormat::LowerRoman, "%3)");
+        never.restart = Some(0);
+        let numbering = Numbering {
+            abstracts: vec![AbstractNumbering {
+                id: 0,
+                levels: vec![
+                    level(0, NumberFormat::Decimal, "%1."),
+                    level(1, NumberFormat::LowerLetter, "%1.%2"),
+                    never,
+                ],
+                ..Default::default()
+            }],
+            instances: vec![
+                NumberingInstance {
+                    id: 1,
+                    abstract_id: 0,
+                    ..Default::default()
+                },
+                NumberingInstance {
+                    id: 2,
+                    abstract_id: 0,
+                    ..Default::default()
+                },
+                NumberingInstance {
+                    id: 3,
+                    abstract_id: 0,
+                    overrides: vec![LevelOverride {
+                        level: 0,
+                        start: Some(10),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut counters = ListCounters::default();
+        let mut next = |id, level| {
+            counters
+                .next(&numbering, id, level)
+                .map(|l| l.text)
+                .unwrap_or_else(|| "-".into())
+        };
+        assert_eq!(next(1, 0), "1.");
+        assert_eq!(next(1, 1), "1.a");
+        assert_eq!(next(1, 1), "1.b");
+        assert_eq!(next(1, 2), "i)");
+        assert_eq!(next(1, 0), "2.");
+        // Второй уровень начат заново, третий — нет (`lvlRestart` 0).
+        assert_eq!(next(1, 1), "2.a");
+        assert_eq!(next(1, 2), "ii)");
+        // Список с тем же абстрактным продолжает счёт.
+        assert_eq!(next(2, 0), "3.");
+        // Переопределение начала начинает заново.
+        assert_eq!(next(3, 0), "10.");
+        assert_eq!(next(3, 0), "11.");
+        assert_eq!(next(1, 0), "12.");
+        // Нет такого списка или уровня.
+        assert_eq!(next(9, 0), "-");
+        assert_eq!(next(1, 5), "-");
     }
 }
