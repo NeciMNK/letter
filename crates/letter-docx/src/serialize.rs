@@ -7,9 +7,9 @@
 
 use letter_model::{
     Block, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind, FirstLineIndent,
-    HeaderFooterKind, Inline, LineSpacing, Orientation, Paragraph, ParagraphProps, RawXml, Run,
-    RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Style, StyleKind, Styles,
-    VerticalAlign,
+    HeaderFooterKind, Hyperlink, Inline, LineSpacing, Orientation, Paragraph, ParagraphProps,
+    RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Style,
+    StyleKind, Styles, VerticalAlign,
 };
 
 use crate::document::{W_NS, is_w_ns};
@@ -260,13 +260,72 @@ pub(crate) fn block_xml(block: &Block) -> String {
 
 fn paragraph(p: &Paragraph, section: Option<&SectionProps>) -> String {
     let mut out = paragraph_props(&p.props, section);
-    for inline in &p.content {
-        match inline {
-            Inline::Run(run) => out.push_str(&run_xml(run)),
-            Inline::Unknown(raw) => out.push_str(raw.as_str()),
+    let mut i = 0;
+    while i < p.content.len() {
+        let link = match &p.content[i] {
+            Inline::Run(run) => run.props.link.as_ref(),
+            _ => None,
+        };
+        let Some(link) = link else {
+            out.push_str(&inline_xml(&p.content[i]));
+            i += 1;
+            continue;
+        };
+        // Соседние фрагменты с той же ссылкой (и закладки между ними) —
+        // внутри одного `w:hyperlink`.
+        let mut end = i + 1;
+        let mut last_run = i;
+        while let Some(next) = p.content.get(end) {
+            match next {
+                Inline::Run(run) if run.props.link.as_ref() == Some(link) => last_run = end,
+                Inline::BookmarkStart(_) | Inline::BookmarkEnd(_) => {}
+                _ => break,
+            }
+            end += 1;
         }
+        let inner: String = p.content[i..=last_run].iter().map(inline_xml).collect();
+        out.push_str(&format!(
+            "<w:hyperlink{}>{inner}</w:hyperlink>",
+            hyperlink_attributes(link)
+        ));
+        i = last_run + 1;
     }
     element("w:p", &out)
+}
+
+fn inline_xml(inline: &Inline) -> String {
+    match inline {
+        Inline::Run(run) => run_xml(run),
+        Inline::BookmarkStart(bookmark) => format!(
+            r#"<w:bookmarkStart w:id="{}" w:name="{}"/>"#,
+            escape_attr(&bookmark.id),
+            escape_attr(&bookmark.name)
+        ),
+        Inline::BookmarkEnd(id) => format!(r#"<w:bookmarkEnd w:id="{}"/>"#, escape_attr(id)),
+        Inline::Unknown(raw) => raw.as_str().to_string(),
+    }
+}
+
+/// Атрибуты `w:hyperlink`. Адрес пишется связью `r:id`: её заранее
+/// ставит запись пакета.
+fn hyperlink_attributes(link: &Hyperlink) -> String {
+    let mut out = String::new();
+    if let Some(id) = &link.relationship {
+        out.push_str(&format!(r#" r:id="{}""#, escape_attr(id)));
+    }
+    for (name, value) in [
+        ("anchor", &link.anchor),
+        ("tooltip", &link.tooltip),
+        ("tgtFrame", &link.frame),
+    ] {
+        if let Some(value) = value {
+            out.push_str(&format!(r#" w:{name}="{}""#, escape_attr(value)));
+        }
+    }
+    if link.history {
+        out.push_str(r#" w:history="1""#);
+    }
+    out
 }
 
 /// `w:pPr`; пустая строка, если записывать нечего.

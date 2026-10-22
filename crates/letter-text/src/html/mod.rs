@@ -303,6 +303,17 @@ impl Reader {
             "code" | "kbd" | "samp" | "tt" => run.fonts = RunFonts::new(MONOSPACE),
             "mark" => run.highlight = Some(letter_model::Highlight::Yellow),
             "th" => run.bold = Some(true),
+            // Ссылка: как в браузере, синяя и подчёркнутая.
+            "a" => {
+                if let Some(href) = attr("href").map(str::trim).filter(|h| !h.is_empty()) {
+                    run.link = Some(match href.strip_prefix('#') {
+                        Some(anchor) => letter_model::Hyperlink::to_bookmark(anchor),
+                        None => letter_model::Hyperlink::to(href),
+                    });
+                    run.color = Some(letter_model::Color::Rgb(0x05, 0x63, 0xC1));
+                    run.underline = Some(Underline::Single);
+                }
+            }
             "font" => {
                 if let Some(face) = attr("face").and_then(css::font_family) {
                     run.fonts = RunFonts::new(face);

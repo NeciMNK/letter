@@ -188,8 +188,60 @@ pub struct RunProps {
     /// Кернинг для шрифтов от этого размера и больше (`w:kern`); ноль —
     /// выключен.
     pub kerning: Option<crate::HalfPoints>,
+    /// Гиперссылка, частью которой является фрагмент. В .docx соседние
+    /// фрагменты с одной ссылкой записываются внутри одного
+    /// `w:hyperlink`; в `w:rPr` ссылка не пишется.
+    pub link: Option<Hyperlink>,
     /// Свойства, которые программа пока не понимает, в порядке из файла.
     pub unknown: Vec<RawXml>,
+}
+
+/// Гиперссылка: адрес в интернете (или файл) либо закладка в документе.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Hyperlink {
+    /// Адрес: `https://…`, `mailto:…`, путь к файлу. `None` — ссылка
+    /// только на закладку.
+    pub target: Option<String>,
+    /// Закладка (`w:anchor`): в документе по адресу или в этом документе.
+    pub anchor: Option<String>,
+    /// Всплывающая подсказка (`w:tooltip`).
+    pub tooltip: Option<String>,
+    /// Окно, где открыть (`w:tgtFrame`, например `_blank`).
+    pub frame: Option<String>,
+    /// Добавлять ли в журнал посещённых (`w:history`).
+    pub history: bool,
+    /// Связь (`r:id`) из исходного файла, по которой записан адрес.
+    pub relationship: Option<String>,
+}
+
+impl Hyperlink {
+    /// Ссылка на адрес `target`.
+    pub fn to(target: impl Into<String>) -> Hyperlink {
+        Hyperlink {
+            target: Some(target.into()),
+            history: true,
+            ..Hyperlink::default()
+        }
+    }
+
+    /// Ссылка на закладку `name` в этом документе.
+    pub fn to_bookmark(name: impl Into<String>) -> Hyperlink {
+        Hyperlink {
+            anchor: Some(name.into()),
+            history: true,
+            ..Hyperlink::default()
+        }
+    }
+
+    /// Что показать пользователю: адрес, адрес с закладкой или «#закладка».
+    pub fn address(&self) -> String {
+        match (&self.target, &self.anchor) {
+            (Some(target), Some(anchor)) => format!("{target}#{anchor}"),
+            (Some(target), None) => target.clone(),
+            (None, Some(anchor)) => format!("#{anchor}"),
+            (None, None) => String::new(),
+        }
+    }
 }
 
 /// Шрифты фрагмента. Word выбирает шрифт по виду символа: латиница и

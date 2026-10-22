@@ -43,8 +43,8 @@ pub use numbering::{
 };
 pub use package::{SourcePackage, SourcePart};
 pub use paragraph::{
-    Alignment, FirstLineIndent, Indentation, Inline, LineSpacing, Paragraph, ParagraphProps,
-    Spacing, TabLeader, TabStop, TabStopKind,
+    Alignment, Bookmark, FirstLineIndent, Indentation, Inline, LineSpacing, Paragraph,
+    ParagraphProps, Spacing, TabLeader, TabStop, TabStopKind,
 };
 pub use picture::{
     Anchor, AnchorAlign, AnchorPosition, Distance, EMU_PER_POINT, HorizontalFrom, ImageData,
@@ -54,8 +54,8 @@ pub use properties::{AppProperties, CoreProperties, Properties, Statistics};
 pub use raw::RawXml;
 pub use resolve::{ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps, overlay_borders};
 pub use run::{
-    BreakKind, Color, FieldChar, FieldCharKind, Highlight, OBJECT_CHAR, Run, RunContent, RunFonts,
-    RunProps, ThemeColor, ThemeFont, Underline, VerticalAlign,
+    BreakKind, Color, FieldChar, FieldCharKind, Highlight, Hyperlink, OBJECT_CHAR, Run, RunContent,
+    RunFonts, RunProps, ThemeColor, ThemeFont, Underline, VerticalAlign,
 };
 pub use section::{
     Columns, HeaderFooter, HeaderFooterKind, HeaderFooters, Orientation, PageMargins, PageSize,

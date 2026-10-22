@@ -141,7 +141,7 @@ fn docx_survives_conversion_to_rtf() {
                     .iter()
                     .filter_map(|i| match i {
                         Inline::Run(r) => Some(r.clone()),
-                        Inline::Unknown(_) => None,
+                        _ => None,
                     })
                     .collect()
             };

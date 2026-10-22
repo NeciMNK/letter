@@ -296,7 +296,9 @@ pub fn format_runs(doc: &mut Document, start: Position, end: Position, format: R
             RunFormat::CharStyle(id) => props.style = Some(id.clone()),
             // Неизвестные свойства (их нам не показать) остаются.
             RunFormat::Clear => {
+                // Ссылка — не оформление: остаётся.
                 *props = RunProps {
+                    link: props.link.take(),
                     unknown: std::mem::take(&mut props.unknown),
                     ..RunProps::default()
                 };

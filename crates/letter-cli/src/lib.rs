@@ -326,6 +326,12 @@ fn dump_paragraph(out: &mut String, depth: usize, p: &Paragraph) {
     for inline in &p.content {
         match inline {
             Inline::Run(run) => dump_run(out, depth + 1, run),
+            Inline::BookmarkStart(b) => {
+                let _ = writeln!(out, "{}Закладка {:?} ({})", indent(depth + 1), b.name, b.id);
+            }
+            Inline::BookmarkEnd(id) => {
+                let _ = writeln!(out, "{}Конец закладки ({id})", indent(depth + 1));
+            }
             Inline::Unknown(raw) => {
                 let _ = writeln!(out, "{}Непонятое <{}>", indent(depth + 1), raw.name());
             }
@@ -444,6 +450,9 @@ fn run_props(props: &RunProps) -> String {
     let mut parts = Vec::new();
     if let Some(style) = &props.style {
         parts.push(format!("стиль {style}"));
+    }
+    if let Some(link) = &props.link {
+        parts.push(format!("ссылка {:?}", link.address()));
     }
     let toggles = [
         (props.bold, "ж"),

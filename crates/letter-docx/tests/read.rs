@@ -212,6 +212,30 @@ fn headers_and_footers_are_read() {
 }
 
 #[test]
+fn hyperlinks_and_bookmarks() {
+    let doc = fixture("links.docx");
+    let p = paragraphs(&doc);
+    assert_eq!(p[0].plain_text(), "Site: example site.");
+    let link = |p: &Paragraph| {
+        p.runs()
+            .find_map(|r| r.props.link.clone())
+            .expect("нет ссылки")
+    };
+    let site = link(p[0]);
+    assert_eq!(
+        site.target.as_deref(),
+        Some("https://example.com/page?a=1&b=2")
+    );
+    assert!(site.history);
+    let inner = link(p[1]);
+    assert_eq!(inner.target, None);
+    assert_eq!(inner.anchor.as_deref(), Some("target"));
+    assert_eq!(p[2].plain_text(), "This is the target paragraph.");
+    assert!(matches!(&p[2].content[1], Inline::BookmarkStart(b) if b.name == "target"));
+    assert!(matches!(&p[2].content[3], Inline::BookmarkEnd(id) if id == "0"));
+}
+
+#[test]
 fn russian_and_english() {
     let doc = fixture("ru-en.docx");
     let text = doc.plain_text();

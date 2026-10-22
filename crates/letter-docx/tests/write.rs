@@ -12,11 +12,11 @@ use letter_docx::{read_bytes, write_bytes};
 use letter_model::{
     Alignment, Block, Border, Borders, BreakKind, CellMargins, CellProps, CellVerticalAlign, Color,
     Columns, DocDefaults, Document, FirstLineIndent, HalfPoints, HeaderFooter, HeightRule,
-    Highlight, Indentation, Inline, LineSpacing, PageMargins, PageSize, Paragraph, ParagraphProps,
-    RawXml, RowHeight, RowProps, Run, RunContent, RunFonts, RunProps, Section, SectionProps,
-    SectionStart, Shading, Spacing, Style, StyleKind, Styles, TabLeader, TabStop, TabStopKind,
-    Table, TableCell, TableLayout, TableProps, TableRow, TableWidth, ThemeColor, ThemeFont, Twips,
-    Underline, VerticalAlign, VerticalMerge,
+    Highlight, Hyperlink, Indentation, Inline, LineSpacing, PageMargins, PageSize, Paragraph,
+    ParagraphProps, RawXml, RowHeight, RowProps, Run, RunContent, RunFonts, RunProps, Section,
+    SectionProps, SectionStart, Shading, Spacing, Style, StyleKind, Styles, TabLeader, TabStop,
+    TabStopKind, Table, TableCell, TableLayout, TableProps, TableRow, TableWidth, ThemeColor,
+    ThemeFont, Twips, Underline, VerticalAlign, VerticalMerge,
 };
 
 const FIXTURES: &[&str] = &[
@@ -30,6 +30,7 @@ const FIXTURES: &[&str] = &[
     "floating.docx",
     "sections.docx",
     "headers.docx",
+    "links.docx",
     "header-footer.docx",
     "ru-en.docx",
 ];
@@ -193,6 +194,7 @@ fn everything() -> Document {
         scale: Some(150),
         position: Some(-6),
         kerning: Some(HalfPoints(24)),
+        link: None,
         // Порядок как в схеме: при записи элементы всё равно встанут так.
         unknown: vec![
             RawXml::new(
@@ -632,5 +634,52 @@ fn edited_header_is_saved() {
             .blocks[0]
             .plain_text(),
         "First page header"
+    );
+}
+
+#[test]
+fn hyperlinks_get_their_relationships() {
+    let mut doc = read_bytes(&fixture_bytes("links.docx")).unwrap();
+    // Старый адрес меняется, новая ссылка добавляется в новый абзац.
+    let Block::Paragraph(p) = &mut doc.sections[0].blocks[0] else {
+        panic!("нет абзаца");
+    };
+    for inline in &mut p.content {
+        if let Inline::Run(run) = inline
+            && let Some(link) = &mut run.props.link
+        {
+            link.target = Some("https://example.org/".into());
+        }
+    }
+    let mut run = Run::text("mail");
+    run.props.link = Some(Hyperlink::to("mailto:a@b.c"));
+    doc.sections[0]
+        .blocks
+        .push(Paragraph::from_runs([run, Run::text("!")]).into());
+    let bytes = write_bytes(&doc).unwrap();
+    let parts = zip_parts(&bytes);
+    let rels = String::from_utf8(parts["word/_rels/document.xml.rels"].clone()).unwrap();
+    assert!(rels.contains(r#"Target="https://example.org/" TargetMode="External""#));
+    assert!(rels.contains(r#"Target="mailto:a@b.c" TargetMode="External""#));
+    let reopened = read_bytes(&bytes).unwrap();
+    let links: Vec<_> = reopened
+        .sections
+        .iter()
+        .flat_map(|s| &s.blocks)
+        .filter_map(|b| match b {
+            Block::Paragraph(p) => Some(p),
+            _ => None,
+        })
+        .flat_map(|p| p.runs())
+        .filter_map(|r| r.props.link.as_ref())
+        .map(Hyperlink::address)
+        .collect();
+    assert_eq!(links, ["https://example.org/", "#target", "mailto:a@b.c"]);
+    let last = reopened.sections[0].blocks.last().unwrap();
+    assert_eq!(last.plain_text(), "mail!");
+    // Второе сохранение не добавляет связей.
+    assert_eq!(
+        write_bytes(&reopened).unwrap(),
+        write_bytes(&round_trip(&reopened)).unwrap()
     );
 }

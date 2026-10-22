@@ -132,3 +132,24 @@ fn write_and_read_back() {
     assert!(html.contains("<pre "));
     assert!(html.contains("class=\"ListParagraph\""));
 }
+
+#[test]
+fn links_are_read_and_written() {
+    let doc = read(b"<p>See <a href=\"https://example.com/?a=1&amp;b=2\">site</a> and <a href=\"#top\">top</a>.</p>");
+    let p = paragraph(&doc, 0);
+    let links: Vec<_> = p
+        .runs()
+        .filter_map(|r| r.props.link.as_ref())
+        .map(letter_model::Hyperlink::address)
+        .collect();
+    assert_eq!(links, ["https://example.com/?a=1&b=2", "#top"]);
+    let html = write(&doc);
+    assert!(
+        html.contains("<a href=\"https://example.com/?a=1&amp;b=2\">"),
+        "{html}"
+    );
+    let again = read(html.as_bytes());
+    let p = paragraph(&again, 0);
+    assert_eq!(p.plain_text(), "See site and top.");
+    assert!(p.runs().any(|r| r.props.link.is_some()));
+}
