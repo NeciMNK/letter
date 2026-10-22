@@ -196,6 +196,10 @@ pub enum RibbonCommand {
     CloseHeaderFooter,
     /// Обновить поля в выделенном (F9).
     UpdateFields,
+    /// Вставить оглавление у курсора.
+    InsertToc,
+    /// Перестроить оглавления документа.
+    UpdateToc,
     /// Вставить поле с этим кодом у курсора (с готовым результатом).
     InsertField(String),
     /// Окно «Ссылка» (Ctrl+K).

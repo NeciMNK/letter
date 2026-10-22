@@ -129,8 +129,13 @@ pub fn update_fields(
     context: &FieldContext,
 ) -> usize {
     let last = last.min(paragraph_count(doc).saturating_sub(1));
+    // Сначала оглавления: они меняют число абзацев.
+    let (mut updated, last, pages) = crate::toc::update_tocs(doc, first, last, context);
+    let context = &FieldContext {
+        page_of_paragraph: pages,
+        ..context.clone()
+    };
     let statistics = Statistics::of(doc);
-    let mut updated = 0;
     for index in first..=last {
         let Some(paragraph) = paragraph_ref(doc, index) else {
             continue;

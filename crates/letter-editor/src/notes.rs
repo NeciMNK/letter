@@ -46,8 +46,8 @@ pub fn notes_mut(doc: &mut Document, kind: NoteKind) -> &mut Vec<Note> {
 /// пробел. Возвращает место после ссылки и номер новой сноски.
 pub fn insert_note(doc: &mut Document, at: Position, kind: NoteKind) -> (Position, String) {
     let (text_style, mark_style) = note_styles(kind);
-    let text_style = ensure_style(doc, text_style, StyleKind::Paragraph);
-    let mark_style = ensure_style(doc, mark_style, StyleKind::Character);
+    let text_style = note_style(doc, text_style, StyleKind::Paragraph);
+    let mark_style = note_style(doc, mark_style, StyleKind::Character);
     let list = notes_mut(doc, kind);
     if list.iter().all(|n| n.special.is_none()) {
         list.insert(0, separator("-1", "separator"));
@@ -118,29 +118,44 @@ fn separator(id: &str, kind: &str) -> Note {
     }
 }
 
-/// Идентификатор стиля `id` (ищется и по имени, без учёта регистра);
-/// если такого стиля нет, он добавляется с оформлением, как в Word: текст
-/// сноски — 10 пт, одинарный интервал без интервала после; знак сноски —
-/// надстрочный.
-fn ensure_style(doc: &mut Document, id: &str, style_kind: StyleKind) -> String {
-    let name = style_name(id);
+/// Идентификатор стиля `id` вида `kind` (ищется и по имени `name`, без
+/// учёта регистра); если такого стиля нет, он добавляется: абзацный — на
+/// основе стиля по умолчанию, с оформлением от `setup`.
+pub(crate) fn ensure_style(
+    doc: &mut Document,
+    id: &str,
+    name: &str,
+    kind: StyleKind,
+    setup: impl FnOnce(&mut Style),
+) -> String {
     if let Some(style) = doc.styles.styles.iter().find(|s| {
-        s.kind == style_kind
+        s.kind == kind
             && (s.id.eq_ignore_ascii_case(id)
                 || s.name
                     .as_deref()
-                    .is_some_and(|n| n.eq_ignore_ascii_case(&name)))
+                    .is_some_and(|n| n.eq_ignore_ascii_case(name)))
     }) {
         return style.id.clone();
     }
-    let mut style = Style::new(id, style_kind);
-    style.name = Some(name);
-    match style_kind {
+    let mut style = Style::new(id, kind);
+    style.name = Some(name.to_string());
+    if kind == StyleKind::Paragraph {
+        style.based_on = doc
+            .styles
+            .default_for(StyleKind::Paragraph)
+            .map(|s| s.id.clone());
+    }
+    setup(&mut style);
+    doc.styles.styles.push(style);
+    id.to_string()
+}
+
+/// Стиль текста или знака сноски, как в Word: текст сноски — 10 пт,
+/// одинарный интервал без интервала после; знак сноски — надстрочный.
+fn note_style(doc: &mut Document, id: &str, kind: StyleKind) -> String {
+    let name = style_name(id);
+    ensure_style(doc, id, &name, kind, |style| match kind {
         StyleKind::Paragraph => {
-            style.based_on = doc
-                .styles
-                .default_for(StyleKind::Paragraph)
-                .map(|s| s.id.clone());
             style.paragraph.spacing = Spacing {
                 after: Some(Twips(0)),
                 line: Some(LineSpacing::Multiple(240)),
@@ -149,9 +164,7 @@ fn ensure_style(doc: &mut Document, id: &str, style_kind: StyleKind) -> String {
             style.run.size = Some(HalfPoints(20));
         }
         _ => style.run.vertical_align = Some(VerticalAlign::Superscript),
-    }
-    doc.styles.styles.push(style);
-    id.to_string()
+    })
 }
 
 /// Имя встроенного стиля Word по идентификатору: `FootnoteText` →

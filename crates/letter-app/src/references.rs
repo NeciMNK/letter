@@ -1,23 +1,60 @@
-//! Вкладка «Ссылки»: пока — группа «Сноски» (вставить сноску или
-//! концевую сноску у курсора).
+//! Вкладка «Ссылки»: группы «Оглавление» (вставить и обновить) и
+//! «Сноски» (вставить сноску или концевую сноску у курсора).
 
 use eframe::egui::{Ui, vec2};
 use letter_editor::Command;
 use letter_model::NoteKind;
 
 use crate::i18n::tr;
-use crate::icons::{Icon, icon_button};
+use crate::icons::{Icon, icon_button, icon_text_button};
+use crate::insert::menu_button;
 use crate::keytips::{self, Level, TipAction};
 use crate::ribbon::{RibbonCommand, RibbonInfo, group};
 
 /// Подсказки клавиш вкладки «Ссылки» (для проверки).
 #[cfg(test)]
-pub const KEYTIPS: [&str; 2] = ["keytip-references-footnote", "keytip-references-endnote"];
+pub const KEYTIPS: [&str; 4] = [
+    "keytip-references-toc",
+    "keytip-references-update-toc",
+    "keytip-references-footnote",
+    "keytip-references-endnote",
+];
 
 /// Вкладка «Ссылки».
 pub fn references(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     // В колонтитул сноску не вставить, как и в Word.
     let enabled = info.has_document && info.story.is_none();
+    group(ui, tr("group-toc"), |ui| {
+        menu_button(
+            ui,
+            Icon::Contents,
+            tr("toc"),
+            tr("toc-hint"),
+            "keytip-references-toc",
+            enabled,
+            |ui| {
+                if ui.button(tr("toc-automatic")).clicked() {
+                    out.push(RibbonCommand::InsertToc);
+                    ui.close();
+                }
+            },
+        );
+        ui.vertical(|ui| {
+            let response = icon_text_button(ui, Icon::Refresh, tr("toc-update"), enabled)
+                .on_hover_text(tr("toc-update-hint"));
+            let command = RibbonCommand::UpdateToc;
+            keytips::tip(
+                ui,
+                &response,
+                Level::Commands,
+                "keytip-references-update-toc",
+                TipAction::Command(command.clone()),
+            );
+            if response.clicked() {
+                out.push(command);
+            }
+        });
+    });
     group(ui, tr("group-footnotes"), |ui| {
         let buttons = [
             (

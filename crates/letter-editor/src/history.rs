@@ -39,6 +39,7 @@ use crate::table::{
     BorderPreset, delete_columns, delete_rows, delete_table, in_table, insert_columns, insert_rows,
     insert_table, merge_cells, next_cell, set_cell_borders, set_cell_shading,
 };
+use crate::toc::{insert_toc, update_tocs};
 
 /// Правка документа.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +166,11 @@ pub enum Command {
     DeleteBookmark(String),
     /// Вставить у курсора ссылку на новую сноску (выделенное заменяется).
     InsertNote(NoteKind),
+    /// Вставить оглавление у курсора (страницы заголовков — из
+    /// контекста).
+    InsertToc(Box<FieldContext>),
+    /// Перестроить все оглавления документа («Обновить таблицу»).
+    UpdateToc(Box<FieldContext>),
     /// Заменить текст сноски `id` вида `kind` (после её правки).
     SetNote {
         /// Обычная или концевая.
@@ -360,6 +366,7 @@ impl History {
                 | Command::HeaderFooter { .. }
                 | Command::TitlePage { .. }
                 | Command::UpdateFields(_)
+                | Command::UpdateToc(_)
                 | Command::Link { text: None, .. }
                 | Command::AddBookmark(_)
                 | Command::DeleteBookmark(_)
@@ -370,10 +377,13 @@ impl History {
                 (start.paragraph.saturating_sub(1), end.paragraph)
             }
             Command::DeleteForward if !erasing => (start.paragraph, end.paragraph + 1),
-            // Замена и закладки могут задеть любой абзац.
-            Command::ReplaceAll { .. } | Command::AddBookmark(_) | Command::DeleteBookmark(_) => {
-                (0, paragraph_count(doc).saturating_sub(1))
-            }
+            // Замена, закладки и оглавление могут задеть любой абзац.
+            Command::ReplaceAll { .. }
+            | Command::AddBookmark(_)
+            | Command::DeleteBookmark(_)
+            | Command::UpdateFields(_)
+            | Command::UpdateToc(_)
+            | Command::InsertToc(_) => (0, paragraph_count(doc).saturating_sub(1)),
             // Новый номер получают и следующие пункты списка.
             Command::RestartNumbering | Command::ContinueNumbering => {
                 (start.paragraph, paragraph_count(doc).saturating_sub(1))
@@ -534,6 +544,14 @@ impl History {
                 delete_bookmark(doc, name);
                 Some(selection)
             }
+            Command::UpdateToc(context) => {
+                let last = paragraph_count(doc).saturating_sub(1);
+                update_tocs(doc, 0, last, context);
+                Some(Selection {
+                    anchor: clamp(doc, selection.anchor),
+                    focus: clamp(doc, selection.focus),
+                })
+            }
             Command::UpdateFields(context) => {
                 update_fields(doc, start.paragraph, end.paragraph, context);
                 Some(Selection {
@@ -564,6 +582,7 @@ impl History {
             Command::InsertTable { rows, columns } => insert_table(doc, at, *rows, *columns),
             Command::InsertPicture(picture) => insert_picture(doc, at, (**picture).clone()),
             Command::InsertNote(kind) => insert_note(doc, at, *kind).0,
+            Command::InsertToc(context) => insert_toc(doc, at, context),
             Command::Break(kind) => insert_break(doc, at, *kind),
             Command::SectionBreak(start) => insert_section_break(doc, at, *start),
             Command::Format(_)
@@ -591,6 +610,7 @@ impl History {
             | Command::HeaderFooter { .. }
             | Command::TitlePage { .. }
             | Command::UpdateFields(_)
+            | Command::UpdateToc(_)
             | Command::Link { text: None, .. }
             | Command::AddBookmark(_)
             | Command::DeleteBookmark(_)
