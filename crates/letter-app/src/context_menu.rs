@@ -17,12 +17,13 @@ const PASTE_OPTIONS: [(Icon, &str, PasteMode); 3] = [
 
 /// Содержимое меню. `has_selection` — что-то выделено (иначе вырезать
 /// и копировать нечего). `numbered` — курсор в нумерованном списке
-/// (`true` — выше есть список, который можно продолжить). Выбранное
-/// добавляется в `out`.
+/// (`true` — выше есть список, который можно продолжить). `link` —
+/// курсор в ссылке. Выбранное добавляется в `out`.
 pub fn context_menu(
     ui: &mut Ui,
     has_selection: bool,
     numbered: Option<bool>,
+    link: bool,
     out: &mut Vec<RibbonCommand>,
 ) {
     ui.set_min_width(200.0);
@@ -62,6 +63,22 @@ pub fn context_menu(
         out.push(RibbonCommand::ParagraphDialog);
         ui.close();
     }
+    ui.separator();
+    if link {
+        for (name, command) in [
+            ("edit-link", RibbonCommand::LinkDialog),
+            ("open-link", RibbonCommand::OpenLink),
+            ("remove-link", RibbonCommand::RemoveLink),
+        ] {
+            if ui.button(tr(name)).clicked() {
+                out.push(command);
+                ui.close();
+            }
+        }
+    } else if icon_text_button(ui, Icon::Link, tr("link"), true).clicked() {
+        out.push(RibbonCommand::LinkDialog);
+        ui.close();
+    }
     if let Some(can_continue) = numbered {
         ui.separator();
         if ui.button(tr("restart-numbering")).clicked() {
@@ -89,7 +106,7 @@ mod tests {
     fn items_give_commands() {
         let mut h = Harness::new_ui_state(
             |ui, state: &mut (bool, Vec<RibbonCommand>)| {
-                context_menu(ui, state.0, Some(false), &mut state.1);
+                context_menu(ui, state.0, Some(false), false, &mut state.1);
             },
             (false, Vec::new()),
         );

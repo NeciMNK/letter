@@ -19,6 +19,7 @@ pub mod edit;
 pub mod fields;
 pub mod format;
 pub mod history;
+pub mod links;
 pub mod lists;
 pub mod navigation;
 pub mod picture;
@@ -40,6 +41,7 @@ pub use format::{
     format_paragraphs, format_runs, formatting_at, language_at,
 };
 pub use history::{Command, History};
+pub use links::{bookmark_position, bookmarks, link_at, set_link};
 pub use lists::{
     ListKind, can_continue_numbering, change_list_level, continue_numbering, list_item, list_kind,
     multilevel_list, remove_from_list, restart_numbering, tab_changes_level, toggle_list,

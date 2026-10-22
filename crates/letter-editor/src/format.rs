@@ -724,7 +724,12 @@ fn run_props_in(paragraph: &Paragraph, from: usize, to: usize) -> impl Iterator<
 
 /// Применяет `change` к фрагментам абзаца от `from` до `to`, разрезая
 /// фрагменты на краях.
-fn apply(paragraph: &mut Paragraph, from: usize, to: usize, mut change: impl FnMut(&mut RunProps)) {
+pub(crate) fn apply(
+    paragraph: &mut Paragraph,
+    from: usize,
+    to: usize,
+    mut change: impl FnMut(&mut RunProps),
+) {
     if from == to {
         if !paragraph
             .content
