@@ -14,7 +14,7 @@ use std::sync::Arc;
 use eframe::egui::{
     self, Align, Color32, CornerRadius, Layout, Rect, RichText, Stroke, Ui, pos2, vec2,
 };
-use letter_editor::{ParagraphFormat, RunFormat};
+use letter_editor::{ListKind, ParagraphFormat, RunFormat};
 
 use crate::home::{HomeState, home};
 use crate::icons::{Icon, icon_button};
@@ -120,6 +120,8 @@ pub enum RibbonCommand {
     Align(Alignment),
     /// Отступы и интервалы абзаца.
     Paragraph(ParagraphFormat),
+    /// «Маркеры» или «Нумерация».
+    List(ListKind),
     /// Показать или скрыть знаки форматирования.
     ToggleMarks,
     /// Применить стиль с этим идентификатором.
@@ -192,6 +194,8 @@ pub struct RibbonInfo {
     pub fonts: Arc<[String]>,
     /// Выравнивание абзаца с курсором.
     pub alignment: Option<Alignment>,
+    /// Список, в котором абзац с курсором.
+    pub list: Option<ListKind>,
     /// Межстрочный интервал абзаца с курсором.
     pub line_spacing: Option<letter_model::LineSpacing>,
     /// Интервалы перед и после абзаца с курсором, твипы.

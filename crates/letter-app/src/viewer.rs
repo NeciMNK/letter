@@ -27,8 +27,8 @@ use eframe::egui::{
 };
 use letter_editor::{
     Command, History, Motion, Position, RunFormat, Selection, caret, copy_range, find_all,
-    find_next, formatting_at, hit_test, language_at, move_cursor, paragraph_at, select_all,
-    selection_rects, word_at,
+    find_next, formatting_at, hit_test, language_at, list_kind, move_cursor, paragraph_at,
+    select_all, selection_rects, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
 use letter_model::{Alignment, Document, Statistics};
@@ -995,6 +995,19 @@ impl Viewer {
             });
             steps
         });
+        // Tab в egui переводит фокус на следующий элемент окна (кнопку
+        // ленты), а у нас он правит документ: фокус остаётся в тексте.
+        if steps
+            .iter()
+            .any(|s| matches!(s, Step::Action(Action::Edit(Command::Tab { .. }))))
+        {
+            ctx.memory_mut(|m| {
+                m.move_focus(egui::FocusDirection::None);
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+        }
         let mut actions = Vec::new();
         for step in steps {
             match step {
@@ -1201,6 +1214,7 @@ impl Viewer {
                 info.space_before = paragraph.space_before.0;
                 info.space_after = paragraph.space_after.0;
             }
+            info.list = list_kind(&document.doc, document.cursor.paragraph);
         }
         info
     }
@@ -1262,6 +1276,7 @@ impl Viewer {
                 RibbonCommand::Paragraph(format) => {
                     actions.push(Action::Edit(Command::Paragraph(format)));
                 }
+                RibbonCommand::List(kind) => actions.push(Action::Edit(Command::List(kind))),
                 RibbonCommand::Style(id) => actions.push(Action::Edit(Command::Style(id))),
                 RibbonCommand::BuiltInStyle(name) => {
                     if let Some(id) = self
@@ -1880,7 +1895,9 @@ fn key_action(event: &egui::Event, screen: f32) -> Option<Action> {
             let edit = match key {
                 Key::Enter if plain && modifiers.shift => Some(Command::LineBreak),
                 Key::Enter if plain => Some(Command::SplitParagraph),
-                Key::Tab if plain && !modifiers.shift => Some(Command::Type("\t".into())),
+                Key::Tab if plain => Some(Command::Tab {
+                    shift: modifiers.shift,
+                }),
                 Key::Backspace if plain => Some(Command::DeleteBackward),
                 Key::Delete if plain => Some(Command::DeleteForward),
                 _ => None,
@@ -2338,9 +2355,12 @@ mod tests {
         );
         assert_eq!(
             action(press(Key::Tab, none)),
-            Some(Action::Edit(Command::Type("\t".into())))
+            Some(Action::Edit(Command::Tab { shift: false }))
         );
-        assert_eq!(action(press(Key::Tab, Modifiers::SHIFT)), None);
+        assert_eq!(
+            action(press(Key::Tab, Modifiers::SHIFT)),
+            Some(Action::Edit(Command::Tab { shift: true }))
+        );
         assert_eq!(
             action(press(Key::Backspace, none)),
             Some(Action::Edit(Command::DeleteBackward))
