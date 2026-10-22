@@ -40,6 +40,7 @@ use crate::table::{
     insert_table, merge_cells, next_cell, set_cell_borders, set_cell_shading,
 };
 use crate::toc::{insert_toc, update_tocs};
+use crate::watermark::set_watermark;
 
 /// Правка документа.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,6 +174,9 @@ pub enum Command {
     UpdateToc(Box<FieldContext>),
     /// «Цвет страницы»; `None` — «Нет цвета».
     PageColor(Option<Color>),
+    /// «Подложка» с этой надписью во всех верхних колонтитулах; `None` —
+    /// «Удалить подложку».
+    Watermark(Option<String>),
     /// Заменить текст сноски `id` вида `kind` (после её правки).
     SetNote {
         /// Обычная или концевая.
@@ -335,6 +339,22 @@ impl History {
                         Patch::Background {
                             before,
                             after: color,
+                        },
+                        selection,
+                    );
+                }
+                return selection;
+            }
+            Command::Watermark(text) => {
+                let before = doc.sections.clone();
+                set_watermark(doc, text.as_deref());
+                if doc.sections != before {
+                    let after = doc.sections.clone();
+                    self.push(
+                        Patch::Sections {
+                            start: 0,
+                            before,
+                            after,
                         },
                         selection,
                     );
@@ -642,7 +662,8 @@ impl History {
             | Command::AddBookmark(_)
             | Command::DeleteBookmark(_)
             | Command::SetNote { .. }
-            | Command::PageColor(_) => at,
+            | Command::PageColor(_)
+            | Command::Watermark(_) => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
 
@@ -1156,6 +1177,21 @@ mod tests {
         assert_eq!(d, original);
         h.redo(&mut d);
         assert_eq!(d.background, color);
+    }
+
+    #[test]
+    fn watermark_is_one_undo_step() {
+        let mut d = doc(&["a"]);
+        let original = d.clone();
+        let mut h = History::new();
+        let text = Some("ОБРАЗЕЦ".to_string());
+        h.run(&mut d, caret(0, 0), Command::Watermark(text));
+        assert!(d.sections[0].props.headers.default.is_some());
+        h.undo(&mut d);
+        assert_eq!(d, original);
+        // Убрать подложку, которой нет, — ничего не меняет.
+        h.run(&mut d, caret(0, 0), Command::Watermark(None));
+        assert!(!h.can_undo());
     }
 
     #[test]

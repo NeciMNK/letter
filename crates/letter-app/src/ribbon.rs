@@ -775,6 +775,13 @@ mod tests {
         h.run();
         h.get_by_label("Рамка").click();
         h.run();
+        h.get_all_by_label("Подложка")
+            .next()
+            .expect("кнопка")
+            .click();
+        h.run();
+        h.get_by_label("ЧЕРНОВИК").click();
+        h.run();
         assert_eq!(
             h.state().out,
             vec![
@@ -782,6 +789,7 @@ mod tests {
                 RibbonCommand::Edit(Command::PageSetup(PageSetup::Borders(
                     PageBorderPreset::Box
                 ))),
+                RibbonCommand::Edit(Command::Watermark(Some("ЧЕРНОВИК".into()))),
             ]
         );
     }
