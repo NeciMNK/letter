@@ -215,6 +215,8 @@ pub enum RibbonCommand {
     InsertSymbol(char),
     /// Окно «Символ».
     SymbolDialog,
+    /// «Титульная страница» этого вида (тексты подставляет просмотрщик).
+    CoverPage(letter_editor::CoverLayout),
     /// Перейти по ссылке у курсора.
     OpenLink,
     /// Удалить ссылку у курсора (или в выделенном).

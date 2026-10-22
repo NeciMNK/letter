@@ -696,3 +696,21 @@ hyphenation-hint = Break words between syllables at the ends of lines for a more
 hyphenation-none = None
 hyphenation-auto = Automatic
 keytip-layout-hyphenation = H
+
+# Pages
+group-pages = Pages
+cover-page = Cover Page
+cover-page-hint = Insert a formatted first page with the title, author and date at the start of the document
+cover-plain = Plain
+cover-band = Band
+cover-side = Side Line
+cover-title = [Document title]
+cover-subtitle = [Document subtitle]
+cover-author = [Author]
+blank-page = Blank Page
+blank-page-hint = Insert a blank page at the cursor
+page-break = Page Break
+page-break-hint = Start the next page at the cursor (Ctrl+Enter)
+keytip-insert-cover = V
+keytip-insert-blank-page = NP
+keytip-insert-page-break = B

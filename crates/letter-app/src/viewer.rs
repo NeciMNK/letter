@@ -59,6 +59,7 @@ use crate::view::{
     MAX_ZOOM, MIN_ZOOM, PAGE_GAP, Zoom, anchored_offset, clamp_zoom, current_page, page_width_zoom,
     place_pages, step_zoom,
 };
+use letter_editor::CoverPage;
 
 /// Образец текста для окна «Шрифт»: одна строка с оформлением `props`
 /// по центру `rect`, свёрстанная и нарисованная как в документе (100 %).
@@ -777,6 +778,34 @@ fn paint_marks(painter: &egui::Painter, page: &letter_layout::Page, origin: Pos2
     }
 }
 
+/// Титульная страница вида `layout`: название и автор — из свойств
+/// документа (или подсказки в скобках), дата — сегодняшняя.
+fn cover_page(doc: &letter_model::Document, layout: letter_editor::CoverLayout) -> CoverPage {
+    let core = &doc.properties.core;
+    let or = |value: &Option<String>, placeholder: &str| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or(placeholder)
+            .to_string()
+    };
+    let russian = crate::i18n::language() == crate::i18n::Language::Russian;
+    let picture = if russian {
+        "dd.MM.yyyy"
+    } else {
+        "MMMM d, yyyy"
+    };
+    let (now, _) = crate::fields::now();
+    CoverPage {
+        layout,
+        title: or(&core.title, tr("cover-title")),
+        subtitle: or(&core.subject, tr("cover-subtitle")),
+        author: or(&core.creator, tr("cover-author")),
+        date: letter_editor::format_date(picture, now, russian),
+    }
+}
+
 /// Список шрифтов для ленты: установленные и привычные шрифты Word.
 fn font_names(library: &FontLibrary) -> Arc<[String]> {
     let mut names = library.families();
@@ -1451,6 +1480,8 @@ impl Viewer {
                                 | Command::PageColor(_)
                                 | Command::Watermark(_)
                                 | Command::AutoHyphenation(_)
+                                | Command::InsertCoverPage(_)
+                                | Command::BlankPage
                                 | Command::HeaderFooter { .. }
                                 | Command::InsertPicture(_)
                         )
@@ -1921,6 +1952,12 @@ impl Viewer {
                 }
                 RibbonCommand::InsertSymbol(c) => {
                     actions.push(Action::Edit(Command::Type(c.to_string())));
+                }
+                RibbonCommand::CoverPage(layout) => {
+                    if let Some(document) = &self.document {
+                        let cover = cover_page(&document.doc, layout);
+                        actions.push(Action::Edit(Command::InsertCoverPage(Box::new(cover))));
+                    }
                 }
                 RibbonCommand::SymbolDialog => {
                     if self.document.is_some() {
@@ -3672,6 +3709,27 @@ mod tests {
         let document = viewer.document.as_ref().unwrap();
         assert!(link_at(&document.doc, Position::new(0, 21)).is_none());
         assert!(link_at(&document.doc, Position::new(0, 9)).is_some());
+    }
+
+    #[test]
+    fn cover_page_takes_document_properties() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("links.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        viewer.document.as_mut().unwrap().doc.properties.core.title = Some("Отчёт".into());
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::CoverPage(letter_editor::CoverLayout::Band)],
+        );
+        let document = viewer.document.as_ref().unwrap();
+        let blocks = &document.doc.sections[0].blocks;
+        assert_eq!(blocks[0].plain_text(), "Отчёт");
+        assert_eq!(blocks[1].plain_text(), tr("cover-subtitle"));
+        assert_eq!(blocks[4].plain_text(), "\u{c}");
+        assert_eq!(document.cursor, Position::new(0, 0));
+        // Обложка — на своей странице.
+        assert!(document.layout.pages.len() >= 2);
     }
 
     #[test]

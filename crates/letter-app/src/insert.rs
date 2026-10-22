@@ -3,7 +3,8 @@
 //! рисунка» (видна, когда выделен рисунок).
 
 use eframe::egui::{self, Color32, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
-use letter_editor::{BorderPreset, Command, PictureWrap};
+use letter_editor::{BorderPreset, Command, CoverLayout, PictureWrap};
+use letter_model::BreakKind;
 use letter_model::Color;
 
 use crate::i18n::tr;
@@ -19,7 +20,10 @@ const SQUARE: f32 = 16.0;
 
 /// Подсказки клавиш вкладки «Вставка» (для проверки).
 #[cfg(test)]
-pub const INSERT_KEYTIPS: [&str; 10] = [
+pub const INSERT_KEYTIPS: [&str; 13] = [
+    "keytip-insert-cover",
+    "keytip-insert-blank-page",
+    "keytip-insert-page-break",
     "keytip-insert-table",
     "keytip-insert-picture",
     "keytip-insert-link",
@@ -62,6 +66,7 @@ const GRAYS: [(u8, u8, u8); 4] = [
 /// Вкладка «Вставка».
 pub fn insert(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     let doc = info.has_document;
+    pages_group(ui, info, out);
     group(ui, tr("group-tables"), |ui| {
         ui.vertical(|ui| {
             let response = icon_button(ui, Icon::Table, tr("table"), vec2(44.0, 34.0), doc, false)
@@ -147,6 +152,79 @@ pub fn insert(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     crate::headers::insert_group(ui, info, out);
     crate::fields::text_group(ui, info, out);
     crate::symbols::group_ui(ui, info, out);
+}
+
+/// Группа «Страницы»: титульная страница, пустая страница и разрыв
+/// страницы. В колонтитуле недоступна.
+fn pages_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+    let enabled = info.has_document && info.story.is_none();
+    group(ui, tr("group-pages"), |ui| {
+        menu_button(
+            ui,
+            Icon::CoverPage,
+            tr("cover-page"),
+            tr("cover-page-hint"),
+            "keytip-insert-cover",
+            enabled,
+            |ui| {
+                for layout in CoverLayout::ALL {
+                    let name = match layout {
+                        CoverLayout::Plain => "cover-plain",
+                        CoverLayout::Band => "cover-band",
+                        CoverLayout::Side => "cover-side",
+                    };
+                    if ui.button(tr(name)).clicked() {
+                        out.push(RibbonCommand::CoverPage(layout));
+                        ui.close();
+                    }
+                }
+            },
+        );
+        command_button(
+            ui,
+            (Icon::BlankPage, tr("blank-page"), tr("blank-page-hint")),
+            "keytip-insert-blank-page",
+            enabled,
+            RibbonCommand::Edit(Command::BlankPage),
+            out,
+        );
+        command_button(
+            ui,
+            (Icon::Breaks, tr("page-break"), tr("page-break-hint")),
+            "keytip-insert-page-break",
+            enabled,
+            RibbonCommand::Edit(Command::Break(BreakKind::Page)),
+            out,
+        );
+    });
+}
+
+/// Большая кнопка со значком и подписью под ней: значок, подпись
+/// и подсказка — в `face`.
+fn command_button(
+    ui: &mut Ui,
+    face: (Icon, &str, &str),
+    key: &str,
+    enabled: bool,
+    command: RibbonCommand,
+    out: &mut Vec<RibbonCommand>,
+) {
+    let (icon, label, hint) = face;
+    ui.vertical(|ui| {
+        let response =
+            icon_button(ui, icon, label, vec2(44.0, 34.0), enabled, false).on_hover_text(hint);
+        keytips::tip(
+            ui,
+            &response,
+            Level::Commands,
+            key,
+            TipAction::Command(command.clone()),
+        );
+        if response.clicked() {
+            out.push(command);
+        }
+        ui.label(label);
+    });
 }
 
 /// Сетка выбора размера новой таблицы: клетки до указателя
