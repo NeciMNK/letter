@@ -5,11 +5,11 @@
 //! [`RawXml`], чтобы при записи вернуть его на место без потерь.
 
 use letter_model::{
-    Block, BreakKind, Color, Columns, Document, FirstLineIndent, HalfPoints, HeaderFooter,
-    HeaderFooterKind, HeaderFooters, Indentation, Inline, LineSpacing, NumberingRef, Orientation,
-    PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run, RunContent, RunFonts, RunProps,
-    Section, SectionProps, SectionStart, Spacing, TabStop, ThemeColor, Twips, Underline,
-    VerticalAlign,
+    Block, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind, FirstLineIndent,
+    HalfPoints, HeaderFooter, HeaderFooterKind, HeaderFooters, Indentation, Inline, LineSpacing,
+    NumberingRef, Orientation, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run,
+    RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Spacing, TabStop,
+    ThemeColor, Twips, Underline, VerticalAlign,
 };
 
 use crate::ReadError;
@@ -155,21 +155,18 @@ fn simple_field(element: &Element) -> Option<Vec<Run>> {
         result.push(read_run(child));
     }
     let props = result.first().map(|r| r.props.clone()).unwrap_or_default();
-    let marker = |xml: String| Run {
+    let marker = |item: RunContent| Run {
         props: props.clone(),
-        content: vec![RunContent::Unknown(RawXml::new(xml))],
+        content: vec![item],
     };
-    let char_xml = |kind: &str| format!(r#"<w:fldChar xmlns:w="{W_NS}" w:fldCharType="{kind}"/>"#);
+    let mark = |kind| marker(RunContent::FieldChar(FieldChar::new(kind)));
     let mut runs = vec![
-        marker(char_xml("begin")),
-        marker(format!(
-            r#"<w:instrText xmlns:w="{W_NS}" xml:space="preserve">{}</w:instrText>"#,
-            crate::serialize::escape_text(instruction)
-        )),
-        marker(char_xml("separate")),
+        mark(FieldCharKind::Begin),
+        marker(RunContent::FieldCode(instruction.to_string())),
+        mark(FieldCharKind::Separate),
     ];
     runs.extend(result);
-    runs.push(marker(char_xml("end")));
+    runs.push(mark(FieldCharKind::End));
     Some(runs)
 }
 
@@ -338,12 +335,48 @@ fn read_run(r: &Element) -> Run {
                     Some("column") => RunContent::Break(BreakKind::Column),
                     Some(_) => RunContent::Unknown(child.raw()),
                 },
+                "fldChar" => match read_field_char(child) {
+                    Some(c) => RunContent::FieldChar(c),
+                    None => RunContent::Unknown(child.raw()),
+                },
+                "instrText"
+                    if child.elements().next().is_none()
+                        && child.attrs.iter().all(|a| a.local == "space") =>
+                {
+                    RunContent::FieldCode(child.text())
+                }
                 _ => RunContent::Unknown(child.raw()),
             }
         };
         run.content.push(item);
     }
     run
+}
+
+/// Знак поля `w:fldChar`; с данными поля формы (`w:ffData`) и другими
+/// детьми — `None`.
+fn read_field_char(element: &Element) -> Option<FieldChar> {
+    if !element.only_attrs(&["fldCharType", "dirty", "fldLock"])
+        || element.elements().next().is_some()
+    {
+        return None;
+    }
+    let kind = match element.w_attr("fldCharType")? {
+        "begin" => FieldCharKind::Begin,
+        "separate" => FieldCharKind::Separate,
+        "end" => FieldCharKind::End,
+        _ => return None,
+    };
+    let flag = |name: &str| match element.w_attr(name) {
+        None | Some("false" | "0" | "off") => Some(false),
+        Some("true" | "1" | "on") => Some(true),
+        Some(_) => None,
+    };
+    Some(FieldChar {
+        kind,
+        dirty: flag("dirty")?,
+        locked: flag("fldLock")?,
+    })
 }
 
 pub(crate) fn read_run_props(rpr: &Element) -> RunProps {
@@ -969,16 +1002,35 @@ mod tests {
             .runs()
             .flat_map(|r| &r.content)
             .map(|c| match c {
-                RunContent::Unknown(raw) => raw.local_name().to_string(),
+                RunContent::FieldChar(c) => format!("{:?}", c.kind),
+                RunContent::FieldCode(code) => code.clone(),
                 RunContent::Text(t) => t.clone(),
                 _ => String::new(),
             })
             .collect();
-        assert_eq!(names, ["fldChar", "instrText", "fldChar", "7", "fldChar"]);
+        assert_eq!(names, ["Begin", " PAGE ", "Separate", "7", "End"]);
         // Оформление результата есть и у знаков поля.
         assert!(p.runs().all(|r| r.props.bold == Some(true)));
         // Записанное поле читается так же.
         let xml = crate::serialize::document_xml(&doc);
+        let again = read_document(&xml::parse(xml.as_bytes()).unwrap()).unwrap();
+        assert_eq!(again.sections[0].blocks, doc.sections[0].blocks);
+    }
+
+    #[test]
+    fn complex_field_is_read() {
+        let doc = read_body_xml(
+            r#"<w:p><w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/></w:r><w:r><w:instrText xml:space="preserve"> DATE \@ "d.M.yyyy" </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1.2.2026</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>"#,
+        );
+        let p = first_paragraph(&doc);
+        let found = letter_model::fields(p);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name(), "DATE");
+        assert_eq!(found[0].switch("\\@").as_deref(), Some("d.M.yyyy"));
+        assert!(found[0].dirty);
+        assert_eq!(&p.plain_text()[found[0].result.clone()], "1.2.2026");
+        let xml = crate::serialize::document_xml(&doc);
+        assert!(xml.contains(r#"<w:fldChar w:fldCharType="begin" w:dirty="1"/>"#));
         let again = read_document(&xml::parse(xml.as_bytes()).unwrap()).unwrap();
         assert_eq!(again.sections[0].blocks, doc.sections[0].blocks);
     }

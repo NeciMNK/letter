@@ -6,9 +6,10 @@
 //! вместе, а потом упорядочиваются по таблицам ниже.
 
 use letter_model::{
-    Block, BreakKind, Color, Columns, Document, FirstLineIndent, HeaderFooterKind, Inline,
-    LineSpacing, Orientation, Paragraph, ParagraphProps, RawXml, Run, RunContent, RunFonts,
-    RunProps, Section, SectionProps, SectionStart, Style, StyleKind, Styles, VerticalAlign,
+    Block, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind, FirstLineIndent,
+    HeaderFooterKind, Inline, LineSpacing, Orientation, Paragraph, ParagraphProps, RawXml, Run,
+    RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Style, StyleKind, Styles,
+    VerticalAlign,
 };
 
 use crate::document::{W_NS, is_w_ns};
@@ -387,10 +388,33 @@ fn run_xml(run: &Run) -> String {
                 });
                 out.push_str(&crate::picture::picture_xml(picture, 10_000 + id));
             }
+            RunContent::FieldChar(c) => out.push_str(&field_char(c)),
+            RunContent::FieldCode(code) => out.push_str(&format!(
+                r#"<w:instrText xml:space="preserve">{}</w:instrText>"#,
+                escape_text(code)
+            )),
             RunContent::Unknown(raw) => out.push_str(raw.as_str()),
         }
     }
     element("w:r", &out)
+}
+
+/// `w:fldChar`: знак начала, разделителя или конца поля.
+fn field_char(c: &FieldChar) -> String {
+    let kind = match c.kind {
+        FieldCharKind::Begin => "begin",
+        FieldCharKind::Separate => "separate",
+        FieldCharKind::End => "end",
+    };
+    let mut out = format!(r#"<w:fldChar w:fldCharType="{kind}""#);
+    if c.dirty {
+        out.push_str(r#" w:dirty="1""#);
+    }
+    if c.locked {
+        out.push_str(r#" w:fldLock="1""#);
+    }
+    out.push_str("/>");
+    out
 }
 
 /// `w:t`. Пробелы по краям и подряд Word сохраняет только с `xml:space`.

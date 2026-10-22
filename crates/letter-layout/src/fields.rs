@@ -1,10 +1,9 @@
 //! Номера страниц в колонтитулах: поля PAGE (номер страницы) и NUMPAGES
-//! (число страниц). Поле в .docx записано знаками поля (`w:fldChar`):
-//! начало, код (`w:instrText`), разделитель, результат, конец. При
-//! вёрстке колонтитула результат таких полей заменяется номером этой
-//! страницы. Остальные поля показывают свой сохранённый результат.
+//! (число страниц). При вёрстке колонтитула результат таких полей
+//! заменяется номером этой страницы. Остальные поля показывают свой
+//! сохранённый результат.
 
-use letter_model::{Block, Inline, RawXml, RunContent};
+use letter_model::{Block, Paragraph, fields, set_field_result};
 
 /// Блоки `blocks` с номером страницы `page` и числом страниц `pages`
 /// в полях PAGE и NUMPAGES; `None`, если таких полей нет.
@@ -22,10 +21,9 @@ pub(crate) fn with_page_numbers(blocks: &[Block], page: usize, pages: usize) -> 
 /// Есть ли в блоке поле PAGE или NUMPAGES.
 fn has_page_fields(block: &Block) -> bool {
     match block {
-        Block::Paragraph(p) => p.runs().flat_map(|r| &r.content).any(|item| {
-            matches!(item, RunContent::Unknown(raw) if raw.local_name() == "instrText"
-                && field_value(&instruction_text(raw), 1, 1).is_some())
-        }),
+        Block::Paragraph(p) => fields(p)
+            .iter()
+            .any(|f| field_value(&f.code, 1, 1).is_some()),
         Block::Table(t) => t
             .rows
             .iter()
@@ -36,115 +34,26 @@ fn has_page_fields(block: &Block) -> bool {
     }
 }
 
-/// Где мы внутри поля верхнего уровня.
-#[derive(Debug, PartialEq)]
-enum Phase {
-    /// Вне поля.
-    Outside,
-    /// Читаем код поля.
-    Code(String),
-    /// Результат поля; `Some` — чем его заменить (`written` — замена уже
-    /// вставлена).
-    Result {
-        value: Option<String>,
-        written: bool,
-    },
-}
-
 fn substitute(block: &mut Block, page: usize, pages: usize) {
-    let paragraph = match block {
-        Block::Paragraph(p) => p,
+    match block {
+        Block::Paragraph(p) => substitute_paragraph(p, page, pages),
         Block::Table(t) => {
             for cell in t.rows.iter_mut().flat_map(|r| &mut r.cells) {
                 for block in &mut cell.blocks {
                     substitute(block, page, pages);
                 }
             }
-            return;
         }
-        Block::Unknown(_) => return,
-    };
-    let mut depth = 0usize;
-    let mut phase = Phase::Outside;
-    for inline in &mut paragraph.content {
-        let Inline::Run(run) = inline else {
-            continue;
-        };
-        let mut content = Vec::with_capacity(run.content.len());
-        for item in std::mem::take(&mut run.content) {
-            match &item {
-                RunContent::Unknown(raw) if raw.local_name() == "fldChar" => {
-                    match raw.attribute("fldCharType") {
-                        Some("begin") => {
-                            depth += 1;
-                            if depth == 1 {
-                                phase = Phase::Code(String::new());
-                            }
-                        }
-                        Some("separate") if depth == 1 => {
-                            if let Phase::Code(code) = &phase {
-                                phase = Phase::Result {
-                                    value: field_value(code, page, pages),
-                                    written: false,
-                                };
-                            }
-                        }
-                        Some("end") => {
-                            if depth == 1 {
-                                // Поле без результата: вставляем его перед концом.
-                                if let Phase::Code(code) = &phase
-                                    && let Some(value) = field_value(code, page, pages)
-                                {
-                                    content.push(RunContent::Text(value));
-                                }
-                                phase = Phase::Outside;
-                            }
-                            depth = depth.saturating_sub(1);
-                        }
-                        _ => {}
-                    }
-                }
-                RunContent::Unknown(raw) if raw.local_name() == "instrText" && depth == 1 => {
-                    if let Phase::Code(code) = &mut phase {
-                        code.push_str(&instruction_text(raw));
-                    }
-                }
-                RunContent::Text(_) => {
-                    if let Phase::Result {
-                        value: Some(value),
-                        written,
-                    } = &mut phase
-                    {
-                        if !*written {
-                            *written = true;
-                            content.push(RunContent::Text(value.clone()));
-                        }
-                        continue;
-                    }
-                }
-                _ => {}
-            }
-            content.push(item);
-        }
-        run.content = content;
+        Block::Unknown(_) => {}
     }
 }
 
-/// Текст внутри `w:instrText`.
-fn instruction_text(raw: &RawXml) -> String {
-    let xml = raw.as_str();
-    let (Some(open), Some(close)) = (xml.find('>'), xml.rfind("</")) else {
-        return String::new();
-    };
-    if open + 1 > close {
-        return String::new();
+fn substitute_paragraph(paragraph: &mut Paragraph, page: usize, pages: usize) {
+    for (index, field) in fields(paragraph).iter().enumerate() {
+        if let Some(value) = field_value(&field.code, page, pages) {
+            set_field_result(paragraph, index, &value);
+        }
     }
-    xml[open + 1..close]
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
 }
 
 /// Значение поля с кодом `code`: номер страницы или число страниц
@@ -210,20 +119,21 @@ fn alphabetic(n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use letter_model::{Paragraph, Run};
+    use letter_model::{Paragraph, Run, RunContent};
 
-    const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    use letter_model::{FieldChar, FieldCharKind};
 
     fn field_char(kind: &str) -> RunContent {
-        RunContent::Unknown(RawXml::new(format!(
-            r#"<w:fldChar xmlns:w="{W}" w:fldCharType="{kind}"/>"#
-        )))
+        let kind = match kind {
+            "begin" => FieldCharKind::Begin,
+            "separate" => FieldCharKind::Separate,
+            _ => FieldCharKind::End,
+        };
+        RunContent::FieldChar(FieldChar::new(kind))
     }
 
     fn code(text: &str) -> RunContent {
-        RunContent::Unknown(RawXml::new(format!(
-            r#"<w:instrText xmlns:w="{W}" xml:space="preserve">{text}</w:instrText>"#
-        )))
+        RunContent::FieldCode(text.into())
     }
 
     fn paragraph(items: Vec<RunContent>) -> Block {

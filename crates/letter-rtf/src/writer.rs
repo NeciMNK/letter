@@ -360,7 +360,10 @@ impl Writer {
                     RunContent::Break(BreakKind::Page) => out.push_str("\\page "),
                     RunContent::Break(BreakKind::Column) => out.push_str("\\column "),
                     // Рисунки в RTF пока не записываются.
-                    RunContent::Picture(_) | RunContent::Unknown(_) => {}
+                    RunContent::Picture(_)
+                    | RunContent::FieldChar(_)
+                    | RunContent::FieldCode(_)
+                    | RunContent::Unknown(_) => {}
                 }
             }
             out.push('}');

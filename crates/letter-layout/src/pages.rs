@@ -1062,7 +1062,8 @@ fn prepare(
                     spans.push(TextSpan::object(object, style));
                     span_props.push(resolved.clone());
                 }
-                RunContent::Unknown(_) => {}
+                // Код поля не виден, видно только его результат.
+                RunContent::FieldChar(_) | RunContent::FieldCode(_) | RunContent::Unknown(_) => {}
             }
         }
         push_text(&mut spans, &mut span_props, &text, &resolved);

@@ -149,7 +149,10 @@ fn paragraph_text(p: &Paragraph) -> String {
             RunContent::Break(BreakKind::Line) => out.push_str("\r\n"),
             RunContent::Break(_) => out.push('\u{c}'),
             // Как в Word: рисунки в обычный текст не попадают.
-            RunContent::Picture(_) | RunContent::Unknown(_) => {}
+            RunContent::Picture(_)
+            | RunContent::FieldChar(_)
+            | RunContent::FieldCode(_)
+            | RunContent::Unknown(_) => {}
         }
     }
     out

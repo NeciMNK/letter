@@ -2,8 +2,9 @@
 //! поля и колонки разделов (кнопки вкладки «Макет»).
 
 use letter_model::{
-    Block, BreakKind, Columns, Document, HeaderFooter, HeaderFooterKind, Orientation, PageMargins,
-    PageSize, Paragraph, RawXml, Run, RunContent, Section, SectionProps, SectionStart, Twips,
+    Block, BreakKind, Columns, Document, FieldChar, FieldCharKind, HeaderFooter, HeaderFooterKind,
+    Orientation, PageMargins, PageSize, Paragraph, Run, RunContent, Section, SectionProps,
+    SectionStart, Twips,
 };
 
 use crate::edit::{blocks_mut, clamp_offset, find, insert_items, split_content, top_level};
@@ -177,24 +178,17 @@ pub fn set_title_page(doc: &mut Document, section: usize, on: bool) {
 /// разделитель, результат «1», конец. При вёрстке колонтитула результат
 /// заменяется номером страницы.
 pub fn page_number_runs() -> Vec<Run> {
-    const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-    let raw = |xml: String| Run {
-        content: vec![RunContent::Unknown(RawXml::new(xml))],
+    let item = |content: RunContent| Run {
+        content: vec![content],
         ..Run::default()
     };
-    let field_char = |kind: &str| {
-        raw(format!(
-            r#"<w:fldChar xmlns:w="{W}" w:fldCharType="{kind}"/>"#
-        ))
-    };
+    let mark = |kind| item(RunContent::FieldChar(FieldChar::new(kind)));
     vec![
-        field_char("begin"),
-        raw(format!(
-            r#"<w:instrText xmlns:w="{W}" xml:space="preserve"> PAGE </w:instrText>"#
-        )),
-        field_char("separate"),
+        mark(FieldCharKind::Begin),
+        item(RunContent::FieldCode(" PAGE ".into())),
+        mark(FieldCharKind::Separate),
         Run::text("1"),
-        field_char("end"),
+        mark(FieldCharKind::End),
     ]
 }
 

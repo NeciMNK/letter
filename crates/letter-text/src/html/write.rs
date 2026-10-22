@@ -303,7 +303,10 @@ fn content(
                     out.push_str("<br style=\"page-break-before:always\">");
                 }
                 // Рисунки в HTML пока не записываются.
-                RunContent::Picture(_) | RunContent::Unknown(_) => {}
+                RunContent::Picture(_)
+                | RunContent::FieldChar(_)
+                | RunContent::FieldCode(_)
+                | RunContent::Unknown(_) => {}
             }
         }
         for tag in open.iter().rev() {

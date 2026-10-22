@@ -430,7 +430,10 @@ impl<'a> Writer<'a> {
                 RunContent::Tab => text.element("<text:tab/>"),
                 RunContent::Break(_) => text.element("<text:line-break/>"),
                 // Рисунки в ODT пока не записываются.
-                RunContent::Picture(_) | RunContent::Unknown(_) => {}
+                RunContent::Picture(_)
+                | RunContent::FieldChar(_)
+                | RunContent::FieldCode(_)
+                | RunContent::Unknown(_) => {}
             }
         }
         if style.is_some() {
