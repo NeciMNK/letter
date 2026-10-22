@@ -438,11 +438,36 @@ pub fn break_lines(
     mark_style: &TextStyle,
     format: &ParagraphFormat,
 ) -> ParagraphLines {
+    break_lines_around(shaper, library, spans, mark_style, format, &mut |_| None)
+}
+
+/// Свободное место для строки рядом с плавающим рисунком: края, пт от
+/// левого края области абзаца (как [`Line::x`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineRoom {
+    /// Левый край.
+    pub left: f32,
+    /// Правый край.
+    pub right: f32,
+}
+
+/// Как [`break_lines`], но место для каждой строки может быть уже:
+/// перед каждой строкой вызывается `room` с уже готовыми строками
+/// и возвращает место для следующей (`None` — вся ширина).
+pub fn break_lines_around(
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+    spans: &[TextSpan],
+    mark_style: &TextStyle,
+    format: &ParagraphFormat,
+    room: &mut dyn FnMut(&[Line]) -> Option<LineRoom>,
+) -> ParagraphLines {
     let mut builder = Builder::new(shaper, library, spans, format);
     let mut lines = Vec::new();
     let mut start = 0;
     let mut first = true;
     loop {
+        builder.room = room(&lines);
         let (end, kind) = builder.fit(start, first);
         lines.push(builder.place(start, end, first, kind, mark_style));
         start = end;
@@ -453,6 +478,7 @@ pub fn break_lines(
             break;
         }
         if finished {
+            builder.room = room(&lines);
             lines.push(builder.place(start, start, first, LineEnd::Paragraph, mark_style));
             break;
         }
@@ -476,6 +502,8 @@ struct Builder<'a> {
     objects: Vec<Option<InlineObject>>,
     /// Заданные позиции табуляции по возрастанию, без черт.
     stops: Vec<TabStop>,
+    /// Место для текущей строки, если его сужает плавающий рисунок.
+    room: Option<LineRoom>,
 }
 
 impl<'a> Builder<'a> {
@@ -509,6 +537,7 @@ impl<'a> Builder<'a> {
             breaks,
             stops,
             objects: spans.iter().map(|s| s.object.clone()).collect(),
+            room: None,
         };
         builder.shape(spans);
         builder
@@ -653,10 +682,22 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Где начинается текущая строка с учётом [`Builder::room`].
+    fn line_start(&self, first: bool) -> f32 {
+        let start = self.format.line_start(first);
+        self.room.map_or(start, |r| start.max(r.left))
+    }
+
+    /// Где кончается место для текста текущей строки.
+    fn line_end(&self) -> f32 {
+        let end = self.format.line_end();
+        self.room.map_or(end, |r| end.min(r.right))
+    }
+
     /// Ищет, где кончится строка, начатая с кластера `start`.
     fn fit(&mut self, start: usize, first: bool) -> (usize, LineEnd) {
-        let line_end = self.format.line_end();
-        let mut state = TabState::new(self.format.line_start(first));
+        let line_end = self.line_end();
+        let mut state = TabState::new(self.line_start(first));
         let mut last_break = None;
         let mut has_content = false;
         for (i, cluster) in self.clusters.iter().enumerate().skip(start) {
@@ -712,7 +753,8 @@ impl<'a> Builder<'a> {
         mark_style: &TextStyle,
     ) -> Line {
         let format = self.format;
-        let line_start = format.line_start(first);
+        let line_start = self.line_start(first);
+        let line_end = self.line_end();
         let clusters = &self.clusters[start..end];
         // Пробелы и разрыв в конце строки не считаются в ширину.
         let content_end = clusters
@@ -736,7 +778,7 @@ impl<'a> Builder<'a> {
                     // заданная позиция.
                     let stop = if stop.default {
                         Stop {
-                            position: stop.position.min(format.line_end().max(state.x())),
+                            position: stop.position.min(line_end.max(state.x())),
                             ..stop
                         }
                     } else {
@@ -760,7 +802,7 @@ impl<'a> Builder<'a> {
 
         // Выравнивание.
         let content_width: f32 = widths[..content_end].iter().sum();
-        let extra = format.line_end() - line_start - content_width;
+        let extra = line_end - line_start - content_width;
         let after_tab = clusters[..content_end]
             .iter()
             .rposition(|c| c.kind == Kind::Tab)
