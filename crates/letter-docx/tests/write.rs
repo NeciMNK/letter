@@ -11,12 +11,12 @@ use std::path::PathBuf;
 use letter_docx::{read_bytes, write_bytes};
 use letter_model::{
     Alignment, Block, Border, Borders, BreakKind, CellMargins, CellProps, CellVerticalAlign, Color,
-    Columns, DocDefaults, Document, FirstLineIndent, HalfPoints, HeightRule, Highlight,
-    Indentation, Inline, LineSpacing, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml,
-    RowHeight, RowProps, Run, RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart,
-    Shading, Spacing, Style, StyleKind, Styles, TabLeader, TabStop, TabStopKind, Table, TableCell,
-    TableLayout, TableProps, TableRow, TableWidth, ThemeColor, ThemeFont, Twips, Underline,
-    VerticalAlign, VerticalMerge,
+    Columns, DocDefaults, Document, FirstLineIndent, HalfPoints, HeaderFooter, HeightRule,
+    Highlight, Indentation, Inline, LineSpacing, PageMargins, PageSize, Paragraph, ParagraphProps,
+    RawXml, RowHeight, RowProps, Run, RunContent, RunFonts, RunProps, Section, SectionProps,
+    SectionStart, Shading, Spacing, Style, StyleKind, Styles, TabLeader, TabStop, TabStopKind,
+    Table, TableCell, TableLayout, TableProps, TableRow, TableWidth, ThemeColor, ThemeFont, Twips,
+    Underline, VerticalAlign, VerticalMerge,
 };
 
 const FIXTURES: &[&str] = &[
@@ -29,6 +29,7 @@ const FIXTURES: &[&str] = &[
     "image.docx",
     "floating.docx",
     "sections.docx",
+    "headers.docx",
     "header-footer.docx",
     "ru-en.docx",
 ];
@@ -87,7 +88,9 @@ fn untouched_parts_are_copied_byte_for_byte() {
             let copy = after
                 .get(part)
                 .unwrap_or_else(|| panic!("{name}: part {part} lost"));
-            if !rebuilt.contains(&part.as_str()) {
+            // Колонтитулы тоже строятся заново из модели.
+            let story = part.starts_with("word/header") || part.starts_with("word/footer");
+            if !rebuilt.contains(&part.as_str()) && !story {
                 assert_eq!(data, copy, "{name}: part {part} changed");
             }
         }
@@ -263,6 +266,7 @@ fn everything() -> Document {
             unknown: vec![RawXml::new(
                 r#"<w:docGrid xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:linePitch="360"/>"#,
             )],
+            ..SectionProps::default()
         },
         blocks: vec![
             Paragraph {
@@ -363,7 +367,7 @@ fn everything() -> Document {
                 separator: false,
                 widths: vec![(Twips(3000), Twips(400)), (Twips(5000), Twips(0))],
             }),
-            unknown: Vec::new(),
+            ..SectionProps::default()
         },
         blocks: vec![Paragraph::text("второй раздел").into()],
     };
@@ -575,4 +579,58 @@ fn pictures_from_another_document_get_their_own_part() {
     let again = write_bytes(&reopened).unwrap();
     let parts = zip_parts(&again);
     assert_eq!(parts.keys().filter(|n| n.contains("media/")).count(), 1);
+}
+
+#[test]
+fn new_headers_and_footers_get_their_parts() {
+    let mut doc = Document::new();
+    let story = |text: &str| HeaderFooter {
+        blocks: vec![Paragraph::text(text).into()],
+        relationship: None,
+    };
+    let props = &mut doc.sections[0].props;
+    props.headers.default = Some(story("Top"));
+    props.footers.first = Some(story("Bottom of the first page"));
+    props.title_page = true;
+    let saved = write_bytes(&doc).unwrap();
+    let parts = zip_parts(&saved);
+    assert!(parts.contains_key("word/header.xml"), "{:?}", parts.keys());
+    assert!(parts.contains_key("word/footer.xml"));
+    let types = String::from_utf8(parts["[Content_Types].xml"].clone()).unwrap();
+    assert!(types.contains("wordprocessingml.header+xml"));
+    let reopened = read_bytes(&saved).unwrap();
+    let props = &reopened.sections[0].props;
+    assert!(props.title_page);
+    let text = |s: Option<&HeaderFooter>| s.map(|s| s.blocks[0].plain_text());
+    assert_eq!(text(props.headers.default.as_ref()).as_deref(), Some("Top"));
+    assert_eq!(
+        text(props.footers.first.as_ref()).as_deref(),
+        Some("Bottom of the first page")
+    );
+    // Сохранённый ещё раз документ не плодит новых частей.
+    assert_eq!(
+        write_bytes(&reopened).unwrap(),
+        write_bytes(&round_trip(&reopened)).unwrap()
+    );
+}
+
+#[test]
+fn edited_header_is_saved() {
+    let mut doc = read_bytes(&fixture_bytes("headers.docx")).unwrap();
+    let header = doc.sections[0].props.headers.even.as_mut().unwrap();
+    header.blocks = vec![Paragraph::text("Changed even header").into()];
+    let reopened = round_trip(&doc);
+    let header = reopened.sections[0].props.headers.even.as_ref().unwrap();
+    assert_eq!(header.blocks[0].plain_text(), "Changed even header");
+    assert_eq!(
+        reopened.sections[0]
+            .props
+            .headers
+            .first
+            .as_ref()
+            .unwrap()
+            .blocks[0]
+            .plain_text(),
+        "First page header"
+    );
 }

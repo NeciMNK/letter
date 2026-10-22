@@ -21,6 +21,9 @@ pub(crate) fn read_settings(root: &Element) -> Settings {
                     settings.default_tab_stop = t;
                 }
             }
+            "evenAndOddHeaders" => {
+                settings.even_and_odd_headers = toggle(child).unwrap_or(false);
+            }
             "compat" => {
                 for flag in child
                     .elements()
@@ -69,6 +72,7 @@ mod tests {
             r#"<w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat>"#,
         );
         assert_eq!(s.compatibility_mode, 15);
+        assert!(read("<w:evenAndOddHeaders/>").even_and_odd_headers);
         assert_eq!(read(""), Settings::default());
         // Нулевой шаг табуляции и выключенный флаг — по умолчанию.
         let s = read(

@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use letter_docx::{ReadError, read_bytes, read_file};
 use letter_model::{
-    Block, Color, Document, HalfPoints, Inline, PageSize, Paragraph, RunContent, Underline,
-    VerticalAlign,
+    Block, Color, Document, HalfPoints, HeaderFooter, Inline, PageSize, Paragraph, RunContent,
+    Underline, VerticalAlign,
 };
 
 fn fixture(name: &str) -> Document {
@@ -181,16 +181,31 @@ fn floating_pictures_are_read() {
 }
 
 #[test]
-fn header_footer_references_are_kept() {
+fn headers_and_footers_are_read() {
     let doc = fixture("header-footer.docx");
-    let names: Vec<_> = doc.sections[0]
-        .props
-        .unknown
-        .iter()
-        .map(|r| r.local_name())
-        .collect();
-    assert!(names.contains(&"headerReference"), "{names:?}");
-    assert!(names.contains(&"footerReference"), "{names:?}");
+    let props = &doc.sections[0].props;
+    let text = |story: Option<&HeaderFooter>| {
+        story
+            .map(|s| s.blocks.iter().map(Block::plain_text).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    assert_eq!(text(props.headers.default.as_ref()), ["Header text"]);
+    assert_eq!(text(props.footers.default.as_ref()), ["Footer text"]);
+
+    let doc = fixture("headers.docx");
+    assert!(doc.settings.even_and_odd_headers);
+    let first = &doc.sections[0].props;
+    assert!(first.title_page);
+    assert_eq!(text(first.headers.first.as_ref()), ["First page header"]);
+    assert_eq!(text(first.headers.even.as_ref()), ["Even page header"]);
+    assert_eq!(text(first.footers.default.as_ref()), ["Odd page footer"]);
+    // Второй раздел своего верхнего колонтитула не задаёт.
+    let second = &doc.sections[1].props;
+    assert!(second.headers.is_empty());
+    assert_eq!(
+        text(second.footers.even.as_ref()),
+        ["Second section even footer"]
+    );
 }
 
 #[test]

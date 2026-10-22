@@ -5,16 +5,18 @@
 //! [`RawXml`], чтобы при записи вернуть его на место без потерь.
 
 use letter_model::{
-    Block, BreakKind, Color, Columns, Document, FirstLineIndent, HalfPoints, Indentation, Inline,
-    LineSpacing, NumberingRef, Orientation, PageMargins, PageSize, Paragraph, ParagraphProps,
-    RawXml, Run, RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Spacing,
-    TabStop, ThemeColor, Twips, Underline, VerticalAlign,
+    Block, BreakKind, Color, Columns, Document, FirstLineIndent, HalfPoints, HeaderFooter,
+    HeaderFooterKind, HeaderFooters, Indentation, Inline, LineSpacing, NumberingRef, Orientation,
+    PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run, RunContent, RunFonts, RunProps,
+    Section, SectionProps, SectionStart, Spacing, TabStop, ThemeColor, Twips, Underline,
+    VerticalAlign,
 };
 
 use crate::ReadError;
 use crate::names::{
     ALIGNMENTS, HIGHLIGHTS, TAB_KINDS, TAB_LEADERS, THEME_FONTS, UNDERLINES, lookup,
 };
+use crate::serialize::R_NS;
 use crate::xml::Element;
 
 /// Пространство имён WordprocessingML (обычный вариант OOXML).
@@ -421,6 +423,9 @@ fn read_section_props(sect: &Element) -> SectionProps {
                 "pgMar" => set(&mut props.margins, read_margins(child)),
                 "type" => set(&mut props.start, read_section_start(child)),
                 "cols" => set(&mut props.columns, read_columns(child)),
+                "headerReference" => read_reference(child, &mut props.headers),
+                "footerReference" => read_reference(child, &mut props.footers),
+                "titlePg" => toggle(child).map(|on| props.title_page = on).is_some(),
                 _ => false,
             };
         if !understood {
@@ -428,6 +433,49 @@ fn read_section_props(sect: &Element) -> SectionProps {
         }
     }
     props
+}
+
+/// Ссылка на колонтитул (`w:headerReference`, `w:footerReference`):
+/// запоминает связь, а содержимое читается потом из части колонтитула.
+/// `false`, если ссылка непонятна или такой колонтитул уже есть.
+fn read_reference(element: &Element, set: &mut HeaderFooters) -> bool {
+    let mut kind = Some(HeaderFooterKind::Default);
+    let mut id = None;
+    for a in &element.attrs {
+        match a.local.as_str() {
+            "type" if is_w_ns(a.ns.as_deref()) => {
+                kind = match a.value.as_str() {
+                    "default" => Some(HeaderFooterKind::Default),
+                    "first" => Some(HeaderFooterKind::First),
+                    "even" => Some(HeaderFooterKind::Even),
+                    _ => None,
+                }
+            }
+            "id" if a.ns.as_deref() == Some(R_NS) => id = Some(a.value.clone()),
+            _ => return false,
+        }
+    }
+    let (Some(kind), Some(id)) = (kind, id) else {
+        return false;
+    };
+    let slot = set.get_mut(kind);
+    if slot.is_some() {
+        return false;
+    }
+    *slot = Some(HeaderFooter {
+        blocks: Vec::new(),
+        relationship: Some(id),
+    });
+    true
+}
+
+/// Содержимое части колонтитула (`w:hdr` или `w:ftr`); `None`, если
+/// корень другой.
+pub(crate) fn read_header_footer(root: &Element) -> Option<Vec<Block>> {
+    if !root.is_w("hdr") && !root.is_w("ftr") {
+        return None;
+    }
+    Some(root.elements().map(read_block).collect())
 }
 
 /// Начало раздела `w:type`.
@@ -880,6 +928,9 @@ mod tests {
                <w:p><w:r><w:t>two</w:t></w:r></w:p>
                <w:sectPr>
                  <w:headerReference w:type="default" r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>
+                 <w:footerReference w:type="first" r:id="rId2" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>
+                 <w:footerReference w:type="odd" r:id="rId3" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>
+                 <w:titlePg/>
                  <w:pgSz w:w="11906" w:h="16838"/>
                  <w:pgMar w:top="1134" w:right="850" w:bottom="1134" w:left="1701" w:header="708" w:footer="708" w:gutter="0"/>
                  <w:cols w:space="708"/>
@@ -895,7 +946,23 @@ mod tests {
         assert_eq!(last.page_size, Some(PageSize::A4));
         assert_eq!(last.margins, Some(PageMargins::default()));
         let names: Vec<_> = last.unknown.iter().map(RawXml::local_name).collect();
-        assert_eq!(names, ["headerReference"]);
+        // Непонятный вид колонтитула остаётся как есть.
+        assert_eq!(names, ["footerReference"]);
+        assert_eq!(
+            last.headers
+                .default
+                .as_ref()
+                .and_then(|h| h.relationship.as_deref()),
+            Some("rId1")
+        );
+        assert_eq!(
+            last.footers
+                .first
+                .as_ref()
+                .and_then(|h| h.relationship.as_deref()),
+            Some("rId2")
+        );
+        assert!(last.title_page);
         assert_eq!(
             last.columns,
             Some(Columns {

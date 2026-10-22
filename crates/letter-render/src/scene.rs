@@ -76,7 +76,9 @@ pub fn page_scene(
     let mut pictures = Vec::new();
     let mut glyphs = Vec::new();
     let mut lines = Vec::new();
-    for shape in &page.shapes {
+    let stories = [&page.header, &page.footer];
+    let shapes = stories.iter().flat_map(|s| &s.shapes).chain(&page.shapes);
+    for shape in shapes {
         let (r, g, b) = shape.color;
         let item = rect(
             scale,
@@ -91,7 +93,8 @@ pub fn page_scene(
             ShapeKind::Rule => lines.push(item),
         }
     }
-    for line in &page.lines {
+    let all_lines = stories.iter().flat_map(|s| &s.lines).chain(&page.lines);
+    for line in all_lines {
         for item in &line.line.items {
             match item {
                 LineItem::Text(text) => {
@@ -161,11 +164,12 @@ pub fn page_scene(
         height: f.height * scale,
         image: f.image.clone(),
     };
-    backgrounds.extend(page.floats.iter().filter(|f| f.behind).map(float));
+    let floats = || stories.iter().flat_map(|s| &s.floats).chain(&page.floats);
+    backgrounds.extend(floats().filter(|f| f.behind).map(float));
     backgrounds.extend(pictures);
     backgrounds.extend(glyphs);
     backgrounds.extend(lines);
-    backgrounds.extend(page.floats.iter().filter(|f| !f.behind).map(float));
+    backgrounds.extend(floats().filter(|f| !f.behind).map(float));
     backgrounds
 }
 

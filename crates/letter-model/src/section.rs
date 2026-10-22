@@ -35,9 +35,93 @@ pub struct SectionProps {
     pub start: Option<SectionStart>,
     /// Колонки текста (`w:cols`); `None` — одна колонка.
     pub columns: Option<Columns>,
+    /// Верхние колонтитулы раздела.
+    pub headers: HeaderFooters,
+    /// Нижние колонтитулы раздела.
+    pub footers: HeaderFooters,
+    /// «Особый колонтитул для первой страницы» (`w:titlePg`).
+    pub title_page: bool,
     /// Свойства, которые программа пока не понимает (колонтитулы, колонки,
     /// сетка и т. п.), в порядке из файла.
     pub unknown: Vec<RawXml>,
+}
+
+/// Колонтитул: абзацы и таблицы над или под текстом страницы.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HeaderFooter {
+    /// Содержимое.
+    pub blocks: Vec<Block>,
+    /// Связь главной части .docx с частью колонтитула (`r:id`), если
+    /// колонтитул прочитан из файла: при сохранении он записывается в ту же
+    /// часть, и её связи (картинки) остаются верными. У нового — `None`.
+    /// Колонтитул, общий для нескольких разделов, записывается по первому
+    /// из них.
+    pub relationship: Option<String>,
+}
+
+/// Колонтитулы одного вида (верхние или нижние) раздела. `None` — свой
+/// колонтитул не задан: берётся колонтитул того же типа у предыдущего
+/// раздела (у первого раздела — пусто).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HeaderFooters {
+    /// Обычный (на нечётных страницах, если чётные отдельно).
+    pub default: Option<HeaderFooter>,
+    /// Первой страницы раздела (если [`SectionProps::title_page`]).
+    pub first: Option<HeaderFooter>,
+    /// Чётных страниц (если в настройках «чётные и нечётные отдельно»).
+    pub even: Option<HeaderFooter>,
+}
+
+impl HeaderFooters {
+    /// Колонтитул вида `kind`.
+    pub fn get(&self, kind: HeaderFooterKind) -> Option<&HeaderFooter> {
+        match kind {
+            HeaderFooterKind::Default => self.default.as_ref(),
+            HeaderFooterKind::First => self.first.as_ref(),
+            HeaderFooterKind::Even => self.even.as_ref(),
+        }
+    }
+
+    /// Колонтитул вида `kind` для правки.
+    pub fn get_mut(&mut self, kind: HeaderFooterKind) -> &mut Option<HeaderFooter> {
+        match kind {
+            HeaderFooterKind::Default => &mut self.default,
+            HeaderFooterKind::First => &mut self.first,
+            HeaderFooterKind::Even => &mut self.even,
+        }
+    }
+
+    /// Все заданные колонтитулы с их видом.
+    pub fn iter(&self) -> impl Iterator<Item = (HeaderFooterKind, &HeaderFooter)> {
+        HeaderFooterKind::ALL
+            .into_iter()
+            .filter_map(|kind| Some((kind, self.get(kind)?)))
+    }
+
+    /// Нет ни одного колонтитула.
+    pub fn is_empty(&self) -> bool {
+        self.iter().next().is_none()
+    }
+}
+
+/// Вид колонтитула: для каких страниц.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HeaderFooterKind {
+    /// Обычный.
+    Default,
+    /// Первой страницы раздела.
+    First,
+    /// Чётных страниц.
+    Even,
+}
+
+impl HeaderFooterKind {
+    /// Все виды.
+    pub const ALL: [HeaderFooterKind; 3] = [
+        HeaderFooterKind::Default,
+        HeaderFooterKind::First,
+        HeaderFooterKind::Even,
+    ];
 }
 
 /// Где начинается раздел.

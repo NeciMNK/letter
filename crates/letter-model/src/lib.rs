@@ -34,7 +34,7 @@ mod theme;
 mod units;
 
 pub use border::{Border, Borders, Shading};
-pub use document::{Document, Settings};
+pub use document::{Document, Settings, for_each_picture_in};
 pub use numbering::{
     AbstractNumbering, LevelOverride, LevelSuffix, ListCounters, ListLabel, ListLevel,
     NumberFormat, Numbering, NumberingInstance, NumberingRef,
@@ -56,7 +56,8 @@ pub use run::{
     ThemeFont, Underline, VerticalAlign,
 };
 pub use section::{
-    Columns, Orientation, PageMargins, PageSize, Section, SectionProps, SectionStart,
+    Columns, HeaderFooter, HeaderFooterKind, HeaderFooters, Orientation, PageMargins, PageSize,
+    Section, SectionProps, SectionStart,
 };
 pub use style::{DocDefaults, Style, StyleKind, Styles};
 pub use table::{
