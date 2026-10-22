@@ -52,6 +52,14 @@ pub enum RunContent {
     Break(BreakKind),
     /// Рисунок в строке. В тексте абзаца — знак [`OBJECT_CHAR`].
     Picture(Picture),
+    /// Знак поля (`w:fldChar`): начало, разделитель кода и результата
+    /// или конец. Места в тексте не занимает. Поле — это начало, код
+    /// ([`RunContent::FieldCode`]), разделитель, результат (обычный текст)
+    /// и конец, по порядку в фрагментах абзаца; см. [`crate::fields`].
+    FieldChar(FieldChar),
+    /// Кусок кода поля (`w:instrText`), например « PAGE \* MERGEFORMAT ».
+    /// Места в тексте не занимает.
+    FieldCode(String),
     /// Непонятый элемент (рисунок, поле, символ и т. п.), сохранённый как есть.
     Unknown(RawXml),
 }
@@ -69,7 +77,7 @@ impl RunContent {
             RunContent::Text(text) => text.len(),
             RunContent::Tab | RunContent::Break(_) => 1,
             RunContent::Picture(_) => OBJECT_CHAR.len_utf8(),
-            RunContent::Unknown(_) => 0,
+            RunContent::Unknown(_) | RunContent::FieldChar(_) | RunContent::FieldCode(_) => 0,
         }
     }
 
@@ -80,9 +88,42 @@ impl RunContent {
             RunContent::Break(BreakKind::Line) => out.push('\n'),
             RunContent::Break(BreakKind::Page | BreakKind::Column) => out.push('\u{c}'),
             RunContent::Picture(_) => out.push(OBJECT_CHAR),
-            RunContent::Unknown(_) => {}
+            RunContent::Unknown(_) | RunContent::FieldChar(_) | RunContent::FieldCode(_) => {}
         }
     }
+}
+
+/// Знак поля.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FieldChar {
+    /// Начало, разделитель или конец.
+    pub kind: FieldCharKind,
+    /// Поле нужно обновить (`w:dirty`), например оглавление после правки.
+    pub dirty: bool,
+    /// Поле не обновляется (`w:fldLock`).
+    pub locked: bool,
+}
+
+impl FieldChar {
+    /// Знак поля вида `kind` без отметок.
+    pub fn new(kind: FieldCharKind) -> FieldChar {
+        FieldChar {
+            kind,
+            dirty: false,
+            locked: false,
+        }
+    }
+}
+
+/// Вид знака поля.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FieldCharKind {
+    /// Начало поля.
+    Begin,
+    /// Разделитель кода и результата.
+    Separate,
+    /// Конец поля.
+    End,
 }
 
 /// Вид принудительного разрыва.

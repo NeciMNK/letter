@@ -23,8 +23,8 @@ use letter_layout::{FontLibrary, Shaper, layout_document};
 use letter_render::{GlyphCache, RgbaImage, SCREEN_PIXELS_PER_POINT, render_page};
 
 use letter_model::{
-    Alignment, Block, BreakKind, Document, FirstLineIndent, Inline, LineSpacing, Paragraph,
-    ParagraphProps, Run, RunContent, RunProps, Section, Table,
+    Alignment, Block, BreakKind, Document, FieldCharKind, FirstLineIndent, Inline, LineSpacing,
+    Paragraph, ParagraphProps, Run, RunContent, RunProps, Section, Table,
 };
 
 /// Справка по командам.
@@ -348,6 +348,14 @@ fn dump_run(out: &mut String, depth: usize, run: &Run) {
                     picture.width_points(),
                     picture.height_points()
                 );
+            }
+            RunContent::FieldChar(c) => content.push_str(match c.kind {
+                FieldCharKind::Begin => "<поле>",
+                FieldCharKind::Separate => "<результат>",
+                FieldCharKind::End => "</поле>",
+            }),
+            RunContent::FieldCode(code) => {
+                let _ = write!(content, "<код {code:?}>");
             }
             RunContent::Tab => content.push('\t'),
             RunContent::Break(BreakKind::Line) => content.push('\n'),

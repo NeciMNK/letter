@@ -405,7 +405,11 @@ fn inline(doc: &Document, p: &Paragraph, skip: usize, cell: bool) -> String {
                 RunContent::Text(text) => text.clone(),
                 RunContent::Tab => "\t".to_owned(),
                 RunContent::Break(BreakKind::Line) => "\n".to_owned(),
-                RunContent::Break(_) | RunContent::Picture(_) | RunContent::Unknown(_) => continue,
+                RunContent::Break(_)
+                | RunContent::Picture(_)
+                | RunContent::FieldChar(_)
+                | RunContent::FieldCode(_)
+                | RunContent::Unknown(_) => continue,
             };
             let piece: String = if skip > 0 {
                 let n = piece.chars().count();

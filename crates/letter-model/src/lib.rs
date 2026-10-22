@@ -19,6 +19,7 @@
 
 mod border;
 mod document;
+mod field;
 mod numbering;
 mod package;
 mod paragraph;
@@ -35,6 +36,7 @@ mod units;
 
 pub use border::{Border, Borders, Shading};
 pub use document::{Document, Settings, for_each_picture_in};
+pub use field::{Field, fields, set_field_result};
 pub use numbering::{
     AbstractNumbering, LevelOverride, LevelSuffix, ListCounters, ListLabel, ListLevel,
     NumberFormat, Numbering, NumberingInstance, NumberingRef,
@@ -52,8 +54,8 @@ pub use properties::{AppProperties, CoreProperties, Properties, Statistics};
 pub use raw::RawXml;
 pub use resolve::{ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps, overlay_borders};
 pub use run::{
-    BreakKind, Color, Highlight, OBJECT_CHAR, Run, RunContent, RunFonts, RunProps, ThemeColor,
-    ThemeFont, Underline, VerticalAlign,
+    BreakKind, Color, FieldChar, FieldCharKind, Highlight, OBJECT_CHAR, Run, RunContent, RunFonts,
+    RunProps, ThemeColor, ThemeFont, Underline, VerticalAlign,
 };
 pub use section::{
     Columns, HeaderFooter, HeaderFooterKind, HeaderFooters, Orientation, PageMargins, PageSize,
