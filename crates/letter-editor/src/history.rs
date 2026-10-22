@@ -171,6 +171,8 @@ pub enum Command {
     InsertToc(Box<FieldContext>),
     /// Перестроить все оглавления документа («Обновить таблицу»).
     UpdateToc(Box<FieldContext>),
+    /// «Цвет страницы»; `None` — «Нет цвета».
+    PageColor(Option<Color>),
     /// Заменить текст сноски `id` вида `kind` (после её правки).
     SetNote {
         /// Обычная или концевая.
@@ -220,6 +222,11 @@ enum Patch {
         before: Vec<Note>,
         after: Vec<Note>,
     },
+    /// Цвет страницы.
+    Background {
+        before: Option<Color>,
+        after: Option<Color>,
+    },
 }
 
 impl Patch {
@@ -263,6 +270,9 @@ impl Patch {
                 after,
             } => {
                 *notes_mut(doc, *kind) = if undo { before } else { after }.clone();
+            }
+            Patch::Background { before, after } => {
+                doc.background = if undo { *before } else { *after };
             }
         }
     }
@@ -317,6 +327,20 @@ impl History {
             }
             Command::Tab { shift: true } => return selection,
             Command::Tab { shift: false } => Command::Type("\t".into()),
+            Command::PageColor(color) => {
+                let before = doc.background;
+                if before != color {
+                    doc.background = color;
+                    self.push(
+                        Patch::Background {
+                            before,
+                            after: color,
+                        },
+                        selection,
+                    );
+                }
+                return selection;
+            }
             Command::SetNote { kind, id, blocks } => {
                 let before = notes_mut(doc, kind).clone();
                 if let Some(note) = notes_mut(doc, kind).iter_mut().find(|n| n.id == id) {
@@ -383,7 +407,10 @@ impl History {
             | Command::DeleteBookmark(_)
             | Command::UpdateFields(_)
             | Command::UpdateToc(_)
-            | Command::InsertToc(_) => (0, paragraph_count(doc).saturating_sub(1)),
+            | Command::InsertToc(_)
+            | Command::PageSetup(PageSetup::Borders(_)) => {
+                (0, paragraph_count(doc).saturating_sub(1))
+            }
             // Новый номер получают и следующие пункты списка.
             Command::RestartNumbering | Command::ContinueNumbering => {
                 (start.paragraph, paragraph_count(doc).saturating_sub(1))
@@ -614,7 +641,8 @@ impl History {
             | Command::Link { text: None, .. }
             | Command::AddBookmark(_)
             | Command::DeleteBookmark(_)
-            | Command::SetNote { .. } => at,
+            | Command::SetNote { .. }
+            | Command::PageColor(_) => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
 
@@ -646,6 +674,7 @@ impl History {
             Patch::Blocks { before, after, .. } => before == after,
             Patch::Sections { before, after, .. } => before == after,
             Patch::Notes { before, after, .. } => before == after,
+            Patch::Background { before, after } => before == after,
         };
         if unchanged {
             return after;
@@ -1097,6 +1126,36 @@ mod tests {
         assert_eq!(d, original);
         h.redo(&mut d);
         assert_eq!(d.sections.len(), 2);
+    }
+
+    #[test]
+    fn page_color_and_page_borders_can_be_undone() {
+        let mut d = doc(&["a", "b"]);
+        let original = d.clone();
+        let mut h = History::new();
+        let color = Some(Color::Rgb(1, 2, 3));
+        h.run(&mut d, caret(0, 0), Command::PageColor(color));
+        assert_eq!(d.background, color);
+        h.run(
+            &mut d,
+            caret(0, 0),
+            Command::SectionBreak(SectionStart::NextPage),
+        );
+        let borders = crate::PageBorderPreset::Box;
+        h.run(
+            &mut d,
+            caret(1, 0),
+            Command::PageSetup(PageSetup::Borders(borders)),
+        );
+        // Рамка — во всём документе.
+        assert!(d.sections.iter().all(|s| s.props.page_borders.is_some()));
+        h.undo(&mut d);
+        assert!(d.sections.iter().all(|s| s.props.page_borders.is_none()));
+        h.undo(&mut d);
+        h.undo(&mut d);
+        assert_eq!(d, original);
+        h.redo(&mut d);
+        assert_eq!(d.background, color);
     }
 
     #[test]

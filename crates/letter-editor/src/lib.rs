@@ -60,8 +60,9 @@ pub use picture::{
 pub use position::{Affinity, Position};
 pub use search::{Found, SearchOptions, find_all, find_next, replace_all};
 pub use section::{
-    ColumnPreset, PageSetup, header_footer_source, insert_break, insert_section_break,
-    page_number_runs, section_props, set_header_footer, set_page_setup, set_title_page,
+    ColumnPreset, PageBorderPreset, PageSetup, header_footer_source, insert_break,
+    insert_section_break, page_number_runs, section_props, set_header_footer, set_page_setup,
+    set_title_page,
 };
 pub use selection::{Selection, SelectionRect, paragraph_at, select_all, selection_rects, word_at};
 pub use table::{

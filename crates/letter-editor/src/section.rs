@@ -2,9 +2,9 @@
 //! поля и колонки разделов (кнопки вкладки «Макет»).
 
 use letter_model::{
-    Block, BreakKind, Columns, Document, FieldChar, FieldCharKind, HeaderFooter, HeaderFooterKind,
-    Orientation, PageMargins, PageSize, Paragraph, Run, RunContent, Section, SectionProps,
-    SectionStart, Twips,
+    Block, Border, BreakKind, Columns, Document, FieldChar, FieldCharKind, HeaderFooter,
+    HeaderFooterKind, Orientation, PageBorders, PageMargins, PageSize, Paragraph, Run, RunContent,
+    Section, SectionProps, SectionStart, Twips,
 };
 
 use crate::edit::{blocks_mut, clamp_offset, find, insert_items, split_content, top_level};
@@ -22,6 +22,49 @@ pub enum PageSetup {
     Margins(PageMargins),
     /// Колонки текста.
     Columns(ColumnPreset),
+    /// Границы страниц — во всём документе, как по умолчанию в Word.
+    Borders(PageBorderPreset),
+}
+
+/// Готовые варианты кнопки «Границы страниц».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageBorderPreset {
+    /// Без рамки.
+    None,
+    /// Рамка: сплошная линия 0,5 пт в 24 пт от края листа.
+    Box,
+    /// Толстая рамка: 3 пт.
+    Thick,
+}
+
+impl PageBorderPreset {
+    /// Все варианты по порядку меню.
+    pub const ALL: [PageBorderPreset; 3] = [
+        PageBorderPreset::None,
+        PageBorderPreset::Box,
+        PageBorderPreset::Thick,
+    ];
+
+    /// Рамка варианта; `None` — без рамки.
+    pub fn borders(self) -> Option<PageBorders> {
+        let eighths = match self {
+            PageBorderPreset::None => return None,
+            PageBorderPreset::Box => 4,
+            PageBorderPreset::Thick => 24,
+        };
+        let line = Border {
+            space: Some(24),
+            ..Border::single(eighths)
+        };
+        Some(PageBorders {
+            top: Some(line.clone()),
+            left: Some(line.clone()),
+            bottom: Some(line.clone()),
+            right: Some(line),
+            from_page_edge: true,
+            ..PageBorders::default()
+        })
+    }
 }
 
 /// Готовые варианты кнопки «Колонки».
@@ -201,6 +244,12 @@ pub fn section_props(doc: &Document, paragraph: usize) -> Option<&SectionProps> 
 /// Меняет параметры страницы разделов, в которых лежат абзацы с `first`
 /// по `last`.
 pub fn set_page_setup(doc: &mut Document, first: usize, last: usize, setup: PageSetup) {
+    if let PageSetup::Borders(preset) = setup {
+        for section in &mut doc.sections {
+            section.props.page_borders = preset.borders();
+        }
+        return;
+    }
     let (Some((from, _)), Some((to, _))) = (top_level(doc, first), top_level(doc, last)) else {
         return;
     };
@@ -252,6 +301,7 @@ fn apply(props: &mut SectionProps, setup: PageSetup) {
             );
             props.columns = preset_columns(preset, props.columns.as_ref(), width);
         }
+        PageSetup::Borders(preset) => props.page_borders = preset.borders(),
     }
 }
 

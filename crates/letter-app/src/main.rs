@@ -10,6 +10,7 @@ mod backstage;
 mod bookmark_dialog;
 mod clipboard;
 mod context_menu;
+mod design;
 mod fields;
 mod files;
 mod find;

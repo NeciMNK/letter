@@ -616,3 +616,17 @@ toc-update = Обновить таблицу
 toc-update-hint = Перестроить оглавление: новые заголовки и номера страниц
 keytip-references-toc = ОГ
 keytip-references-update-toc = ОН
+
+# Вкладка «Конструктор»
+tab-design = Конструктор
+keytip-tab-design = К
+group-page-background = Фон страницы
+page-color = Цвет страницы
+page-color-hint = Цвет фона страниц документа
+page-borders = Границы страниц
+page-borders-hint = Рамка вокруг каждой страницы документа
+page-borders-none = Нет
+page-borders-box = Рамка
+page-borders-thick = Толстая рамка
+keytip-design-page-color = ЦС
+keytip-design-page-borders = ГС

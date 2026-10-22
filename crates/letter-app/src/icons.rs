@@ -123,6 +123,10 @@ pub enum Icon {
     Contents,
     /// Обновить: круговые стрелки.
     Refresh,
+    /// Цвет страницы: палитра.
+    PageColor,
+    /// Границы страниц: уголки рамки.
+    PageBorders,
     /// Удалить строки, столбцы или таблицу.
     DeleteTable,
     /// Вставить строку сверху.
@@ -228,6 +232,8 @@ impl Icon {
             Icon::Endnote => ("list-end", '\u{E2DF}'),
             Icon::Contents => ("table-of-contents", '\u{E61E}'),
             Icon::Refresh => ("refresh-cw", '\u{E145}'),
+            Icon::PageColor => ("palette", '\u{E1DD}'),
+            Icon::PageBorders => ("scan", '\u{E257}'),
             Icon::DeleteTable => ("grid-2x2-x", '\u{E5E5}'),
             Icon::InsertAbove => ("between-horizontal-start", '\u{E592}'),
             Icon::InsertBelow => ("between-horizontal-end", '\u{E591}'),
@@ -411,7 +417,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 55] = [
+    const ALL: [Icon; 57] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -467,6 +473,8 @@ mod tests {
         Icon::Endnote,
         Icon::Contents,
         Icon::Refresh,
+        Icon::PageColor,
+        Icon::PageBorders,
     ];
 
     #[test]
