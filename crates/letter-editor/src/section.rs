@@ -3,7 +3,7 @@
 
 use letter_model::{
     Block, BreakKind, Columns, Document, HeaderFooter, HeaderFooterKind, Orientation, PageMargins,
-    PageSize, Paragraph, RunContent, Section, SectionProps, SectionStart, Twips,
+    PageSize, Paragraph, RawXml, Run, RunContent, Section, SectionProps, SectionStart, Twips,
 };
 
 use crate::edit::{blocks_mut, clamp_offset, find, insert_items, split_content, top_level};
@@ -163,6 +163,39 @@ pub fn set_header_footer(
         &mut props.footers
     };
     *set.get_mut(kind) = story;
+}
+
+/// Включает или выключает у раздела `section` особый колонтитул первой
+/// страницы.
+pub fn set_title_page(doc: &mut Document, section: usize, on: bool) {
+    if let Some(section) = doc.sections.get_mut(section) {
+        section.props.title_page = on;
+    }
+}
+
+/// Поле «номер страницы» (PAGE) из знаков поля: начало, код,
+/// разделитель, результат «1», конец. При вёрстке колонтитула результат
+/// заменяется номером страницы.
+pub fn page_number_runs() -> Vec<Run> {
+    const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    let raw = |xml: String| Run {
+        content: vec![RunContent::Unknown(RawXml::new(xml))],
+        ..Run::default()
+    };
+    let field_char = |kind: &str| {
+        raw(format!(
+            r#"<w:fldChar xmlns:w="{W}" w:fldCharType="{kind}"/>"#
+        ))
+    };
+    vec![
+        field_char("begin"),
+        raw(format!(
+            r#"<w:instrText xmlns:w="{W}" xml:space="preserve"> PAGE </w:instrText>"#
+        )),
+        field_char("separate"),
+        Run::text("1"),
+        field_char("end"),
+    ]
 }
 
 /// Параметры страницы раздела, в котором абзац `paragraph`.
@@ -411,6 +444,15 @@ mod tests {
         assert_eq!(header_footer_source(&d, 1, false, kind), None);
         set_header_footer(&mut d, 0, true, kind, None);
         assert_eq!(header_footer_source(&d, 1, true, kind), None);
+    }
+
+    #[test]
+    fn page_number_field_shows_one() {
+        let p = Paragraph::from_runs(page_number_runs());
+        assert_eq!(p.plain_text(), "1");
+        let mut d = doc(&["a"]);
+        set_title_page(&mut d, 0, true);
+        assert!(d.sections[0].props.title_page);
     }
 
     #[test]
