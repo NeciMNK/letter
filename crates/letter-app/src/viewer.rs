@@ -1752,6 +1752,9 @@ impl Viewer {
                     actions.push(Action::Edit(Command::ContinueNumbering));
                 }
                 RibbonCommand::Style(id) => actions.push(Action::Edit(Command::Style(id))),
+                // В колонтитул сноску не вставить.
+                RibbonCommand::Edit(Command::InsertNote(_))
+                    if self.document.as_ref().is_some_and(|d| d.story.is_some()) => {}
                 RibbonCommand::Edit(command) => actions.push(Action::Edit(command)),
                 RibbonCommand::InsertPicture => self.picture_requested = true,
                 RibbonCommand::EditHeaderFooter { header } => {
@@ -3584,6 +3587,32 @@ mod tests {
         viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
         let document = viewer.document.as_ref().unwrap();
         assert!(bookmark_range(&document.doc, "start").is_some());
+    }
+
+    #[test]
+    fn ctrl_alt_f_inserts_a_footnote() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        frame(
+            &ctx,
+            &mut viewer,
+            key(Key::F, Modifiers::COMMAND | Modifiers::ALT),
+        );
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(
+            document
+                .doc
+                .footnotes
+                .iter()
+                .filter(|n| n.is_regular())
+                .count(),
+            1
+        );
+        let page = &document.layout.pages[0];
+        assert_eq!(page.notes.len(), 1);
+        assert!(document.modified());
     }
 
     #[test]

@@ -316,7 +316,7 @@ pub fn paragraph_mut(doc: &mut Document, index: usize) -> Option<&mut Paragraph>
 }
 
 /// Длина элемента в тексте абзаца.
-fn item_len(item: &RunContent) -> usize {
+pub(crate) fn item_len(item: &RunContent) -> usize {
     item.text_len()
 }
 

@@ -2,8 +2,8 @@
 //! работают клавиши, и по ней же можно показать их список.
 
 use eframe::egui::{Key, Modifiers};
-use letter_editor::{ParagraphFormat, RunFormat};
-use letter_model::{Alignment, LineSpacing};
+use letter_editor::{Command, ParagraphFormat, RunFormat};
+use letter_model::{Alignment, LineSpacing, NoteKind};
 
 use crate::ribbon::RibbonCommand;
 
@@ -68,6 +68,16 @@ pub fn table() -> Vec<Shortcut> {
         local(CTRL_SHIFT, Key::Space, C::Insert("\u{a0}")),
         local(CTRL_SHIFT, Key::Num8, C::ToggleMarks),
         local(Modifiers::NONE, Key::F9, C::UpdateFields),
+        local(
+            CTRL_ALT,
+            Key::F,
+            C::Edit(Command::InsertNote(NoteKind::Footnote)),
+        ),
+        local(
+            CTRL_ALT,
+            Key::D,
+            C::Edit(Command::InsertNote(NoteKind::Endnote)),
+        ),
         // Шрифт.
         local(CTRL, Key::D, C::FontDialog),
         run(CTRL, Key::B, RunFormat::Bold),

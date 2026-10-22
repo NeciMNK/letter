@@ -712,4 +712,11 @@ fn notes_get_their_part() {
     assert_eq!(reopened.footnotes, doc.footnotes);
     assert_eq!(reopened.endnotes, doc.endnotes);
     assert_eq!(reopened.sections, doc.sections);
+    // Сноска без ссылки в файл не идёт.
+    let mut orphan = doc.footnotes[2].clone();
+    orphan.id = "99".into();
+    doc.footnotes.push(orphan);
+    let reopened = read_bytes(&write_bytes(&doc).unwrap()).unwrap();
+    assert!(reopened.footnotes.iter().all(|n| n.id != "99"));
+    assert_eq!(reopened.footnotes.len(), doc.footnotes.len() - 1);
 }
