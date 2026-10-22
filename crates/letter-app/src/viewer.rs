@@ -31,7 +31,7 @@ use letter_editor::{
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
 use letter_model::{Alignment, Document, Statistics};
-use letter_render::{DESK_COLOR, MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, formatting_marks};
+use letter_render::{MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, formatting_marks};
 
 use crate::backstage::{Backstage, BackstageInfo, DocumentInfo, Page};
 use crate::clipboard::{Clipboard, PasteMode, SystemBuffer};
@@ -43,6 +43,7 @@ use crate::paragraph_dialog::{ParagraphDialog, ParagraphValues};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
 use crate::ruler::{self, RULER_SIZE, RulerParagraph, RulerState};
 use crate::settings::Settings;
+use crate::theme::{Palette, ThemeChoice};
 use crate::view::{
     MAX_ZOOM, MIN_ZOOM, PAGE_GAP, Zoom, anchored_offset, clamp_zoom, current_page, page_width_zoom,
     place_pages, step_zoom,
@@ -368,6 +369,8 @@ pub struct Viewer {
     paragraph_dialog: ParagraphDialog,
     /// Окно «Шрифт».
     font_dialog: FontDialog,
+    /// Тема, уже переданная egui.
+    applied_theme: Option<ThemeChoice>,
     /// Шрифты для списка на ленте.
     font_names: Arc<[String]>,
     /// Окно «Найти и заменить».
@@ -499,6 +502,7 @@ impl Viewer {
             ruler_state: RulerState::default(),
             paragraph_dialog: ParagraphDialog::default(),
             font_dialog: FontDialog::default(),
+            applied_theme: None,
         }
     }
 
@@ -766,6 +770,10 @@ impl Viewer {
             self.ask = Some(Intent::Close);
         }
         self.handle_input(&ctx);
+        if self.applied_theme != Some(self.settings.theme) {
+            ctx.set_theme(self.settings.theme.preference());
+            self.applied_theme = Some(self.settings.theme);
+        }
 
         if self.backstage.open {
             // «Файл» занимает всё окно вместо ленты и документа.
@@ -799,7 +807,7 @@ impl Viewer {
             }
             egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
             egui::CentralPanel::no_frame()
-                .frame(egui::Frame::new().fill(DESK_COLOR))
+                .frame(egui::Frame::new().fill(Palette::of(&ctx).desk))
                 .show(ui, |ui| self.document_area(ui));
         }
         self.statistics_window(&ctx);
@@ -2823,9 +2831,12 @@ mod tests {
         let settings = Settings {
             autosave_minutes: 7,
             show_ruler: false,
+            theme: ThemeChoice::Dark,
         };
         viewer.run_ribbon(&ctx, vec![RibbonCommand::ChangeSettings(settings)]);
         assert!(!viewer.show_ruler);
+        frame(&ctx, &mut viewer, screen());
+        assert_eq!(ctx.theme(), egui::Theme::Dark);
         assert_eq!(Settings::load(Some(&dir)), settings);
         viewer.run_ribbon(&ctx, vec![RibbonCommand::CloseDocument]);
         assert!(viewer.document.is_none());

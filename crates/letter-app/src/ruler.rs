@@ -12,6 +12,8 @@ use eframe::egui::{
 };
 use letter_editor::ParagraphFormat;
 use letter_layout::Margins;
+
+use crate::theme::Palette;
 use letter_model::{
     FirstLineIndent, ResolvedParagraphProps, TabLeader, TabStop, TabStopKind, Twips,
 };
@@ -21,11 +23,6 @@ pub const RULER_SIZE: f32 = 18.0;
 
 /// Пунктов в сантиметре.
 const POINTS_PER_CM: f32 = 72.0 / 2.54;
-
-const BACKGROUND: Color32 = Color32::from_gray(232);
-const MARGIN: Color32 = Color32::from_gray(205);
-const TEXT_AREA: Color32 = Color32::WHITE;
-const MARKS: Color32 = Color32::from_gray(90);
 
 /// Вид деления.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,12 +80,17 @@ pub fn paint_horizontal(
     margins: Margins,
     scale: f32,
 ) {
-    painter.rect_filled(strip, 0.0, BACKGROUND);
+    let colors = Palette::of(painter.ctx());
+    painter.rect_filled(strip, 0.0, colors.ruler);
     let x = |pt: f32| page_left + pt * scale;
     let band = strip.shrink2(vec2(0.0, 2.0));
     let span = |a: f32, b: f32| Rect::from_x_y_ranges(x(a)..=x(b), band.y_range());
-    painter.rect_filled(span(0.0, width), 0.0, MARGIN);
-    painter.rect_filled(span(margins.left, width - margins.right), 0.0, TEXT_AREA);
+    painter.rect_filled(span(0.0, width), 0.0, colors.ruler_margin);
+    painter.rect_filled(
+        span(margins.left, width - margins.right),
+        0.0,
+        colors.ruler_text,
+    );
     for tick in ticks(width, margins.left) {
         paint_tick(painter, tick, scale, |offset| {
             pos2(x(tick.at), band.center().y + offset)
@@ -106,12 +108,17 @@ pub fn paint_vertical(
     margins: Margins,
     scale: f32,
 ) {
-    painter.rect_filled(strip, 0.0, BACKGROUND);
+    let colors = Palette::of(painter.ctx());
+    painter.rect_filled(strip, 0.0, colors.ruler);
     let y = |pt: f32| page_top + pt * scale;
     let band = strip.shrink2(vec2(2.0, 0.0));
     let span = |a: f32, b: f32| Rect::from_x_y_ranges(band.x_range(), y(a)..=y(b));
-    painter.rect_filled(span(0.0, height), 0.0, MARGIN);
-    painter.rect_filled(span(margins.top, height - margins.bottom), 0.0, TEXT_AREA);
+    painter.rect_filled(span(0.0, height), 0.0, colors.ruler_margin);
+    painter.rect_filled(
+        span(margins.top, height - margins.bottom),
+        0.0,
+        colors.ruler_text,
+    );
     for tick in ticks(height, margins.top) {
         paint_tick(painter, tick, scale, |offset| {
             pos2(band.center().x + offset, y(tick.at))
@@ -123,8 +130,9 @@ pub fn paint_vertical(
 fn paint_tick(painter: &Painter, tick: Tick, scale: f32, at: impl Fn(f32) -> Pos2) {
     // При мелком масштабе мелкие деления сливаются — их не рисуем.
     let quarter = POINTS_PER_CM / 4.0 * scale;
+    let marks = Palette::of(painter.ctx()).ruler_marks;
     let line = |half: f32| {
-        painter.line_segment([at(-half), at(half)], Stroke::new(1.0, MARKS));
+        painter.line_segment([at(-half), at(half)], Stroke::new(1.0, marks));
     };
     match tick.kind {
         TickKind::Number(n) => {
@@ -135,7 +143,7 @@ fn paint_tick(painter: &Painter, tick: Tick, scale: f32, at: impl Fn(f32) -> Pos
                     Align2::CENTER_CENTER,
                     n.to_string(),
                     FontId::proportional(10.0),
-                    MARKS,
+                    marks,
                 );
             }
         }
@@ -474,8 +482,9 @@ fn paint_markers(
 ) {
     let x = |pt: f32| (origin + pt * scale).round() + 0.5;
     let (top, h) = (strip.top(), strip.height());
-    let fill = Color32::from_gray(245);
-    let stroke = Stroke::new(1.0, Color32::from_gray(70));
+    let colors = Palette::of(painter.ctx());
+    let fill = colors.marker;
+    let stroke = Stroke::new(1.0, Color32::from_gray(if colors.dark { 30 } else { 70 }));
     let triangle = |points: Vec<Pos2>| {
         painter.add(Shape::convex_polygon(points, fill, stroke));
     };
@@ -520,7 +529,7 @@ fn paint_markers(
 
 /// Значок позиции табуляции: угол или крестик из линий, низ — `bottom`.
 pub fn paint_tab(painter: &Painter, kind: TabStopKind, x: f32, bottom: f32, height: f32) {
-    let stroke = Stroke::new(1.5, Color32::from_gray(30));
+    let stroke = Stroke::new(1.5, Palette::of(painter.ctx()).text);
     let line = |a: Pos2, b: Pos2| {
         painter.line_segment([a, b], stroke);
     };
@@ -551,7 +560,7 @@ pub fn tab_kind_ui(ui: &mut Ui, corner: Rect, state: &mut RulerState) {
         state.tab_kind = (state.tab_kind + 1) % TAB_KINDS.len();
     }
     let painter = ui.painter_at(corner);
-    painter.rect_filled(corner, 0.0, BACKGROUND);
+    painter.rect_filled(corner, 0.0, Palette::of(ui.ctx()).ruler);
     let inner = corner.shrink(3.0);
     painter.rect_stroke(
         inner,

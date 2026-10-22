@@ -8,6 +8,7 @@ use letter_model::{Alignment, Color, HalfPoints, Highlight, LineSpacing, Twips};
 
 use crate::icons::{self, Icon, color_button, icon_button, icon_text_button};
 use crate::ribbon::{RibbonCommand, RibbonInfo, group, group_with_launcher};
+use crate::theme::Palette;
 
 /// Размеры в списке «Размер шрифта», как в Word, пт.
 pub const FONT_SIZES: [f32; 17] = [
@@ -228,7 +229,7 @@ fn styles_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                     for style in &info.styles {
                         let on = info.style.as_deref() == Some(style.id.as_str());
                         if ui
-                            .selectable_label(on, sample_text(style, &style.name))
+                            .selectable_label(on, sample_text(ui, style, &style.name))
                             .clicked()
                         {
                             out.push(RibbonCommand::Style(style.id.clone()));
@@ -241,10 +242,17 @@ fn styles_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
 }
 
 /// Образец текста в стиле (размер ужат, чтобы влезть в ленту).
-fn sample_text(style: &crate::styles::GalleryStyle, text: &str) -> RichText {
+fn sample_text(ui: &Ui, style: &crate::styles::GalleryStyle, text: &str) -> RichText {
+    // Чёрный («Авто») в тёмной теме — светлый, как в Word.
+    let colors = Palette::of(ui.ctx());
+    let color = if style.color == Color32::BLACK {
+        colors.text
+    } else {
+        style.color
+    };
     let mut text = RichText::new(text)
         .size(style.size.clamp(9.0, 13.0))
-        .color(style.color);
+        .color(color);
     if style.bold {
         text = text.strong();
     }
@@ -261,7 +269,7 @@ fn style_tile(ui: &mut Ui, style: &crate::styles::GalleryStyle, on: bool) -> egu
             ui.set_width(66.0);
             ui.add_sized(
                 vec2(66.0, 30.0),
-                egui::Button::selectable(on, sample_text(style, "АаБбВв"))
+                egui::Button::selectable(on, sample_text(ui, style, "АаБбВв"))
                     .wrap_mode(egui::TextWrapMode::Truncate),
             )
         })
@@ -269,7 +277,7 @@ fn style_tile(ui: &mut Ui, style: &crate::styles::GalleryStyle, on: bool) -> egu
     let name = ui.painter().layout_no_wrap(
         style.name.clone(),
         egui::TextStyle::Small.resolve(ui.style()),
-        Color32::from_gray(60),
+        Palette::of(ui.ctx()).caption,
     );
     let at = egui::pos2(
         response.rect.center().x - name.size().x.min(66.0) / 2.0,
@@ -277,7 +285,7 @@ fn style_tile(ui: &mut Ui, style: &crate::styles::GalleryStyle, on: bool) -> egu
     );
     ui.painter()
         .with_clip_rect(response.rect.expand2(vec2(0.0, 14.0)))
-        .galley(at, name, Color32::from_gray(60));
+        .galley(at, name, Palette::of(ui.ctx()).caption);
     // Для программ чтения с экрана (и тестов) кнопка называется по стилю.
     let enabled = ui.is_enabled();
     response

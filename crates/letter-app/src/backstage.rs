@@ -10,6 +10,7 @@ use eframe::egui::{self, Align, Color32, Key, Layout, RichText, Ui, vec2};
 use crate::icons::{self, Icon};
 use crate::ribbon::{ACCENT, RibbonCommand};
 use crate::settings::{AUTOSAVE_RANGE, Settings};
+use crate::theme::{Palette, ThemeChoice};
 
 /// Страница представления «Файл».
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -182,7 +183,7 @@ impl Backstage {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(Color32::WHITE)
+                    .fill(Palette::of(ui.ctx()).page)
                     .inner_margin(egui::Margin::same(24)),
             )
             .show(ui, |ui| {
@@ -212,7 +213,11 @@ impl Backstage {
 }
 
 fn heading(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(28.0).color(Color32::from_gray(40)));
+    ui.label(
+        RichText::new(text)
+            .size(28.0)
+            .color(Palette::of(ui.ctx()).heading),
+    );
     ui.add_space(12.0);
 }
 
@@ -256,7 +261,7 @@ fn info_page(ui: &mut Ui, info: &BackstageInfo) {
         .spacing(vec2(24.0, 6.0))
         .show(ui, |ui| {
             for (name, value) in rows {
-                ui.label(RichText::new(name).color(Color32::from_gray(90)));
+                ui.label(RichText::new(name).color(Palette::of(ui.ctx()).caption));
                 ui.label(value);
                 ui.end_row();
             }
@@ -268,8 +273,8 @@ fn new_page(ui: &mut Ui, out: &mut Vec<RibbonCommand>) {
     heading(ui, "Создать");
     let tile = egui::Button::new(RichText::new("Новый документ").size(15.0))
         .min_size(vec2(160.0, 200.0))
-        .fill(Color32::from_gray(250))
-        .stroke(egui::Stroke::new(1.0, Color32::from_gray(190)));
+        .fill(Palette::of(ui.ctx()).card)
+        .stroke(egui::Stroke::new(1.0, Palette::of(ui.ctx()).border));
     if ui
         .add(tile)
         .on_hover_text("Пустой документ (Ctrl+N)")
@@ -357,6 +362,18 @@ fn options_page(ui: &mut Ui, settings: Settings, out: &mut Vec<RibbonCommand>) {
     ui.add_space(12.0);
     ui.label(RichText::new("Вид").size(16.0));
     ui.checkbox(&mut changed.show_ruler, "Показывать линейку при запуске");
+    ui.horizontal(|ui| {
+        let label = ui.label("Тема оформления:");
+        egui::ComboBox::from_id_salt("theme")
+            .selected_text(changed.theme.name())
+            .show_ui(ui, |ui| {
+                for theme in ThemeChoice::ALL {
+                    ui.selectable_value(&mut changed.theme, theme, theme.name());
+                }
+            })
+            .response
+            .labelled_by(label.id);
+    });
     if changed != settings {
         out.push(RibbonCommand::ChangeSettings(changed));
     }

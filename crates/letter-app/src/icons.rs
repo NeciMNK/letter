@@ -177,7 +177,7 @@ fn icon_button_at(
     let color = if enabled {
         visuals.fg_stroke.color
     } else {
-        Color32::from_gray(170)
+        crate::theme::Palette::of(ui.ctx()).disabled
     };
     let side = rect.height().min(rect.width()).min(32.0) * 0.7;
     let area = Rect::from_center_size(rect.center() + vec2(0.0, dy), Vec2::splat(side));
@@ -198,7 +198,7 @@ pub fn color_button(ui: &mut Ui, icon: Icon, name: &str, bar: Color32, enabled: 
     let bar = if enabled {
         bar
     } else {
-        Color32::from_gray(200)
+        crate::theme::Palette::of(ui.ctx()).disabled
     };
     ui.painter().rect_filled(strip, 0.0, bar);
     response
@@ -239,7 +239,7 @@ pub fn icon_text_button(ui: &mut Ui, icon: Icon, text: &str, enabled: bool) -> R
     let color = if enabled {
         visuals.fg_stroke.color
     } else {
-        Color32::from_gray(170)
+        crate::theme::Palette::of(ui.ctx()).disabled
     };
     let icon_rect = Rect::from_min_size(rect.min, Vec2::splat(height));
     let side = height * 0.7;

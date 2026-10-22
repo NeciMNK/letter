@@ -20,6 +20,7 @@ mod ribbon;
 mod ruler;
 mod settings;
 mod styles;
+mod theme;
 mod units;
 mod view;
 mod viewer;
@@ -46,8 +47,6 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             // Ctrl+плюс/минус меняют масштаб документа, а не интерфейса.
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
-            // Светлое оформление, как у Word по умолчанию.
-            cc.egui_ctx.set_theme(egui::Theme::Light);
             icons::install(&cc.egui_ctx);
             let mut viewer = Viewer::with_storage(FontLibrary::new(), files::app_dir());
             match file {

@@ -5,6 +5,7 @@
 //!
 //! Вкладка «Главная» — в [`crate::home`].
 
+use crate::theme::Palette;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -21,7 +22,6 @@ use letter_model::Alignment;
 const BODY_HEIGHT: f32 = 78.0;
 
 /// Фон ленты и выделенной вкладки.
-const RIBBON_FILL: Color32 = Color32::from_gray(247);
 pub(crate) const ACCENT: Color32 = Color32::from_rgb(43, 87, 154);
 
 /// Вкладка ленты.
@@ -202,9 +202,10 @@ impl Ribbon {
         quick_access(ui, info, &mut out);
         self.tabs(ui, &mut out);
         if !self.collapsed {
+            let colors = Palette::of(ui.ctx());
             egui::Frame::new()
-                .fill(RIBBON_FILL)
-                .stroke(Stroke::new(1.0, Color32::from_gray(215)))
+                .fill(colors.ribbon)
+                .stroke(Stroke::new(1.0, colors.border))
                 .inner_margin(egui::Margin::symmetric(4, 2))
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
@@ -242,7 +243,9 @@ impl Ribbon {
             for tab in Tab::ALL {
                 let selected = self.tab == tab && !self.collapsed;
                 let text = if selected {
-                    RichText::new(tab.title()).color(ACCENT).strong()
+                    RichText::new(tab.title())
+                        .color(Palette::of(ui.ctx()).accent_text)
+                        .strong()
                 } else {
                     RichText::new(tab.title())
                 };
@@ -328,7 +331,7 @@ pub(crate) fn group_with_launcher(
                 ui.label(
                     RichText::new(caption)
                         .small()
-                        .color(Color32::from_gray(100)),
+                        .color(Palette::of(ui.ctx()).caption),
                 );
             },
         );
