@@ -13,10 +13,12 @@
 //! - [`search`] — поиск и замена;
 //! - [`table`] — таблицы: вставка, ячейки, строки и столбцы;
 //! - [`protection`] — пароли защиты документа;
-//! - [`revisions`] — исправления: запись, принять и отклонить.
+//! - [`revisions`] — исправления: запись, принять и отклонить;
+//! - [`compare`] — сравнение двух документов.
 
 pub mod caret;
 pub mod clipboard;
+pub mod compare;
 pub mod cover;
 pub mod edit;
 pub mod fields;
@@ -40,6 +42,7 @@ pub mod watermark;
 
 pub use caret::{Caret, CaretStop, caret, hit_test, line_stops, position_in_line};
 pub use clipboard::{copy_range, insert_fragment, insert_plain_text};
+pub use compare::compare_documents;
 pub use cover::{CoverLayout, CoverPage, insert_cover_page};
 pub use edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, paragraph_count,

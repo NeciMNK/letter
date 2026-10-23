@@ -617,6 +617,9 @@ enum Intent {
     Recover(usize),
     /// Закрыть программу.
     Close,
+    /// «Сравнить»: выбрать исходный и изменённый документы и показать
+    /// результат сравнения.
+    Compare,
 }
 
 /// Ответ на вопрос «сохранить изменения?».
@@ -1060,7 +1063,46 @@ impl Viewer {
             Intent::Recover(index) => self.recover(index),
             Intent::Close => self.close_confirmed = true,
             Intent::CloseDocument => self.close_document(),
+            Intent::Compare => self.pick_compare(),
         }
+    }
+
+    /// Окна выбора исходного и изменённого документов для сравнения.
+    fn pick_compare(&mut self) {
+        let pick = |title: &'static str, dir: Option<PathBuf>| {
+            let mut dialog = rfd::FileDialog::new().set_title(tr(title));
+            for (name, extensions) in OPEN_FILTERS {
+                dialog = dialog.add_filter(tr(name), extensions);
+            }
+            if let Some(dir) = dir {
+                dialog = dialog.set_directory(dir);
+            }
+            dialog.pick_file()
+        };
+        let Some(original) = pick("compare-original", self.dialog_dir()) else {
+            return;
+        };
+        let Some(revised) = pick("compare-revised", original.parent().map(Path::to_path_buf))
+        else {
+            return;
+        };
+        if let Err(message) = self.compare_files(&original, &revised) {
+            self.report("error-compare", message);
+        }
+    }
+
+    /// Сравнивает документы и показывает результат новым документом:
+    /// изменённый, где отличия от исходного — исправления.
+    fn compare_files(&mut self, original: &Path, revised: &Path) -> Result<(), String> {
+        let (old, new) = (files::read(original)?, files::read(revised)?);
+        let result = letter_editor::compare_documents(
+            &old,
+            &new,
+            &user_name(),
+            Some(letter_editor::revisions::now_w3c()),
+        );
+        self.show(None, result);
+        Ok(())
     }
 
     /// Сохраняет документ туда, откуда он открыт (Ctrl+S); если
@@ -2295,6 +2337,7 @@ impl Viewer {
                         self.reveal_cursor = true;
                     }
                 }
+                RibbonCommand::CompareDocuments => self.request(Intent::Compare),
                 RibbonCommand::RestrictEditing => {
                     if let Some(document) = &self.document {
                         let settings = &document.body().settings;
@@ -3899,6 +3942,21 @@ mod tests {
         assert!(viewer.ribbon_info().track_changes_forced);
         viewer.run_ribbon(&ctx, vec![RibbonCommand::ToggleTrackChanges]);
         assert!(viewer.ribbon_info().track_changes);
+    }
+
+    #[test]
+    fn compared_documents_show_revisions() {
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer
+            .compare_files(&fixture("plain-text.docx"), &fixture("headings.docx"))
+            .unwrap();
+        assert!(viewer.ribbon_info().has_revisions);
+        assert!(viewer.document.as_ref().unwrap().path.is_none());
+        assert!(
+            viewer
+                .compare_files(&fixture("plain-text.docx"), Path::new("нет.docx"))
+                .is_err()
+        );
     }
 
     #[test]

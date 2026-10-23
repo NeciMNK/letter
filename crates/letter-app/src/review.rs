@@ -11,12 +11,13 @@ use crate::ribbon::{RibbonCommand, RibbonInfo, group};
 
 /// Подсказки клавиш вкладки «Рецензирование» (для проверки).
 #[cfg(test)]
-pub const KEYTIPS: [&str; 6] = [
+pub const KEYTIPS: [&str; 7] = [
     "keytip-review-track",
     "keytip-review-accept",
     "keytip-review-reject",
     "keytip-review-previous",
     "keytip-review-next",
+    "keytip-review-compare",
     "keytip-review-restrict",
 ];
 
@@ -113,6 +114,21 @@ pub fn review(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 );
             }
         });
+    });
+    group(ui, tr("group-compare"), |ui| {
+        let response = ui
+            .add_enabled(
+                true,
+                Button::new(tr("compare-documents")).min_size(vec2(60.0, 60.0)),
+            )
+            .on_hover_text(tr("compare-documents-hint"));
+        command(
+            ui,
+            response,
+            "keytip-review-compare",
+            RibbonCommand::CompareDocuments,
+            out,
+        );
     });
     group(ui, tr("group-protect"), |ui| {
         let response = ui

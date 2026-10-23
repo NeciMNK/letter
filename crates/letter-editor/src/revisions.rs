@@ -169,15 +169,18 @@ pub fn delete_tracked(
 /// Принимает (`accept`) или отклоняет исправления в абзацах `range`
 /// (все абзацы, если `None`): принятая вставка и отклонённое удаление
 /// становятся обычным текстом, принятое удаление и отклонённая вставка
-/// исчезают.
+/// исчезают. Абзац (не в таблице), весь текст которого исчез, исчезает
+/// целиком: так ведут себя целиком удалённые или вставленные абзацы
+/// (например, после сравнения документов).
 pub fn resolve_revisions(doc: &mut Document, range: Option<(usize, usize)>, accept: bool) {
     let (first, last) = range.unwrap_or((0, paragraph_count(doc).saturating_sub(1)));
+    let mut emptied = Vec::new();
     for index in first..=last {
         let Some(paragraph) = paragraph_mut(doc, index) else {
             continue;
         };
-        let before = paragraph.content.len();
         let mut changed = false;
+        let had_text = paragraph.runs().any(|r| run_len(r) > 0);
         paragraph.content.retain_mut(|item| {
             let Inline::Run(run) = item else {
                 return true;
@@ -189,8 +192,27 @@ pub fn resolve_revisions(doc: &mut Document, range: Option<(usize, usize)>, acce
             // Удаляется: принятое удаление или отклонённая вставка.
             (revision.kind == RevisionKind::Insert) == accept
         });
-        if changed || paragraph.content.len() != before {
+        if changed {
             tidy(paragraph);
+            if had_text && !paragraph.runs().any(|r| run_len(r) > 0) {
+                emptied.push(index);
+            }
+        }
+    }
+    // С конца, чтобы номера ещё не удалённых не сдвигались.
+    for index in emptied.into_iter().rev() {
+        let Some(path) = crate::edit::find(doc, index) else {
+            continue;
+        };
+        if !path.cells.is_empty() {
+            continue;
+        }
+        let Some(section) = doc.sections.get_mut(path.section) else {
+            continue;
+        };
+        // В разделе остаётся хотя бы один блок.
+        if section.blocks.len() > 1 && path.block < section.blocks.len() {
+            section.blocks.remove(path.block);
         }
     }
 }
@@ -349,6 +371,19 @@ mod tests {
         assert!(!has_revisions(&accepted, None));
         let mut rejected = d.clone();
         resolve_revisions(&mut rejected, Some((0, 0)), false);
+        // Целиком вставленный абзац при отклонении исчезает.
+        let mut two = doc("a");
+        two.sections[0].blocks.push(Paragraph::text("новый").into());
+        crate::edit::paragraph_mut(&mut two, 1)
+            .into_iter()
+            .flat_map(|p| p.content.iter_mut())
+            .for_each(|i| {
+                if let Inline::Run(r) = i {
+                    r.props.revision = Some(rev(RevisionKind::Insert));
+                }
+            });
+        resolve_revisions(&mut two, None, false);
+        assert_eq!(two.sections[0].blocks.len(), 1);
         assert_eq!(rejected.plain_text(), "abcd");
         assert_eq!(runs(&rejected), [("abcd".into(), None)]);
     }
