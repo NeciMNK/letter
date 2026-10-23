@@ -27,6 +27,7 @@ use unicode_bidi::{BidiInfo, Level};
 use unicode_linebreak::{BreakOpportunity, linebreaks};
 
 use crate::fonts::{FontLibrary, FontMatch};
+use crate::math::MathLayout;
 use crate::shaping::{ShapedGlyph, ShapedRun, Shaper, TextStyle};
 
 /// Допуск при сравнении ширин, пт: строка «влезает», если вылезает
@@ -85,15 +86,19 @@ impl TextSpan {
 }
 
 /// Объект, который стоит в строке как большая буква: низ — на базовой
-/// линии, ширина и высота заданы.
-#[derive(Debug, Clone, PartialEq)]
+/// линии (у формулы — на `depth` ниже), ширина и высота заданы.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct InlineObject {
     /// Ширина, пт.
     pub width: f32,
-    /// Высота, пт.
+    /// Высота над базовой линией, пт.
     pub height: f32,
+    /// Глубина под базовой линией, пт (у рисунков — 0).
+    pub depth: f32,
     /// Картинка рисунка (`None` — рисовать заглушку).
     pub image: Option<Arc<ImageData>>,
+    /// Свёрстанная формула: тогда рисуется она, а не картинка.
+    pub math: Option<Arc<MathLayout>>,
     /// Плавающий объект: в строке от него только знак привязки без
     /// ширины и высоты, сам объект ставит раскладка по страницам.
     pub floating: bool,
@@ -326,12 +331,17 @@ pub struct ObjectItem {
     pub x: f32,
     /// Ширина, пт.
     pub width: f32,
-    /// Высота, пт (у знака привязки плавающего объекта — 0).
+    /// Высота над базовой линией, пт (у знака привязки плавающего
+    /// объекта — 0).
     pub height: f32,
+    /// Глубина под базовой линией, пт (у рисунков — 0).
+    pub depth: f32,
     /// Номер куска [`TextSpan`] с объектом.
     pub span: usize,
     /// Картинка.
     pub image: Option<Arc<ImageData>>,
+    /// Формула (рисуется вместо картинки).
+    pub math: Option<Arc<MathLayout>>,
 }
 
 /// Одна строка абзаца.
@@ -1090,7 +1100,9 @@ impl<'a> Builder<'a> {
                         x,
                         width: cluster.width,
                         height: object.as_ref().map_or(0.0, |o| o.height),
+                        depth: object.as_ref().map_or(0.0, |o| o.depth),
                         span: cluster.span,
+                        math: object.as_ref().and_then(|o| o.math.clone()),
                         image: object.and_then(|o| o.image),
                     }));
                 }
@@ -1107,20 +1119,26 @@ impl<'a> Builder<'a> {
             _ => self.text.len()..self.text.len(),
         };
         let (ascent, descent, leading) = self.line_height(start..end, mark_style);
-        // Рисунок стоит на базовой линии и поднимает строку.
-        let object_height = items
-            .iter()
-            .filter_map(|item| match item {
-                LineItem::Object(object) => Some(object.height),
+        // Рисунок стоит на базовой линии и поднимает строку; формула
+        // ещё и опускается под неё.
+        let objects = || {
+            items.iter().filter_map(|item| match item {
+                LineItem::Object(object) => Some(object),
                 _ => None,
             })
+        };
+        let object_height = objects()
+            .filter(|o| o.math.is_none())
+            .map(|o| o.height)
             .fold(0.0, f32::max);
+        let math_height = objects().map(|o| o.height).fold(0.0, f32::max);
+        let math_depth = objects().map(|o| o.depth).fold(0.0, f32::max);
         Line {
             range,
             x: line_start + offset,
             width: widths[..content_end].iter().sum(),
-            ascent: ascent.max(object_height),
-            descent,
+            ascent: ascent.max(math_height),
+            descent: descent.max(math_depth),
             leading,
             object_height,
             items,
@@ -1761,8 +1779,7 @@ mod tests {
                 InlineObject {
                     width,
                     height: 50.0,
-                    image: None,
-                    floating: false,
+                    ..InlineObject::default()
                 },
                 mono(),
             )

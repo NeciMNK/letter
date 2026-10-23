@@ -147,6 +147,17 @@ impl PagePainter {
                     let r = Rect::from_min_max(to_screen(x, y), to_screen(x + width, y + height));
                     painter.rect_filled(r, 0.0, color32(color));
                 }
+                DrawItem::Line {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    width,
+                    color,
+                } => {
+                    let stroke = egui::Stroke::new(width / pixels_per_point, color32(color));
+                    painter.line_segment([to_screen(x1, y1), to_screen(x2, y2)], stroke);
+                }
                 DrawItem::Glyph { key, x, y, color } => {
                     let Some((slot, glyph)) = self.slot(&ctx, library, key) else {
                         continue;

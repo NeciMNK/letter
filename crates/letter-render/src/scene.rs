@@ -3,8 +3,8 @@
 //! в пикселях. Список одинаков для экрана и для картинки.
 
 use letter_layout::{
-    Float, FontLibrary, LineItem, Page, PageLine, PageStory, PageWatermark, ShapeKind, TabItem,
-    TabLeader, TextItem, baseline_rise,
+    Float, FontLibrary, LineItem, MathLayout, Page, PageLine, PageStory, PageWatermark, ShapeKind,
+    ShapedRun, TabItem, TabLeader, TextItem, baseline_rise,
 };
 use std::sync::Arc;
 
@@ -43,6 +43,21 @@ pub enum DrawItem {
         x: i32,
         /// Базовая линия, округлённая до пикселя.
         y: i32,
+        /// Цвет.
+        color: Rgba,
+    },
+    /// Отрезок (линии знака корня в формулах).
+    Line {
+        /// Начало по горизонтали.
+        x1: f32,
+        /// Начало по вертикали.
+        y1: f32,
+        /// Конец по горизонтали.
+        x2: f32,
+        /// Конец по вертикали.
+        y2: f32,
+        /// Толщина.
+        width: f32,
         /// Цвет.
         color: Rgba,
     },
@@ -131,6 +146,12 @@ pub fn page_scene(
                 LineItem::Tab(tab) => {
                     if let Some(props) = line.spans.get(tab.span) {
                         leader(&mut lines, line, tab, props, scale);
+                    }
+                }
+                LineItem::Object(object) if object.math.is_some() => {
+                    let color = line.spans.get(object.span).map_or(BLACK, text_color);
+                    if let Some(math) = &object.math {
+                        formula(&mut glyphs, &mut lines, math, line, object.x, scale, color);
                     }
                 }
                 // Знак привязки плавающего рисунка места не занимает.
@@ -235,6 +256,49 @@ pub fn text_color(props: &ResolvedRunProps) -> Rgba {
     }
 }
 
+/// Формула: её глифы и линии. `x` — левый край в строке, пт.
+#[allow(clippy::too_many_arguments)]
+fn formula(
+    glyphs: &mut Vec<DrawItem>,
+    lines: &mut Vec<DrawItem>,
+    math: &MathLayout,
+    line: &PageLine,
+    x: f32,
+    scale: f32,
+    color: Rgba,
+) {
+    let left = line.x + x;
+    for piece in &math.glyphs {
+        push_run(
+            glyphs,
+            &piece.run,
+            left + piece.x,
+            line.baseline - piece.rise,
+            scale,
+            color,
+        );
+    }
+    for stroke in &math.strokes {
+        let (x1, y1) = (left + stroke.x1, line.baseline - stroke.y1);
+        let (x2, y2) = (left + stroke.x2, line.baseline - stroke.y2);
+        // Горизонтальная черта — прямоугольником, чтобы была чёткой.
+        if y1 == y2 {
+            let (from, to) = (x1.min(x2), x1.max(x2));
+            let top = y1 - stroke.width / 2.0;
+            lines.push(rect(scale, from, top, to - from, stroke.width, color));
+        } else {
+            lines.push(DrawItem::Line {
+                x1: x1 * scale,
+                y1: y1 * scale,
+                x2: x2 * scale,
+                y2: y2 * scale,
+                width: stroke.width * scale,
+                color,
+            });
+        }
+    }
+}
+
 /// Глифы куска; `rise` — подъём над базовой линией (индексы), пт.
 fn push_glyphs(
     out: &mut Vec<DrawItem>,
@@ -244,12 +308,34 @@ fn push_glyphs(
     scale: f32,
     color: Rgba,
 ) {
-    let run = &text.run;
+    push_run(
+        out,
+        &text.run,
+        line.x + text.x,
+        line.baseline - rise,
+        scale,
+        color,
+    );
+}
+
+/// Глифы куска с левым краем `left` на базовой линии `baseline`
+/// (пт от угла листа).
+fn push_run(
+    out: &mut Vec<DrawItem>,
+    run: &ShapedRun,
+    left: f32,
+    baseline: f32,
+    scale: f32,
+    color: Rgba,
+) {
+    if run.hidden {
+        return;
+    }
     let size_64 = (run.size * scale * 64.0).round().max(1.0) as u32;
-    let mut pen = line.x + text.x;
+    let mut pen = left;
     for glyph in &run.glyphs {
         let x = (pen + glyph.x_offset) * scale;
-        let y = (line.baseline - rise - glyph.y_offset) * scale;
+        let y = (baseline - glyph.y_offset) * scale;
         let whole = x.floor();
         let subpixel =
             (((x - whole) * f32::from(SUBPIXEL_STEPS)).floor() as u8).min(SUBPIXEL_STEPS - 1);

@@ -228,6 +228,34 @@ fn page_content(
                 let (x, y, w, h) = (x / SCALE, y / SCALE, width / SCALE, h / SCALE);
                 content.rect(x, height - y - h, w, h).fill_nonzero();
             }
+            DrawItem::Line {
+                x1,
+                y1,
+                x2,
+                y2,
+                width,
+                color,
+            } => {
+                if in_text {
+                    content.end_text();
+                    in_text = false;
+                    current_font = None;
+                }
+                if color[3] != current_alpha {
+                    alpha_state(&mut content, refs, color[3]);
+                    current_alpha = color[3];
+                }
+                let [r, g, b, _] = *color;
+                content
+                    .save_state()
+                    .set_stroke_rgb(unit(r), unit(g), unit(b))
+                    .set_line_width(width / SCALE)
+                    .set_line_cap(pdf_writer::types::LineCapStyle::RoundCap)
+                    .move_to(x1 / SCALE, height - y1 / SCALE)
+                    .line_to(x2 / SCALE, height - y2 / SCALE)
+                    .stroke()
+                    .restore_state();
+            }
             DrawItem::Glyph { key, x, y, color } => {
                 let font = embed_font(fonts, refs, key.font);
                 let gid = font.remapper.remap(key.glyph_id);

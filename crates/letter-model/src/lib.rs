@@ -20,6 +20,7 @@
 mod border;
 mod document;
 mod field;
+mod math;
 mod note;
 mod numbering;
 mod package;
@@ -40,6 +41,7 @@ mod watermark;
 pub use border::{Border, Borders, ParagraphBorders, Shading};
 pub use document::{Document, Settings, for_each_picture_in};
 pub use field::{Field, alphabetic, fields, roman, set_field_result};
+pub use math::{FractionKind, Math, MathAlign, MathList, MathNode};
 pub use note::{Note, NoteKind, NoteReference};
 pub use numbering::{
     AbstractNumbering, LevelOverride, LevelSuffix, ListCounters, ListLabel, ListLevel,

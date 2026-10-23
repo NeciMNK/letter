@@ -36,6 +36,7 @@ const FIXTURES: &[&str] = &[
     "watermark.docx",
     "header-footer.docx",
     "ru-en.docx",
+    "math.docx",
 ];
 
 fn fixture_bytes(name: &str) -> Vec<u8> {

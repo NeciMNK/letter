@@ -76,7 +76,9 @@ pub fn pictures_on_page(layout: &DocumentLayout, page: usize) -> Vec<PictureBox>
         .collect();
     for line in &sheet.lines {
         for item in &line.line.items {
+            // Формула — не рисунок: её не выделяют рамкой с маркерами.
             if let LineItem::Object(object) = item
+                && object.math.is_none()
                 && (object.width > 0.0 || object.height > 0.0)
             {
                 out.push(PictureBox {

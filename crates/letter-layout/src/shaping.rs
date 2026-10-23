@@ -253,6 +253,22 @@ impl Shaper {
         })
     }
 
+    /// Границы глифа по вертикали в долях кегля: низ (отрицательный —
+    /// под базовой линией) и верх. `None` у пустого глифа (пробел) или
+    /// если файл шрифта не читается.
+    pub fn glyph_bounds(
+        &mut self,
+        library: &FontLibrary,
+        id: FontId,
+        glyph_id: u16,
+    ) -> Option<(f32, f32)> {
+        let data = self.font_data(library, id)?;
+        let face = ttf_parser::Face::parse(&data.bytes, data.index).ok()?;
+        let em = f32::from(face.units_per_em());
+        let rect = face.glyph_bounding_box(ttf_parser::GlyphId(glyph_id))?;
+        Some((f32::from(rect.y_min) / em, f32::from(rect.y_max) / em))
+    }
+
     /// Есть ли в шрифте буква.
     pub fn has_glyph(&mut self, library: &FontLibrary, id: FontId, c: char) -> bool {
         self.font_data(library, id).is_some_and(|data| {

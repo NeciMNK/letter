@@ -304,6 +304,7 @@ fn content(
             match item {
                 RunContent::Text(text) => out.push_str(&escape(text)),
                 RunContent::Symbol(s) => out.push_str(&escape(&s.unicode().to_string())),
+                RunContent::Math(m) => out.push_str(&escape(&m.linear_text().replace('\n', " "))),
                 RunContent::Tab => out.push('\t'),
                 RunContent::Break(BreakKind::Line) => {
                     out.push_str("<br>");

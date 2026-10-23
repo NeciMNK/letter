@@ -17,6 +17,7 @@
 
 mod document;
 mod error;
+mod math;
 mod names;
 mod numbering;
 mod package;

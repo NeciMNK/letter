@@ -97,6 +97,34 @@ impl RgbaImage {
     }
 }
 
+impl RgbaImage {
+    /// Рисует отрезок толщиной `width` со сглаженными краями.
+    fn draw_line(&mut self, (x1, y1): (f32, f32), (x2, y2): (f32, f32), width: f32, color: Rgba) {
+        let half = width.max(0.5) / 2.0;
+        let (dx, dy) = (x2 - x1, y2 - y1);
+        let length_sq = dx * dx + dy * dy;
+        let (left, right) = (x1.min(x2) - half - 1.0, x1.max(x2) + half + 1.0);
+        let (top, bottom) = (y1.min(y2) - half - 1.0, y1.max(y2) + half + 1.0);
+        for py in top.floor() as i64..bottom.ceil() as i64 {
+            for px in left.floor() as i64..right.ceil() as i64 {
+                // Расстояние от середины пикселя до отрезка.
+                let (cx, cy) = (px as f32 + 0.5, py as f32 + 0.5);
+                let t = if length_sq > 0.0 {
+                    (((cx - x1) * dx + (cy - y1) * dy) / length_sq).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let (nx, ny) = (x1 + t * dx - cx, y1 + t * dy - cy);
+                let distance = (nx * nx + ny * ny).sqrt();
+                let cover = (half + 0.5 - distance).clamp(0.0, 1.0);
+                if cover > 0.0 {
+                    self.blend(px, py, color, (cover * 255.0).round() as u8);
+                }
+            }
+        }
+    }
+}
+
 /// Какая доля пикселя `[p, p + 1)` попадает в отрезок `[a, b)`.
 fn coverage(p: f32, a: f32, b: f32) -> f32 {
     ((p + 1.0).min(b) - p.max(a)).clamp(0.0, 1.0)
@@ -123,6 +151,14 @@ pub fn render_page(
                 height,
                 color,
             } => image.fill_rect(x, y, width, height, color),
+            DrawItem::Line {
+                x1,
+                y1,
+                x2,
+                y2,
+                width,
+                color,
+            } => image.draw_line((x1, y1), (x2, y2), width, color),
             DrawItem::Picture {
                 x,
                 y,

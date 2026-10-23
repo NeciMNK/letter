@@ -1434,6 +1434,8 @@ fn prepare(
     let mut span_props = Vec::new();
     let mut floats = Vec::new();
     let mut notes = Vec::new();
+    // Выравнивание отдельной формулы (`m:oMathPara`) в абзаце.
+    let mut display_math = None;
     for run in paragraph.runs() {
         let resolved = doc.resolve_run_in(&paragraph.props, &run.props, table);
         let mut text = String::new();
@@ -1465,6 +1467,7 @@ fn prepare(
                         height: picture.height_points(),
                         image: picture.image.clone(),
                         floating: picture.anchor.is_some(),
+                        ..InlineObject::default()
                     };
                     let style = text_style(&resolved, &resolved.fonts.h_ansi);
                     spans.push(TextSpan::object(object, style));
@@ -1516,6 +1519,30 @@ fn prepare(
                     spans.push(TextSpan::label(symbol.unicode().to_string(), style));
                     span_props.push(resolved.clone());
                 }
+                // Формула — свёрстанная коробка, как рисунок в строке.
+                RunContent::Math(math) => {
+                    push_text(
+                        &mut spans,
+                        &mut span_props,
+                        &std::mem::take(&mut text),
+                        &resolved,
+                    );
+                    if math.display {
+                        display_math = Some(math.align);
+                    }
+                    let size = resolved.size.0 as f32 / 2.0;
+                    let laid = crate::math::layout_math(math, size, shaper, library);
+                    let object = InlineObject {
+                        width: laid.width,
+                        height: laid.ascent.max(0.0),
+                        depth: laid.descent.max(0.0),
+                        math: Some(Arc::new(laid)),
+                        ..InlineObject::default()
+                    };
+                    let style = text_style(&resolved, &resolved.fonts.h_ansi);
+                    spans.push(TextSpan::object(object, style));
+                    span_props.push(resolved.clone());
+                }
                 // Код поля не виден, видно только его результат.
                 RunContent::FieldChar(_) | RunContent::FieldCode(_) | RunContent::Unknown(_) => {}
             }
@@ -1539,6 +1566,13 @@ fn prepare(
         Alignment::Right => Align::Right,
         Alignment::Justify => Align::Justify,
         Alignment::Distribute => Align::Distribute,
+    };
+    // Абзац с отдельной формулой Word выравнивает по формуле.
+    format.align = match display_math {
+        Some(letter_model::MathAlign::Center) => Align::Center,
+        Some(letter_model::MathAlign::Left) => Align::Left,
+        Some(letter_model::MathAlign::Right) => Align::Right,
+        None => format.align,
     };
     format.default_tab = points(doc.settings.default_tab_stop);
     let settings = &doc.settings;
