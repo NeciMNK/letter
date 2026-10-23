@@ -13,7 +13,7 @@ use crate::serialize::{
 use crate::xml::Element;
 
 /// Виды номеров (`w:numFmt/@w:val`).
-const FORMATS: &[(&str, NumberFormat)] = &[
+pub(crate) const FORMATS: &[(&str, NumberFormat)] = &[
     ("decimal", NumberFormat::Decimal),
     ("decimalZero", NumberFormat::DecimalZero),
     ("upperRoman", NumberFormat::UpperRoman),

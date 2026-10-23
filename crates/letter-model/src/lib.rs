@@ -65,7 +65,7 @@ pub use run::{
 };
 pub use section::{
     Columns, HeaderFooter, HeaderFooterKind, HeaderFooters, Orientation, PageBorderDisplay,
-    PageBorders, PageMargins, PageSize, Section, SectionProps, SectionStart,
+    PageBorders, PageMargins, PageNumbering, PageSize, Section, SectionProps, SectionStart,
 };
 pub use style::{DocDefaults, Style, StyleKind, Styles};
 pub use symbol::{Symbol, is_symbol_font, symbol_char};

@@ -28,6 +28,7 @@ mod link_dialog;
 mod modes;
 mod navigation;
 mod outlining;
+mod page_number_dialog;
 mod paragraph_dialog;
 mod picture;
 mod print;

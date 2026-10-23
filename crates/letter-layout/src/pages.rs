@@ -118,6 +118,9 @@ pub struct Page {
     pub notes: Vec<PageNote>,
     /// Подложка из верхнего колонтитула страницы.
     pub watermark: Option<PageWatermark>,
+    /// Номер страницы, как его показывает поле PAGE (с учётом «Начать с»
+    /// у разделов).
+    pub number: usize,
 }
 
 /// Подложка на странице: надпись, повёрнутая вокруг середины области
@@ -989,7 +992,7 @@ fn place_stories(
     library: &FontLibrary,
 ) {
     let count = pages.len();
-    for (index, page) in pages.iter_mut().enumerate() {
+    for page in pages.iter_mut() {
         let Some(section) = doc.sections.get(page.section) else {
             continue;
         };
@@ -999,9 +1002,14 @@ fn place_stories(
         let m = section.props.margins.unwrap_or_default();
         let k = kind_index(page.kind);
         // Колонтитул с номером страницы верстается для каждой страницы.
+        let format = section
+            .props
+            .page_numbering
+            .as_ref()
+            .and_then(|n| n.format.as_ref());
         let mut on_page = |story: &StoryBox<'_>| match fields::with_page_numbers(
             story.blocks,
-            index + 1,
+            (page.number, format),
             count,
         ) {
             Some(blocks) => lay_story(doc, &blocks, &Geometry::of(section), shaper, library),
@@ -1888,6 +1896,11 @@ struct Pager {
     section: usize,
     /// Сколько страниц у текущего раздела.
     section_pages: usize,
+    /// Номер последней страницы (как в поле PAGE).
+    page_number: usize,
+    /// С какого номера начать следующую страницу (начало раздела
+    /// с «Начать с»).
+    restart: Option<usize>,
     /// Место колонтитулов текущего раздела.
     bands: Bands,
     /// Верх и низ текста на текущей странице (с колонтитулами).
@@ -1976,8 +1989,13 @@ impl Pager {
                 self.columns = columns;
                 self.separator = separator;
                 self.section_pages = 0;
+                self.restart = props
+                    .page_numbering
+                    .as_ref()
+                    .and_then(|n| n.start)
+                    .map(|n| n as usize);
                 self.new_page(false);
-                let even = self.pages.len().is_multiple_of(2);
+                let even = self.page_number.is_multiple_of(2);
                 let wrong = match start {
                     SectionStart::EvenPage => !even,
                     SectionStart::OddPage => even,
@@ -2133,7 +2151,8 @@ impl Pager {
         self.column_pending = false;
         self.region_start = (0, 0);
         // Какие колонтитулы у страницы и сколько места они оставляют тексту.
-        let number = self.pages.len() + 1;
+        let number = self.restart.take().unwrap_or(self.page_number + 1);
+        self.page_number = number;
         let kind = if self.section_pages == 0 && self.bands.title_page {
             HeaderFooterKind::First
         } else if self.bands.even_and_odd && number.is_multiple_of(2) {
@@ -2161,6 +2180,7 @@ impl Pager {
             footer: PageStory::default(),
             notes: Vec::new(),
             watermark: None,
+            number,
         });
         self.y = top;
         self.has_content = false;
@@ -3503,6 +3523,52 @@ mod tests {
             pages(&layout),
             [vec![0, 1, 2, 3], vec![4, 5, 6, 7], vec![8]]
         );
+    }
+
+    #[test]
+    fn sections_restart_page_numbers() {
+        use letter_model::{FieldChar, FieldCharKind, NumberFormat, PageNumbering};
+        let item = |content| {
+            letter_model::Inline::Run(Run {
+                props: RunProps::default(),
+                content: vec![content],
+            })
+        };
+        let mut footer = para("");
+        footer.content = vec![
+            item(RunContent::FieldChar(FieldChar::new(FieldCharKind::Begin))),
+            item(RunContent::FieldCode(" PAGE ".into())),
+            item(RunContent::FieldChar(FieldChar::new(
+                FieldCharKind::Separate,
+            ))),
+            item(RunContent::Text("1".into())),
+            item(RunContent::FieldChar(FieldChar::new(FieldCharKind::End))),
+        ];
+        let mut d = doc(singles(8));
+        d.sections[0].props.footers.default = Some(letter_model::HeaderFooter {
+            blocks: vec![footer.into()],
+            relationship: None,
+        });
+        let mut second = doc(singles(8)).sections.remove(0);
+        second.props.margins = d.sections[0].props.margins;
+        second.props.page_numbering = Some(PageNumbering {
+            start: Some(4),
+            format: Some(NumberFormat::LowerRoman),
+        });
+        d.sections.push(second);
+        let layout = lay(&d);
+        let numbers: Vec<usize> = layout.pages.iter().map(|p| p.number).collect();
+        let first = layout.pages.iter().position(|p| p.section == 1).unwrap();
+        assert_eq!(numbers[first], 4, "{numbers:?}");
+        assert_eq!(numbers[..first], (1..=first).collect::<Vec<_>>()[..]);
+        let footer = &layout.pages[first].footer;
+        let line = &footer.lines[0];
+        assert_eq!(&line.text[line.line.range.clone()], "iv");
+        // Чётность колонтитулов — по номеру: страница 4 — чётная.
+        d.settings.even_and_odd_headers = true;
+        let layout = lay(&d);
+        let first = layout.pages.iter().find(|p| p.section == 1).unwrap();
+        assert_eq!((first.number, first.kind), (4, HeaderFooterKind::Even));
     }
 
     #[test]

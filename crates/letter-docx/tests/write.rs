@@ -290,6 +290,10 @@ fn everything() -> Document {
                 separator: true,
                 widths: Vec::new(),
             }),
+            page_numbering: Some(letter_model::PageNumbering {
+                start: Some(5),
+                format: Some(letter_model::NumberFormat::LowerRoman),
+            }),
             unknown: vec![RawXml::new(
                 r#"<w:docGrid xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:linePitch="360"/>"#,
             )],

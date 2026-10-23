@@ -232,6 +232,10 @@ pub enum RibbonCommand {
     PageNumber(crate::headers::PageNumberPlace),
     /// «Особый колонтитул для первой страницы».
     TitlePage(bool),
+    /// «Разные колонтитулы для чётных и нечётных страниц».
+    EvenOddHeaders(bool),
+    /// Окно «Формат номеров страниц».
+    PageNumberFormat,
     /// «Закрыть окно колонтитулов».
     CloseHeaderFooter,
     /// Обновить поля в выделенном (F9).
@@ -339,6 +343,8 @@ pub struct RibbonInfo {
     pub story: Option<bool>,
     /// У раздела открытого колонтитула особый колонтитул первой страницы.
     pub title_page: bool,
+    /// «Разные колонтитулы для чётных и нечётных страниц».
+    pub even_odd: bool,
     /// В документе включена автоматическая расстановка переносов.
     pub auto_hyphenation: bool,
     /// Отступ слева абзаца с курсором, твипы.

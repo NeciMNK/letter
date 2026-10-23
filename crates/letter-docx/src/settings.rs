@@ -1,6 +1,7 @@
 //! Настройки документа (`word/settings.xml`). Пока в основном только
 //! читаются: часть при сохранении возвращается в файл без изменений,
-//! кроме флага «показывать цвет страницы» и расстановки переносов.
+//! кроме флага «показывать цвет страницы», расстановки переносов и
+//! «Разные колонтитулы для чётных и нечётных страниц».
 
 use letter_model::Settings;
 
@@ -54,6 +55,11 @@ const SETTINGS_ORDER: &[&str] = &[
     "consecutiveHyphenLimit",
     "hyphenationZone",
     "doNotHyphenateCaps",
+    "showEnvelope",
+    "summaryLength",
+    "clickAndTypeStyle",
+    "defaultTableStyle",
+    "evenAndOddHeaders",
 ];
 
 /// Новая часть настроек, если в исходной (`original`) нужно что-то
@@ -78,6 +84,7 @@ pub(crate) fn updated_settings(
             && a.hyphenation_zone == b.hyphenation_zone
             && a.consecutive_hyphen_limit == b.consecutive_hyphen_limit
             && a.do_not_hyphenate_caps == b.do_not_hyphenate_caps
+            && a.even_and_odd_headers == b.even_and_odd_headers
     };
     if same(&current, settings) && (has_flag || !background) {
         return None;
@@ -91,7 +98,7 @@ pub(crate) fn updated_settings(
         None => format!("<{prefix}{name}/>"),
     };
     // Наши элементы: имя и новое содержимое (`None` — убрать).
-    let ours: [(&str, Option<String>); 5] = [
+    let ours: [(&str, Option<String>); 6] = [
         (
             "displayBackgroundShape",
             (background || has_flag).then(|| w("displayBackgroundShape", None)),
@@ -125,6 +132,12 @@ pub(crate) fn updated_settings(
             settings
                 .do_not_hyphenate_caps
                 .then(|| w("doNotHyphenateCaps", None)),
+        ),
+        (
+            "evenAndOddHeaders",
+            settings
+                .even_and_odd_headers
+                .then(|| w("evenAndOddHeaders", None)),
         ),
     ];
     let rank = |name: &str| SETTINGS_ORDER.iter().position(|n| *n == name);
@@ -313,5 +326,26 @@ mod tests {
             updated_settings(Some(xml.as_bytes()), &Settings::default(), false).unwrap_or_default();
         assert!(!off.contains("autoHyphenation") && !off.contains("hyphenationZone"));
         assert!(off.contains("characterSpacingControl"));
+    }
+
+    #[test]
+    fn even_and_odd_headers_are_written() {
+        let source = r#"<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:defaultTabStop w:val="720"/><w:characterSpacingControl w:val="doNotCompress"/></w:settings>"#;
+        let on = Settings {
+            even_and_odd_headers: true,
+            ..Settings::default()
+        };
+        let xml = updated_settings(Some(source.as_bytes()), &on, false).unwrap_or_default();
+        let at = |name: &str| xml.find(name).unwrap_or(usize::MAX);
+        assert!(at("defaultTabStop") < at("evenAndOddHeaders"), "{xml}");
+        assert!(
+            at("evenAndOddHeaders") < at("characterSpacingControl"),
+            "{xml}"
+        );
+        assert!(read_settings(&xml::parse(xml.as_bytes()).unwrap()).even_and_odd_headers);
+        assert_eq!(updated_settings(Some(xml.as_bytes()), &on, false), None);
+        let off =
+            updated_settings(Some(xml.as_bytes()), &Settings::default(), false).unwrap_or_default();
+        assert!(!off.contains("evenAndOddHeaders"), "{off}");
     }
 }

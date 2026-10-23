@@ -763,6 +763,21 @@ fn section_props(props: &SectionProps) -> String {
     if let Some(borders) = &props.page_borders {
         children.push("pgBorders", page_borders_xml(borders));
     }
+    if let Some(numbering) = &props.page_numbering {
+        let mut attrs = Vec::new();
+        if let Some(name) = numbering.format.as_ref().and_then(|f| {
+            crate::numbering::FORMATS
+                .iter()
+                .find(|(_, v)| v == f)
+                .map(|(n, _)| *n)
+        }) {
+            attrs.push(("w:fmt", name.to_string()));
+        }
+        if let Some(start) = numbering.start {
+            attrs.push(("w:start", start.to_string()));
+        }
+        children.push("pgNumType", empty("w:pgNumType", &attrs));
+    }
     children.raw(&props.unknown);
     element("w:sectPr", &children.finish())
 }

@@ -9,7 +9,7 @@
 
 use std::ops::Range;
 
-use crate::{FieldChar, FieldCharKind, Inline, Paragraph, Run, RunContent, RunProps};
+use crate::{FieldChar, FieldCharKind, Inline, NumberFormat, Paragraph, Run, RunContent, RunProps};
 
 /// Поле абзаца.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +105,30 @@ impl Field {
             };
         }
         self.format_text(&out)
+    }
+
+    /// Номер страницы `n` для поля PAGE: ключ `\*` с видом числа важнее
+    /// вида номеров раздела `page_format` (`None` — арабские цифры).
+    pub fn format_page_number(&self, n: usize, page_format: Option<&NumberFormat>) -> String {
+        const NUMBER_SWITCHES: [&str; 7] = [
+            "roman",
+            "ROMAN",
+            "Roman",
+            "alphabetic",
+            "ALPHABETIC",
+            "Alphabetic",
+            "ArabicDash",
+        ];
+        let switched = self
+            .formats()
+            .iter()
+            .any(|f| NUMBER_SWITCHES.contains(&f.as_str()) || f == "Arabic");
+        match page_format {
+            Some(format) if !switched => {
+                self.format_text(&format.format(u32::try_from(n).unwrap_or(u32::MAX)))
+            }
+            _ => self.format_number(n),
+        }
     }
 
     /// Текст в виде, который задаёт ключ `\*`: `Upper` (прописные),
