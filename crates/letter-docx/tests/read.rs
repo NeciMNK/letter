@@ -482,3 +482,27 @@ fn formulas_are_read() {
         "{first}"
     );
 }
+
+#[test]
+fn comments_with_replies() {
+    let doc = fixture("comments.docx");
+    let Block::Paragraph(p) = &doc.sections[0].blocks[0] else {
+        panic!("first block is not a paragraph");
+    };
+    assert_eq!(p.plain_text(), "The quick brown fox.");
+    assert!(matches!(&p.content[1], Inline::CommentStart(id) if id == "0"));
+    assert!(
+        p.runs()
+            .any(|r| r.content == [RunContent::CommentReference("1".into())])
+    );
+    assert_eq!(doc.comments.len(), 3);
+    let first = &doc.comments[0];
+    assert_eq!(first.author, "Anna Reviewer");
+    assert_eq!(first.initials.as_deref(), Some("AR"));
+    assert_eq!(first.date.as_deref(), Some("2026-10-23T10:00:00Z"));
+    assert_eq!(first.plain_text(), "Which fox?");
+    assert_eq!(first.parent, None);
+    assert!(!first.done);
+    assert_eq!(doc.comments[1].parent.as_deref(), Some("0"));
+    assert!(doc.comments[2].done);
+}

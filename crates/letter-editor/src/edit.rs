@@ -290,8 +290,8 @@ pub(crate) fn blocks_mut<'a>(doc: &'a mut Document, path: &Path) -> Option<&'a m
     Some(blocks)
 }
 
-/// Абзац номер `index` для чтения.
-pub(crate) fn paragraph_ref(doc: &Document, index: usize) -> Option<&Paragraph> {
+/// Абзац номер `index` (по порядку во всём документе) для чтения.
+pub fn paragraph_ref(doc: &Document, index: usize) -> Option<&Paragraph> {
     let path = find(doc, index)?;
     let mut blocks = &doc.sections.get(path.section)?.blocks;
     for &(b, r, c) in &path.cells {
@@ -339,7 +339,10 @@ pub(crate) fn plain_text(paragraph: &Paragraph) -> String {
                     text.push(letter_model::OBJECT_CHAR);
                 }
                 RunContent::NoteReference(_) => {}
-                RunContent::FieldChar(_) | RunContent::FieldCode(_) | RunContent::Unknown(_) => {}
+                RunContent::FieldChar(_)
+                | RunContent::FieldCode(_)
+                | RunContent::CommentReference(_)
+                | RunContent::Unknown(_) => {}
             }
         }
     }

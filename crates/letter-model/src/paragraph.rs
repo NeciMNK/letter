@@ -23,6 +23,11 @@ pub enum Inline {
     BookmarkStart(Bookmark),
     /// Конец закладки (`w:bookmarkEnd`) с номером закладки.
     BookmarkEnd(String),
+    /// Начало текста примечания (`w:commentRangeStart`) с номером
+    /// примечания.
+    CommentStart(String),
+    /// Конец текста примечания (`w:commentRangeEnd`).
+    CommentEnd(String),
     /// Непонятый элемент (гиперссылка, закладка, исправление и т. п.),
     /// сохранённый как есть.
     Unknown(RawXml),

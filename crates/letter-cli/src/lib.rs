@@ -340,6 +340,22 @@ pub fn dump(doc: &Document) -> String {
             }
         }
     }
+    for comment in &doc.comments {
+        let mut line = format!("Примечание {} — {}", comment.id, comment.author);
+        if let Some(date) = &comment.date {
+            let _ = write!(line, ", {date}");
+        }
+        if let Some(parent) = &comment.parent {
+            let _ = write!(line, ", ответ на {parent}");
+        }
+        if comment.done {
+            line.push_str(", решено");
+        }
+        let _ = writeln!(out, "{line}");
+        for block in &comment.blocks {
+            dump_block(&mut out, 1, block);
+        }
+    }
     out
 }
 
@@ -392,6 +408,12 @@ fn dump_paragraph(out: &mut String, depth: usize, p: &Paragraph) {
             Inline::BookmarkEnd(id) => {
                 let _ = writeln!(out, "{}Конец закладки ({id})", indent(depth + 1));
             }
+            Inline::CommentStart(id) => {
+                let _ = writeln!(out, "{}Примечание ({id})", indent(depth + 1));
+            }
+            Inline::CommentEnd(id) => {
+                let _ = writeln!(out, "{}Конец примечания ({id})", indent(depth + 1));
+            }
             Inline::Unknown(raw) => {
                 let _ = writeln!(out, "{}Непонятое <{}>", indent(depth + 1), raw.name());
             }
@@ -437,6 +459,9 @@ fn dump_run(out: &mut String, depth: usize, run: &Run) {
                 let _ = write!(content, "<{kind} {}>", r.id);
             }
             RunContent::NoteMark(_) => content.push_str("<номер сноски>"),
+            RunContent::CommentReference(id) => {
+                let _ = write!(content, "<примечание {id}>");
+            }
             RunContent::Tab => content.push('\t'),
             RunContent::Break(BreakKind::Line) => content.push('\n'),
             RunContent::Break(BreakKind::Page) => content.push_str("<разрыв страницы>"),

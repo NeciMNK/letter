@@ -392,6 +392,101 @@ def notes() -> Document:
     return doc
 
 
+def add_comment_parts(doc, comments: list[tuple[int, str, str, str, int | None, bool]]) -> None:
+    """Части примечаний (`comments.xml`) и ответов с отметкой «решено»
+    (`commentsExtended.xml`), как их пишет Word: номер, автор, инициалы,
+    текст, на какое примечание ответ, решено ли."""
+    from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
+
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    w14 = "http://schemas.microsoft.com/office/word/2010/wordml"
+    w15 = "http://schemas.microsoft.com/office/word/2012/wordml"
+    mc = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+    r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    xml = (
+        f'<w:comments xmlns:w="{w}" xmlns:r="{r}" xmlns:w14="{w14}" xmlns:mc="{mc}" '
+        'mc:Ignorable="w14">'
+    )
+    extended = f'<w15:commentsEx xmlns:w15="{w15}">'
+    for number, author, initials, text, parent, done in comments:
+        para = f"{0x1000 + number:08X}"
+        xml += (
+            f'<w:comment w:id="{number}" w:author="{author}" '
+            f'w:date="2026-10-23T10:0{number}:00Z" w:initials="{initials}">'
+            f'<w:p w14:paraId="{para}"><w:pPr><w:pStyle w:val="CommentText"/></w:pPr>'
+            '<w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:annotationRef/></w:r>'
+            f"<w:r><w:t>{text}</w:t></w:r></w:p></w:comment>"
+        )
+        parent_attr = "" if parent is None else f' w15:paraIdParent="{0x1000 + parent:08X}"'
+        extended += f'<w15:commentEx w15:paraId="{para}"{parent_attr} w15:done="{int(done)}"/>'
+    xml += "</w:comments>"
+    extended += "</w15:commentsEx>"
+    base = "application/vnd.openxmlformats-officedocument.wordprocessingml"
+    for name, content, content_type, relationship in (
+        (
+            "comments",
+            xml,
+            f"{base}.comments+xml",
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
+        ),
+        (
+            "commentsExtended",
+            extended,
+            f"{base}.commentsExtended+xml",
+            "http://schemas.microsoft.com/office/2011/relationships/commentsExtended",
+        ),
+    ):
+        part = Part(
+            PackURI(f"/word/{name}.xml"), content_type, content.encode(), doc.part.package
+        )
+        doc.part.relate_to(part, relationship)
+
+
+def comment_range(paragraph, ids: list[int], before: str, text: str, after: str) -> None:
+    """Текст `text` с примечаниями `ids` (начало, конец и ссылка, как
+    у Word), между `before` и `after`."""
+    from docx.oxml import OxmlElement
+
+    def mark(tag: str, number: int):
+        element = OxmlElement(f"w:{tag}")
+        element.set(qn("w:id"), str(number))
+        return element
+
+    paragraph.add_run(before)
+    for number in ids:
+        paragraph._p.append(mark("commentRangeStart", number))
+    paragraph.add_run(text)
+    for number in ids:
+        paragraph._p.append(mark("commentRangeEnd", number))
+        run = paragraph.add_run()
+        run.style = "Comment Reference"
+        run._r.append(mark("commentReference", number))
+    paragraph.add_run(after)
+
+
+def comments() -> Document:
+    """Два примечания; на первое есть ответ, второе отмечено «решено»."""
+    from docx.enum.style import WD_STYLE_TYPE
+
+    doc = new_document("Примечания")
+    style = doc.styles.add_style("Comment Reference", WD_STYLE_TYPE.CHARACTER)
+    style.font.size = Pt(8)
+    style = doc.styles.add_style("Comment Text", WD_STYLE_TYPE.PARAGRAPH)
+    style.font.size = Pt(10)
+    comment_range(doc.add_paragraph(), [0, 1], "The ", "quick brown", " fox.")
+    comment_range(doc.add_paragraph(), [2], "Jumps over ", "the lazy dog", ".")
+    add_comment_parts(
+        doc,
+        [
+            (0, "Anna Reviewer", "AR", "Which fox?", None, False),
+            (1, "Boris Author", "BA", "The usual one.", 0, False),
+            (2, "Anna Reviewer", "AR", "Fixed already.", None, True),
+        ],
+    )
+    return doc
+
+
 def headers() -> Document:
     """Колонтитулы: особый для первой страницы, разные для чётных
     и нечётных; второй раздел берёт верхний колонтитул первого, а нижний
@@ -635,6 +730,7 @@ FIXTURES = {
     "headers.docx": headers,
     "links.docx": links,
     "notes.docx": notes,
+    "comments.docx": comments,
     "borders.docx": borders,
     "watermark.docx": watermark,
     "math.docx": math,

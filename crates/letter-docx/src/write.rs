@@ -11,8 +11,8 @@ use std::io::{Seek, Write};
 use std::sync::Arc;
 
 use letter_model::{
-    AppProperties, Block, CoreProperties, Document, HeaderFooterKind, ImageData, Inline, NoteKind,
-    Picture, RunContent, SourcePackage, Styles,
+    AppProperties, Block, Comment, CoreProperties, Document, HeaderFooterKind, ImageData, Inline,
+    NoteKind, Picture, RunContent, SourcePackage, Styles,
 };
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
@@ -58,6 +58,14 @@ const CT_FOOTNOTES: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml";
 const CT_ENDNOTES: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml";
+const REL_COMMENTS: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
+const REL_COMMENTS_EXTENDED: &str =
+    "http://schemas.microsoft.com/office/2011/relationships/commentsExtended";
+const CT_COMMENTS: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml";
+const CT_COMMENTS_EXTENDED: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml";
 const CT_HEADER: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml";
 const CT_FOOTER: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml";
 const REL_IMAGE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
@@ -145,6 +153,66 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
         ensure_override(&mut overrides, &name, content_type);
         replaced.push(name.clone());
         parts.push((name, Cow::Owned(xml.into_bytes())));
+    }
+    // Примечания: часть строится заново из модели; без ссылок из текста
+    // примечание (и ответы на него) в файл не идёт.
+    let mut marked = Vec::new();
+    for section in &doc.sections {
+        comment_marks(&section.blocks, &mut marked);
+    }
+    let mut comments: Vec<Comment> = Vec::new();
+    for comment in &doc.comments {
+        let parent_kept = comment
+            .parent
+            .as_ref()
+            .is_some_and(|p| comments.iter().any(|c| c.id == *p));
+        if parent_kept || marked.contains(&comment.id.as_str()) {
+            comments.push(comment.clone());
+        }
+    }
+    let comments_part = match &source.comments_part {
+        Some((name, root)) => Some((name.clone(), Some(root.as_slice()))),
+        None if !comments.is_empty() => Some((
+            links.find_or_add(
+                &main,
+                REL_COMMENTS,
+                &["/comments"],
+                &join(base, "comments.xml"),
+                false,
+            ),
+            None,
+        )),
+        None => None,
+    };
+    if let Some((name, root)) = comments_part {
+        crate::comments::assign_para_ids(&mut comments);
+        for comment in &mut comments {
+            link_hyperlinks(&mut comment.blocks, &name, &mut links);
+        }
+        let xml = crate::comments::comments_xml(&comments, root);
+        ensure_override(&mut overrides, &name, CT_COMMENTS);
+        replaced.push(name.clone());
+        parts.push((name, Cow::Owned(xml.into_bytes())));
+        let extended = match &source.comments_extended_part {
+            Some((name, root)) => Some((name.clone(), Some(root.as_slice()))),
+            None if comments.iter().any(|c| c.done || c.parent.is_some()) => Some((
+                links.find_or_add(
+                    &main,
+                    REL_COMMENTS_EXTENDED,
+                    &["/commentsExtended"],
+                    &join(base, "commentsExtended.xml"),
+                    false,
+                ),
+                None,
+            )),
+            None => None,
+        };
+        if let Some((name, root)) = extended {
+            let xml = crate::comments::comments_extended_xml(&comments, root);
+            ensure_override(&mut overrides, &name, CT_COMMENTS_EXTENDED);
+            replaced.push(name.clone());
+            parts.push((name, Cow::Owned(xml.into_bytes())));
+        }
     }
     for (name, data) in media {
         if let Some((_, ext)) = name.rsplit_once('.')
@@ -864,6 +932,35 @@ fn encode_part_name(name: &str) -> String {
 }
 
 /// Сноски, на которые ссылается текст `blocks`: вид и номер.
+/// Номера примечаний, отмеченных в тексте (началом, концом или ссылкой).
+fn comment_marks<'d>(blocks: &'d [Block], out: &mut Vec<&'d str>) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(p) => {
+                for inline in &p.content {
+                    match inline {
+                        Inline::CommentStart(id) | Inline::CommentEnd(id) => out.push(id),
+                        Inline::Run(run) => {
+                            for item in &run.content {
+                                if let RunContent::CommentReference(id) = item {
+                                    out.push(id);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Block::Table(t) => {
+                for cell in t.rows.iter().flat_map(|r| &r.cells) {
+                    comment_marks(&cell.blocks, out);
+                }
+            }
+            Block::Unknown(_) => {}
+        }
+    }
+}
+
 fn note_references<'d>(blocks: &'d [Block], out: &mut Vec<(NoteKind, &'d str)>) {
     for block in blocks {
         match block {
