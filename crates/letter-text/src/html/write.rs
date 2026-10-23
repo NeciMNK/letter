@@ -298,7 +298,10 @@ fn content(
             }
         }
         for item in &run.content {
-            if !matches!(item, RunContent::Unknown(_) | RunContent::Picture(_)) {
+            if !matches!(
+                item,
+                RunContent::Unknown(_) | RunContent::CommentReference(_) | RunContent::Picture(_)
+            ) {
                 last_break = false;
             }
             match item {
@@ -318,6 +321,7 @@ fn content(
                 | RunContent::FieldCode(_)
                 | RunContent::NoteReference(_)
                 | RunContent::NoteMark(_)
+                | RunContent::CommentReference(_)
                 | RunContent::Unknown(_) => {}
             }
         }

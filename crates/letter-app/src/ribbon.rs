@@ -183,6 +183,16 @@ pub enum RibbonCommand {
     ToggleRuler,
     /// «Вид → Область навигации»: показать или скрыть.
     ToggleNavigation,
+    /// «Создать примечание» (Ctrl+Alt+M).
+    NewComment,
+    /// Удалить примечание у курсора.
+    DeleteComment,
+    /// «Удалить все примечания в документе».
+    DeleteAllComments,
+    /// Предыдущее (`false`) или следующее примечание.
+    NextComment(bool),
+    /// Показать или скрыть область примечаний.
+    ToggleComments,
     /// Ctrl+Backspace и Ctrl+Delete: удалить слово до или после курсора.
     DeleteWord {
         /// Слово после курсора.
@@ -288,6 +298,12 @@ pub struct RibbonInfo {
     pub ruler: bool,
     /// Область навигации показана.
     pub navigation: bool,
+    /// В документе есть примечания.
+    pub has_comments: bool,
+    /// Курсор в тексте примечания.
+    pub in_comment: bool,
+    /// Область примечаний показана.
+    pub comments: bool,
     /// Режим просмотра.
     pub view_mode: crate::view::ViewMode,
     /// Курсор в таблице.
@@ -386,9 +402,7 @@ impl Ribbon {
                         Tab::TableLayout => crate::insert::table_layout(ui, info, &mut out),
                         Tab::PictureFormat => crate::insert::picture_format(ui, info, &mut out),
                         Tab::HeaderFooter => crate::headers::header_footer(ui, info, &mut out),
-                        _ => {
-                            ui.label(RichText::new(tr("tab-coming-soon")).color(Color32::GRAY));
-                        }
+                        Tab::Review => crate::comments::review(ui, info, &mut out),
                     });
                 });
         }

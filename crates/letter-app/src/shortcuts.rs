@@ -60,6 +60,7 @@ pub fn table() -> Vec<Shortcut> {
         // Режимы просмотра.
         local(CTRL_ALT, Key::P, C::ViewMode(ViewMode::Print)),
         local(CTRL_ALT, Key::O, C::ViewMode(ViewMode::Outline)),
+        local(CTRL_ALT, Key::M, C::NewComment),
         local(CTRL_ALT, Key::N, C::ViewMode(ViewMode::Draft)),
         // Правка.
         local(CTRL, Key::Z, C::Undo),

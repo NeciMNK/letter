@@ -9,6 +9,7 @@
 mod backstage;
 mod bookmark_dialog;
 mod clipboard;
+mod comments;
 mod context_menu;
 mod design;
 mod fields;

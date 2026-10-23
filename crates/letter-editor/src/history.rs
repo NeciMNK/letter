@@ -8,11 +8,15 @@
 //! Набор текста объединяется в один шаг по словам, как в Word.
 
 use letter_model::{
-    Alignment, Anchor, Block, BreakKind, Color, Document, HeaderFooter, HeaderFooterKind,
+    Alignment, Anchor, Block, BreakKind, Color, Comment, Document, HeaderFooter, HeaderFooterKind,
     Hyperlink, Note, NoteKind, Picture, Section, SectionStart, Settings,
 };
 
 use crate::clipboard::{insert_fragment, insert_plain_text};
+use crate::comments::{
+    add_comment, delete_all_comments, delete_comment, reply_to_comment, set_comment_done,
+    set_comment_text,
+};
 use crate::edit::paragraph_count;
 use crate::edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, split_paragraph,
@@ -192,6 +196,33 @@ pub enum Command {
         /// Новый текст.
         blocks: Vec<Block>,
     },
+    /// «Создать примечание» к выделенному (номер даётся новый).
+    AddComment(Box<Comment>),
+    /// Ответить на примечание с этим номером.
+    ReplyComment {
+        /// На какое примечание.
+        parent: String,
+        /// Ответ.
+        reply: Box<Comment>,
+    },
+    /// Заменить текст примечания.
+    SetComment {
+        /// Номер примечания.
+        id: String,
+        /// Новый текст.
+        blocks: Vec<Block>,
+    },
+    /// Отметить ветку примечания «решено» или снять отметку.
+    CommentDone {
+        /// Номер примечания.
+        id: String,
+        /// Решено.
+        done: bool,
+    },
+    /// Удалить примечание с ответами.
+    DeleteComment(String),
+    /// «Удалить все примечания в документе».
+    DeleteAllComments,
     /// Обновить поля в абзацах выделенного (F9).
     UpdateFields(Box<FieldContext>),
     /// «Заменить все»: найденное `query` заменить на `replacement` во
@@ -236,6 +267,11 @@ enum Patch {
     Background {
         before: Option<Color>,
         after: Option<Color>,
+    },
+    /// Примечания (и текст, если менялись отметки в нём).
+    Review {
+        before: Box<ReviewState>,
+        after: Box<ReviewState>,
     },
     /// Настройки документа.
     Settings {
@@ -289,11 +325,25 @@ impl Patch {
             Patch::Background { before, after } => {
                 doc.background = if undo { *before } else { *after };
             }
+            Patch::Review { before, after } => {
+                let state = if undo { before } else { after };
+                if let Some(sections) = &state.sections {
+                    doc.sections = sections.clone();
+                }
+                doc.comments = state.comments.clone();
+            }
             Patch::Settings { before, after } => {
                 doc.settings = if undo { before } else { after }.as_ref().clone();
             }
         }
     }
+}
+
+/// Примечания и, если правка их задела, разделы документа.
+#[derive(Debug, Clone, PartialEq)]
+struct ReviewState {
+    sections: Option<Vec<Section>>,
+    comments: Vec<Comment>,
 }
 
 /// Один шаг истории.
@@ -400,6 +450,45 @@ impl History {
                         selection,
                     );
                 }
+                return selection;
+            }
+            Command::AddComment(_)
+            | Command::ReplyComment { .. }
+            | Command::SetComment { .. }
+            | Command::CommentDone { .. }
+            | Command::DeleteComment(_)
+            | Command::DeleteAllComments => {
+                // Текст и «решено» не трогают разделы.
+                let marks = !matches!(
+                    command,
+                    Command::SetComment { .. } | Command::CommentDone { .. }
+                );
+                let before = Box::new(ReviewState {
+                    sections: marks.then(|| doc.sections.clone()),
+                    comments: doc.comments.clone(),
+                });
+                match command {
+                    Command::AddComment(comment) => {
+                        add_comment(doc, start, end, *comment);
+                    }
+                    Command::ReplyComment { parent, reply } => {
+                        reply_to_comment(doc, &parent, *reply);
+                    }
+                    Command::SetComment { id, blocks } => set_comment_text(doc, &id, blocks),
+                    Command::CommentDone { id, done } => set_comment_done(doc, &id, done),
+                    Command::DeleteComment(id) => {
+                        delete_comment(doc, &id);
+                    }
+                    _ => delete_all_comments(doc),
+                }
+                let after = Box::new(ReviewState {
+                    sections: marks.then(|| doc.sections.clone()),
+                    comments: doc.comments.clone(),
+                });
+                if before != after {
+                    self.push(Patch::Review { before, after }, selection);
+                }
+                // Отметки не занимают места: выделение остаётся верным.
                 return selection;
             }
             command => command,
@@ -693,6 +782,12 @@ impl History {
             | Command::AddBookmark(_)
             | Command::DeleteBookmark(_)
             | Command::SetNote { .. }
+            | Command::AddComment(_)
+            | Command::ReplyComment { .. }
+            | Command::SetComment { .. }
+            | Command::CommentDone { .. }
+            | Command::DeleteComment(_)
+            | Command::DeleteAllComments
             | Command::PageColor(_)
             | Command::AutoHyphenation(_)
             | Command::Watermark(_) => at,
@@ -729,6 +824,7 @@ impl History {
             Patch::Notes { before, after, .. } => before == after,
             Patch::Background { before, after } => before == after,
             Patch::Settings { before, after } => before == after,
+            Patch::Review { before, after } => before == after,
         };
         if unchanged {
             return after;
