@@ -1,6 +1,8 @@
 //! Окно документа: меню «Файл», листы с прокруткой, масштаб
 //! (Ctrl+колесо, кнопки, ползунок, «по ширине страницы»), строка
-//! состояния и мигающий курсор, который ставится щелчком мыши.
+//! состояния и мигающий курсор, который ставится щелчком мыши и ходит
+//! по тексту клавишами (стрелки, Home/End, PageUp/PageDown, с Ctrl —
+//! по словам, абзацам и к краям документа).
 
 use std::path::{Path, PathBuf};
 
@@ -10,7 +12,7 @@ use eframe::egui::{
     self, Align, Align2, Color32, Context, CursorIcon, Key, KeyboardShortcut, Layout, Modifiers,
     Pos2, Rect, Sense, Vec2, ViewportCommand, emath::GuiRounding,
 };
-use letter_editor::{Position, caret, hit_test};
+use letter_editor::{Motion, Position, caret, hit_test, move_cursor};
 use letter_layout::{DocumentLayout, FontLibrary, Shaper, layout_document};
 use letter_render::{DESK_COLOR, PagePainter, SCREEN_PIXELS_PER_POINT};
 
@@ -55,6 +57,8 @@ struct OpenDocument {
     /// Когда курсор поставили (время egui, секунды): от этого момента
     /// он мигает, начиная с «виден».
     cursor_since: f64,
+    /// Колонка для ↑ и ↓ (см. [`letter_editor::Moved::goal_x`]).
+    goal_x: Option<f32>,
 }
 
 /// Состояние окна просмотра.
@@ -77,6 +81,8 @@ pub struct Viewer {
     title_changed: bool,
     /// Пользователь попросил окно выбора файла.
     open_requested: bool,
+    /// Курсор сдвинули с клавиатуры: прокрутить так, чтобы он был виден.
+    reveal_cursor: bool,
 }
 
 impl Viewer {
@@ -95,6 +101,7 @@ impl Viewer {
             current_page: 0,
             title_changed: false,
             open_requested: false,
+            reveal_cursor: false,
         }
     }
 
@@ -108,6 +115,7 @@ impl Viewer {
             layout,
             cursor: Position::default(),
             cursor_since: 0.0,
+            goal_x: None,
         });
         self.pending_offset = Some(Vec2::ZERO);
         self.current_page = 0;
@@ -231,6 +239,46 @@ impl Viewer {
         if let Some(path) = dropped {
             self.open_or_report(&path);
         }
+        if self.error.is_none() {
+            self.move_cursor_by_keys(ctx);
+        }
+    }
+
+    /// Стрелки, Home/End, PageUp/PageDown двигают курсор.
+    fn move_cursor_by_keys(&mut self, ctx: &Context) {
+        let points = 1.0 / (self.zoom() * SCREEN_PIXELS_PER_POINT);
+        let screen = self.view_size.y * points;
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        let motions = ctx.input_mut(|i| {
+            let mut motions = Vec::new();
+            i.events.retain(|event| {
+                if let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } = event
+                    && let Some(motion) = key_motion(*key, *modifiers, screen)
+                {
+                    motions.push(motion);
+                    return false;
+                }
+                true
+            });
+            motions
+        });
+        if motions.is_empty() {
+            return;
+        }
+        for motion in motions {
+            let moved = move_cursor(&document.layout, document.cursor, motion, document.goal_x);
+            document.cursor = moved.position;
+            document.goal_x = moved.goal_x;
+        }
+        document.cursor_since = ctx.input(|i| i.time);
+        self.reveal_cursor = true;
     }
 
     /// Системное окно выбора файла.
@@ -373,6 +421,19 @@ impl Viewer {
         let sizes: Vec<(f32, f32)> = pages.iter().map(|p| (p.width, p.height)).collect();
         let placement = place_pages(&sizes, zoom, area_rect.width());
 
+        if std::mem::take(&mut self.reveal_cursor)
+            && let Some(c) = caret(&document.layout, document.cursor)
+            && let Some(page) = placement.rects.get(c.page)
+        {
+            let scale = zoom * SCREEN_PIXELS_PER_POINT;
+            let bar = Rect::from_min_size(
+                page.min + Vec2::new(c.x, c.top) * scale,
+                Vec2::new(1.0, c.height * scale),
+            );
+            let base = self.pending_offset.unwrap_or(self.offset);
+            self.pending_offset = Some(reveal(base, area_rect.size(), bar));
+        }
+
         let mut area = egui::ScrollArea::both().auto_shrink(false);
         if let Some(offset) = self.pending_offset.take() {
             area = area.scroll_offset(offset);
@@ -407,6 +468,7 @@ impl Viewer {
                 if let Some(position) = hit_test(&document.layout, page, local.x, local.y) {
                     document.cursor = position;
                     document.cursor_since = now;
+                    document.goal_x = None;
                 }
             }
 
@@ -461,6 +523,53 @@ impl Viewer {
             self.error = None;
         }
     }
+}
+
+/// Клавиша перемещения курсора и что она делает. `screen` — сколько
+/// пунктов документа видно на экране по высоте (для PageUp/PageDown).
+fn key_motion(key: Key, modifiers: Modifiers, screen: f32) -> Option<Motion> {
+    // Alt — для меню, Shift пока двигает курсор так же (выделение — F3.4).
+    if modifiers.alt {
+        return None;
+    }
+    let ctrl = modifiers.command;
+    Some(match key {
+        Key::ArrowLeft if ctrl => Motion::WordLeft,
+        Key::ArrowLeft => Motion::Left,
+        Key::ArrowRight if ctrl => Motion::WordRight,
+        Key::ArrowRight => Motion::Right,
+        Key::ArrowUp if ctrl => Motion::ParagraphUp,
+        Key::ArrowUp => Motion::Up,
+        Key::ArrowDown if ctrl => Motion::ParagraphDown,
+        Key::ArrowDown => Motion::Down,
+        Key::Home if ctrl => Motion::DocumentStart,
+        Key::Home => Motion::LineStart,
+        Key::End if ctrl => Motion::DocumentEnd,
+        Key::End => Motion::LineEnd,
+        Key::PageUp if !ctrl => Motion::ScreenUp(screen),
+        Key::PageDown if !ctrl => Motion::ScreenDown(screen),
+        _ => return None,
+    })
+}
+
+/// Прокрутка, при которой прямоугольник `target` (координаты содержимого)
+/// виден в окне размером `view`; если он уже виден, прокрутка `offset`
+/// не меняется. Сверху и снизу оставляется немного места.
+fn reveal(offset: Vec2, view: Vec2, target: Rect) -> Vec2 {
+    const MARGIN: f32 = 24.0;
+    let axis = |offset: f32, view: f32, min: f32, max: f32| {
+        if min < offset {
+            (min - MARGIN).max(0.0)
+        } else if max > offset + view {
+            max - view + MARGIN
+        } else {
+            offset
+        }
+    };
+    Vec2::new(
+        axis(offset.x, view.x, target.min.x, target.max.x),
+        axis(offset.y, view.y, target.min.y, target.max.y),
+    )
 }
 
 /// Лист под точкой `point` (координаты содержимого прокрутки) или,
@@ -658,5 +767,95 @@ mod tests {
         later.time = Some(CARET_BLINK + 0.1);
         let hidden = frame(&ctx, &mut viewer, later);
         assert_eq!(hidden + 1, before, "{before} → {hidden}");
+    }
+
+    fn key(key: Key, modifiers: Modifiers) -> RawInput {
+        let mut input = screen();
+        input.events = vec![
+            Event::ModifiersChanged(modifiers),
+            Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            },
+        ];
+        input
+    }
+
+    #[test]
+    fn keys_map_to_motions() {
+        let ctrl = Modifiers::COMMAND;
+        assert_eq!(
+            key_motion(Key::ArrowLeft, Modifiers::NONE, 0.0),
+            Some(Motion::Left)
+        );
+        assert_eq!(
+            key_motion(Key::ArrowRight, ctrl, 0.0),
+            Some(Motion::WordRight)
+        );
+        assert_eq!(
+            key_motion(Key::ArrowDown, ctrl, 0.0),
+            Some(Motion::ParagraphDown)
+        );
+        assert_eq!(
+            key_motion(Key::Home, ctrl, 0.0),
+            Some(Motion::DocumentStart)
+        );
+        assert_eq!(
+            key_motion(Key::End, Modifiers::NONE, 0.0),
+            Some(Motion::LineEnd)
+        );
+        assert_eq!(
+            key_motion(Key::PageDown, Modifiers::NONE, 500.0),
+            Some(Motion::ScreenDown(500.0))
+        );
+        assert_eq!(key_motion(Key::ArrowLeft, Modifiers::ALT, 0.0), None);
+        assert_eq!(key_motion(Key::A, Modifiers::NONE, 0.0), None);
+    }
+
+    #[test]
+    fn reveal_scrolls_only_when_needed() {
+        let view = vec2(800.0, 600.0);
+        let inside = Rect::from_min_size(Pos2::new(100.0, 300.0), vec2(1.0, 20.0));
+        assert_eq!(reveal(vec2(0.0, 100.0), view, inside), vec2(0.0, 100.0));
+        let below = Rect::from_min_size(Pos2::new(100.0, 2000.0), vec2(1.0, 20.0));
+        let offset = reveal(Vec2::ZERO, view, below);
+        assert!(offset.y > 2020.0 - 600.0 && offset.y < 2000.0, "{offset:?}");
+        let above = Rect::from_min_size(Pos2::new(100.0, 10.0), vec2(1.0, 20.0));
+        assert_eq!(reveal(vec2(0.0, 900.0), view, above).y, 0.0);
+    }
+
+    #[test]
+    fn keys_move_the_cursor_and_the_view_follows() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        assert!(viewer.page_count() >= 2);
+        frame(&ctx, &mut viewer, screen());
+
+        frame(&ctx, &mut viewer, key(Key::ArrowRight, Modifiers::NONE));
+        assert_eq!(viewer.cursor().map(|c| c.offset), Some(1));
+        frame(&ctx, &mut viewer, key(Key::ArrowLeft, Modifiers::NONE));
+        assert_eq!(viewer.cursor(), Some(Position::default()));
+
+        // Ctrl+End — в конец документа, лист с курсором прокручен в окно.
+        frame(&ctx, &mut viewer, key(Key::End, Modifiers::COMMAND));
+        for _ in 0..3 {
+            frame(&ctx, &mut viewer, screen());
+        }
+        let cursor = viewer.cursor().unwrap();
+        let document = viewer.document.as_ref().unwrap();
+        let last = document.layout.pages.last().unwrap().lines.last().unwrap();
+        assert_eq!(cursor.paragraph, last.paragraph);
+        assert_eq!(viewer.current_page + 1, viewer.page_count());
+
+        frame(&ctx, &mut viewer, key(Key::Home, Modifiers::COMMAND));
+        for _ in 0..3 {
+            frame(&ctx, &mut viewer, screen());
+        }
+        assert_eq!(viewer.cursor(), Some(Position::default()));
+        assert_eq!(viewer.current_page, 0);
     }
 }
