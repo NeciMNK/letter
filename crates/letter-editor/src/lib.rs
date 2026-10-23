@@ -63,7 +63,7 @@ pub use picture::{
     selected_picture, set_picture_anchor,
 };
 pub use position::{Affinity, Position};
-pub use search::{Found, SearchOptions, find_all, find_next, replace_all};
+pub use search::{Found, SearchOptions, find_all, find_next, found_context, replace_all};
 pub use section::{
     ColumnPreset, PageBorderPreset, PageSetup, header_footer_source, insert_break,
     insert_section_break, page_number_runs, section_props, set_header_footer, set_page_setup,

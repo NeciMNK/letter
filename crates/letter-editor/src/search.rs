@@ -81,6 +81,58 @@ pub fn find_all(doc: &Document, query: &str, options: SearchOptions) -> Vec<Foun
     found
 }
 
+/// Найденное с окружающим текстом для списка результатов («Область
+/// навигации → Результаты»): до `around` знаков до и после, по границам
+/// слов; табуляции и разрывы строк — пробелами.
+pub fn found_context(doc: &Document, found: Found, around: usize) -> (String, String, String) {
+    let Some(paragraph) = paragraph_ref(doc, found.0.paragraph) else {
+        return Default::default();
+    };
+    let text = plain_text(paragraph);
+    let clean = |s: &str| -> String {
+        s.chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .filter(|&c| c != letter_model::OBJECT_CHAR)
+            .collect()
+    };
+    let boundary = |offset: usize| {
+        let mut offset = offset.min(text.len());
+        while !text.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        offset
+    };
+    let start = boundary(found.0.offset);
+    let end = boundary(found.1.offset.max(start));
+    let before: Vec<char> = text[..start].chars().collect();
+    let mut from = before.len().saturating_sub(around);
+    if from > 0 {
+        // С начала слова.
+        while from < before.len() && !before[from - 1].is_whitespace() {
+            from += 1;
+        }
+    }
+    let before: String = before[from..].iter().collect();
+    let after: Vec<char> = text[end..].chars().collect();
+    let mut to = after.len().min(around);
+    if to < after.len() {
+        while to > 0 && !after[to].is_whitespace() {
+            to -= 1;
+        }
+    }
+    let after: String = after[..to].iter().collect();
+    let ellipsis = |cut: bool| if cut { "…" } else { "" };
+    (
+        format!("{}{}", ellipsis(from > 0), clean(&before)),
+        clean(&text[start..end]),
+        format!(
+            "{}{}",
+            clean(&after),
+            ellipsis(to < text[end..].chars().count())
+        ),
+    )
+}
+
 /// Следующее вхождение `query`, которое начинается не раньше `from`;
 /// дойдя до конца документа, поиск продолжается с начала (как «Найти
 /// далее» в Word). `None`, если текста нет нигде.
@@ -184,5 +236,20 @@ mod tests {
         assert_eq!(replace_all(&mut d, "XY", "", SearchOptions::default()), 2);
         assert_eq!(plain_text(paragraph_ref(&d, 0).unwrap()), "a--c");
         assert_eq!(clamp(&d, Position::new(1, 9)), Position::new(1, 0));
+    }
+
+    #[test]
+    fn context_around_found_text() {
+        let mut doc = Document::new();
+        doc.sections[0].blocks =
+            vec![Paragraph::text("Первое слово второе\tслово и ещё немного слов в конце").into()];
+        let found = find_all(&doc, "второе", SearchOptions::default());
+        let (before, text, after) = found_context(&doc, found[0], 10);
+        assert_eq!(text, "второе");
+        assert_eq!(before, "…слово ");
+        assert_eq!(after, " слово и…");
+        let (before, _, after) = found_context(&doc, found[0], 40);
+        assert_eq!(before, "Первое слово ");
+        assert_eq!(after, " слово и ещё немного слов в конце");
     }
 }

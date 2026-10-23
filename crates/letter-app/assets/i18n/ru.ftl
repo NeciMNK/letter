@@ -418,6 +418,7 @@ keytip-home-replace = З
 keytip-home-select-all = Ы
 keytip-home-styles = С
 keytip-view-ruler = Л
+keytip-view-navigation = О
 keytip-view-zoom-in = МУ
 keytip-view-zoom-out = ММ
 keytip-view-100 = Т
@@ -738,3 +739,18 @@ print-printer = Принтер
 print-searching = Поиск принтеров…
 print-settings = Настройки
 print-uncollated = Не разбирать по копиям: 1,1 2,2 3,3
+
+# Область навигации.
+nav-close = Закрыть область навигации
+nav-collapse = Свернуть
+nav-expand = Развернуть
+nav-headings = Заголовки
+nav-no-headings = В документе нет заголовков. Чтобы они появились здесь, оформите абзацы стилями «Заголовок 1», «Заголовок 2»…
+nav-nothing-found = Ничего не найдено.
+nav-page = Страница { $n }
+nav-pages = Страницы
+nav-results = Результаты
+nav-results-count = Найдено: { $n }
+nav-search-help = Введите текст в строку поиска: здесь появится всё найденное.
+nav-search-hint = Поиск в документе
+nav-title = Область навигации

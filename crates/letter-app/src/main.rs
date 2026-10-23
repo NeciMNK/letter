@@ -24,6 +24,7 @@ mod keytips;
 mod language;
 mod layout;
 mod link_dialog;
+mod navigation;
 mod paragraph_dialog;
 mod picture;
 mod print;
