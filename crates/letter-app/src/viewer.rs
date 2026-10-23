@@ -48,7 +48,10 @@ use crate::find::{FindAction, FindDialog};
 use crate::font_dialog::{FontDialog, FontValues};
 use crate::icons::{self, Icon};
 use crate::link_dialog::{LinkAction, LinkDialog};
-use crate::modes::{LayoutView, WEB_MARGIN, outline_indent, outline_levels, view_document};
+use crate::modes::{
+    LayoutView, OutlineView, WEB_MARGIN, outline_hidden, outline_indent, outline_levels,
+    view_document,
+};
 use crate::paragraph_dialog::{ParagraphDialog, ParagraphValues};
 use crate::picture::{Handle, PictureDrag};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
@@ -195,6 +198,10 @@ struct OpenDocument {
     /// Уровни абзацев для значков режима «Структура» (посчитаны при
     /// вёрстке в этом режиме).
     outline: Vec<Option<u8>>,
+    /// Что видно в режиме «Структура» (уровни, свёрнутые заголовки).
+    outline_view: OutlineView,
+    /// Скрытые в режиме «Структура» абзацы (посчитаны при вёрстке).
+    outline_hidden: Vec<bool>,
 }
 
 /// Статистика документа и выделения для строки состояния.
@@ -234,6 +241,8 @@ impl OpenDocument {
             story: None,
             view: LayoutView::Pages,
             outline: Vec::new(),
+            outline_view: OutlineView::default(),
+            outline_hidden: Vec::new(),
         }
     }
 
@@ -298,15 +307,64 @@ impl OpenDocument {
                 self.layout = story.edit_layout();
             }
             None => {
-                let copy = view_document(&self.doc, self.view);
+                let copy = view_document(&self.doc, self.view, &self.outline_view);
                 let doc = copy.as_ref().unwrap_or(&self.doc);
                 self.layout = layout_document_cached(doc, shaper, library, &mut self.cache);
                 self.outline = match self.view {
                     LayoutView::Outline { .. } => outline_levels(&self.doc),
                     _ => Vec::new(),
                 };
+                self.outline_hidden = outline_hidden(&self.outline, &self.outline_view);
             }
         }
+    }
+
+    /// Разворачивает (`expand`) или сворачивает в режиме «Структура»
+    /// заголовок у курсора (у обычного текста — заголовок над ним).
+    fn expand_heading(&mut self, expand: bool) {
+        let levels = outline_levels(&self.doc);
+        let Some(heading) = (0..=self.cursor.paragraph)
+            .rev()
+            .find(|&i| levels.get(i).copied().flatten().is_some())
+        else {
+            return;
+        };
+        if expand {
+            self.outline_view.collapsed.remove(&heading);
+        } else {
+            self.outline_view.collapsed.insert(heading);
+        }
+    }
+
+    /// Курсор в скрытом абзаце режима «Структура» уходит из него: если
+    /// он пришёл сверху (`forward`) — в начало ближайшего видимого абзаца
+    /// ниже, иначе — в конец ближайшего видимого выше.
+    fn leave_hidden_towards(&mut self, forward: bool) {
+        let hidden = |i: usize| self.outline_hidden.get(i).copied().unwrap_or(false);
+        if !hidden(self.cursor.paragraph) && !hidden(self.anchor.paragraph) {
+            return;
+        }
+        let count = letter_editor::paragraph_count(&self.doc);
+        let below = (self.cursor.paragraph..count).find(|&i| !hidden(i));
+        let above = (0..=self.cursor.paragraph).rev().find(|&i| !hidden(i));
+        let end = |index: usize| {
+            let len =
+                letter_editor::paragraph_ref(&self.doc, index).map_or(0, |p| p.plain_text().len());
+            Position::new(index, len)
+        };
+        let at = match (forward, below, above) {
+            (true, Some(index), _) => Position::new(index, 0),
+            (_, _, Some(index)) => end(index),
+            (_, Some(index), None) => Position::new(index, 0),
+            (_, None, None) => Position::default(),
+        };
+        self.set_selection(Selection::caret(at));
+    }
+
+    /// То же, когда курсор поставлен командой (сворачивание и т. п.):
+    /// в видимый абзац выше.
+    fn leave_hidden(&mut self) {
+        self.leave_hidden_towards(false);
     }
 
     /// Сам документ (и во время правки колонтитула — с ним).
@@ -668,6 +726,9 @@ pub struct Viewer {
     navigation: crate::navigation::NavigationPane,
     /// Область примечаний.
     comments: crate::comments::CommentsPane,
+    /// Абзац курсора в прошлом кадре режима «Структура»: куда он шёл,
+    /// чтобы перешагнуть скрытые абзацы.
+    outline_cursor: usize,
     /// Найденное для области навигации: строка поиска, состояние
     /// документа и результат (чтобы не искать каждый кадр).
     nav_found: Option<(String, u64, Vec<letter_editor::Found>)>,
@@ -900,6 +961,7 @@ impl Viewer {
             scroll_to: None,
             navigation: Default::default(),
             comments: Default::default(),
+            outline_cursor: 0,
             nav_found: None,
             clipboard: Clipboard::new(Box::new(SystemBuffer::default())),
             ribbon: Ribbon::default(),
@@ -1544,6 +1606,11 @@ impl Viewer {
         if document.story.is_none() && document.view != wanted {
             document.view = wanted;
             document.relayout(&mut self.shaper, &self.library);
+        }
+        if matches!(document.view, LayoutView::Outline { .. }) {
+            let forward = document.cursor.paragraph > self.outline_cursor;
+            document.leave_hidden_towards(forward);
+            self.outline_cursor = document.cursor.paragraph;
         }
     }
 
@@ -2264,6 +2331,10 @@ impl Viewer {
             ruler: self.show_ruler,
             navigation: self.navigation.open,
             comments: self.comments.open,
+            show_level: self
+                .document
+                .as_ref()
+                .and_then(|d| d.outline_view.show_level),
             view_mode: self.view_mode,
             marks: self.show_marks,
             fonts: self.font_names.clone(),
@@ -2384,6 +2455,22 @@ impl Viewer {
                 RibbonCommand::ToggleRuler => self.show_ruler = !self.show_ruler,
                 RibbonCommand::ToggleNavigation => self.navigation.open = !self.navigation.open,
                 RibbonCommand::ToggleComments => self.comments.open = !self.comments.open,
+                RibbonCommand::ShowLevel(level) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &mut self.document {
+                        document.outline_view.show_level = level;
+                        document.relayout(&mut self.shaper, &self.library);
+                        document.leave_hidden();
+                    }
+                }
+                RibbonCommand::OutlineExpand(expand) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &mut self.document {
+                        document.expand_heading(expand);
+                        document.relayout(&mut self.shaper, &self.library);
+                        document.leave_hidden();
+                    }
+                }
                 RibbonCommand::NextComment(forward) => {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
                     self.next_comment(forward);
@@ -3193,6 +3280,7 @@ impl Viewer {
                             screen_rect(i),
                             1.0 / points,
                             &document.outline,
+                            &document.outline_hidden,
                         );
                     }
                     if *show_marks {
@@ -3603,8 +3691,10 @@ fn paint_outline_marks(
     rect: Rect,
     scale: f32,
     levels: &[Option<u8>],
+    hidden: &[bool],
 ) {
     let color = Color32::from_gray(90);
+    let is_hidden = |i: usize| hidden.get(i).copied().unwrap_or(false);
     let stroke = egui::Stroke::new(1.0, color);
     for line in page
         .lines
@@ -3615,6 +3705,9 @@ fn paint_outline_marks(
         let Some(&level) = levels.get(index) else {
             continue;
         };
+        if is_hidden(index) {
+            continue;
+        }
         let x = rect.left() + (line.x + outline_indent(levels, index) - 9.0) * scale;
         let y = rect.top() + (line.baseline - 3.5) * scale;
         let center = Pos2::new(x, y);
@@ -3631,6 +3724,17 @@ fn paint_outline_marks(
                     .is_some_and(|next| next.is_none_or(|n| n > level));
                 if children {
                     painter.vline(x, y - arm..=y + arm, stroke);
+                }
+                // Под свёрнутым заголовком — серая черта, как в Word.
+                if children && is_hidden(index + 1) {
+                    let left = rect.left() + (line.x + outline_indent(levels, index)) * scale;
+                    let right = left + line.line.width.max(20.0) * scale;
+                    let below = rect.top() + (line.baseline + 3.0) * scale;
+                    painter.hline(
+                        left..=right,
+                        below,
+                        egui::Stroke::new(1.0, Color32::from_gray(150)),
+                    );
                 }
             }
             None => {
@@ -5510,6 +5614,65 @@ mod tests {
         h.get_by_label("Число слов: 1 из 3");
         h.get_by_label("Разметка страницы");
         h.get_by_label("Режим чтения");
+    }
+
+    #[test]
+    fn outline_collapses_and_changes_levels() {
+        use letter_editor::OutlineChange;
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("headings.docx")).unwrap();
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Outline)]);
+        frame(&ctx, &mut viewer, screen());
+        frame(&ctx, &mut viewer, screen());
+        let hidden = |viewer: &Viewer| viewer.document.as_ref().unwrap().outline_hidden.clone();
+        assert!(hidden(&viewer).iter().all(|h| !h));
+
+        // Свернуть «Heading 1» (курсор в тексте под ним): всё ниже скрыто.
+        let document = viewer.document.as_mut().unwrap();
+        document.set_selection(Selection::caret(Position::new(2, 3)));
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::OutlineExpand(false)]);
+        assert_eq!(
+            hidden(&viewer),
+            [false, false, true, true, true, true, true]
+        );
+        // Курсор ушёл из скрытого абзаца в конец заголовка.
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(document.cursor, Position::new(1, "Heading 1".len()));
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::OutlineExpand(true)]);
+        assert!(hidden(&viewer).iter().all(|h| !h));
+
+        // «Показать уровень 2»: без основного текста и третьего уровня.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ShowLevel(Some(2))]);
+        assert_eq!(viewer.ribbon_info().show_level, Some(2));
+        assert_eq!(
+            hidden(&viewer),
+            [true, false, true, false, true, true, true]
+        );
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ShowLevel(None)]);
+
+        // Понизить «Heading 1» до второго уровня и вернуть.
+        let document = viewer.document.as_mut().unwrap();
+        document.set_selection(Selection::caret(Position::new(1, 0)));
+        let level = |viewer: &Viewer| viewer.document.as_ref().unwrap().outline[1];
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::Edit(Command::OutlineLevel(
+                OutlineChange::Demote,
+            ))],
+        );
+        assert_eq!(level(&viewer), Some(2));
+        frame(
+            &ctx,
+            &mut viewer,
+            key(Key::ArrowLeft, Modifiers::ALT | Modifiers::SHIFT),
+        );
+        assert_eq!(level(&viewer), Some(1));
+
+        // «Закрыть режим структуры».
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Print)]);
+        frame(&ctx, &mut viewer, screen());
+        assert!(viewer.document.as_ref().unwrap().outline_hidden.is_empty());
     }
 
     #[test]

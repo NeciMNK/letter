@@ -7,8 +7,10 @@
 //! документе, так что курсор, выделение и правка работают как обычно —
 //! правится сам документ, а копия делается заново при вёрстке.
 
+use std::collections::BTreeSet;
+
 use letter_editor::outline_level;
-use letter_model::{Block, Document, PageMargins, PageSize, Twips};
+use letter_model::{Block, Document, LineSpacing, NumberingRef, PageMargins, PageSize, Twips};
 
 /// Как верстать документ.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -38,6 +40,44 @@ impl LayoutView {
     }
 }
 
+/// Что видно в режиме структуры.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutlineView {
+    /// «Показать уровень»: заголовки до этого уровня без основного
+    /// текста; `None` — «Все уровни».
+    pub show_level: Option<u8>,
+    /// Свёрнутые заголовки (номера абзацев): всё под ними скрыто.
+    pub collapsed: BTreeSet<usize>,
+}
+
+/// Скрыт ли каждый абзац (по порядку, как в [`outline_levels`]) в режиме
+/// структуры `view`.
+pub fn outline_hidden(levels: &[Option<u8>], view: &OutlineView) -> Vec<bool> {
+    let mut hidden = Vec::with_capacity(levels.len());
+    // Уровень свёрнутого заголовка, под которым мы сейчас.
+    let mut under: Option<u8> = None;
+    for (index, level) in levels.iter().enumerate() {
+        if let (Some(level), Some(top)) = (level, under)
+            && *level <= top
+        {
+            under = None;
+        }
+        let by_level = match (view.show_level, level) {
+            (None, _) => false,
+            (Some(_), None) => true,
+            (Some(show), Some(level)) => *level > show,
+        };
+        hidden.push(under.is_some() || by_level);
+        if under.is_none()
+            && let Some(level) = level
+            && view.collapsed.contains(&index)
+        {
+            under = Some(*level);
+        }
+    }
+    hidden
+}
+
 /// Поле вокруг текста в режимах без листов, пт.
 pub const WEB_MARGIN: f32 = 12.0;
 
@@ -57,7 +97,8 @@ fn twips(points: f32) -> Twips {
 
 /// Копия документа `doc` для вёрстки в режиме `view`; `None` — верстать
 /// сам документ.
-pub fn view_document(doc: &Document, view: LayoutView) -> Option<Document> {
+/// Скрытые абзацы режима структуры — по `outline`.
+pub fn view_document(doc: &Document, view: LayoutView, outline: &OutlineView) -> Option<Document> {
     let width = view.width()?;
     let mut copy = doc.clone();
     let page = (width.max(NARROWEST + 2.0 * WEB_MARGIN), ENDLESS);
@@ -86,9 +127,10 @@ pub fn view_document(doc: &Document, view: LayoutView) -> Option<Document> {
     }
     if let LayoutView::Outline { .. } = view {
         let levels = outline_levels(doc);
+        let hidden = outline_hidden(&levels, outline);
         let mut index = 0;
         for section in &mut copy.sections {
-            indent_outline(&mut section.blocks, &levels, &mut index);
+            indent_outline(&mut section.blocks, &levels, &hidden, &mut index);
         }
     }
     Some(copy)
@@ -136,7 +178,7 @@ pub fn outline_indent(levels: &[Option<u8>], index: usize) -> f32 {
 
 /// Ставит абзацам верхнего уровня отступ структуры; таблицы не трогает,
 /// но их абзацы считает.
-fn indent_outline(blocks: &mut [Block], levels: &[Option<u8>], index: &mut usize) {
+fn indent_outline(blocks: &mut [Block], levels: &[Option<u8>], hidden: &[bool], index: &mut usize) {
     for block in blocks {
         match block {
             Block::Paragraph(p) => {
@@ -144,6 +186,9 @@ fn indent_outline(blocks: &mut [Block], levels: &[Option<u8>], index: &mut usize
                 indent.left = Some(twips(outline_indent(levels, *index)));
                 indent.right = Some(Twips(0));
                 indent.first_line = None;
+                if hidden.get(*index).copied().unwrap_or(false) {
+                    collapse(p);
+                }
                 *index += 1;
             }
             Block::Table(t) => {
@@ -154,6 +199,28 @@ fn indent_outline(blocks: &mut [Block], levels: &[Option<u8>], index: &mut usize
                 }
             }
             Block::Unknown(_) => {}
+        }
+    }
+}
+
+/// Скрытый абзац: строка почти нулевой высоты без текста, номера,
+/// интервалов и рамок. Абзац остаётся на месте, чтобы номера абзацев
+/// совпадали с документом.
+fn collapse(p: &mut letter_model::Paragraph) {
+    let props = &mut p.props;
+    props.spacing.before = Some(Twips(0));
+    props.spacing.after = Some(Twips(0));
+    props.spacing.line = Some(LineSpacing::Exact(Twips(1)));
+    props.numbering = Some(NumberingRef {
+        id: Some(0),
+        level: None,
+    });
+    props.borders = None;
+    props.shading = None;
+    props.page_break_before = Some(false);
+    for inline in &mut p.content {
+        if let letter_model::Inline::Run(run) = inline {
+            run.props.hidden = Some(true);
         }
     }
 }
@@ -210,19 +277,31 @@ mod tests {
 
     #[test]
     fn pages_view_keeps_the_document() {
-        assert!(view_document(&Document::new(), LayoutView::Pages).is_none());
+        assert!(
+            view_document(&Document::new(), LayoutView::Pages, &OutlineView::default()).is_none()
+        );
     }
 
     #[test]
     fn web_text_follows_the_window() {
         let doc = Document::new();
-        let copy = view_document(&doc, LayoutView::Web { width: 500.0 }).unwrap();
+        let copy = view_document(
+            &doc,
+            LayoutView::Web { width: 500.0 },
+            &OutlineView::default(),
+        )
+        .unwrap();
         let layout = layout_document(&copy, &mut Shaper::new(), &FontLibrary::embedded_only());
         let page = &layout.pages[0];
         assert!((page.width - 500.0).abs() < 0.1);
         assert!((page.margins.left - WEB_MARGIN).abs() < 0.1);
         // Узкое окно не делает текст уже предела.
-        let narrow = view_document(&doc, LayoutView::Web { width: 10.0 }).unwrap();
+        let narrow = view_document(
+            &doc,
+            LayoutView::Web { width: 10.0 },
+            &OutlineView::default(),
+        )
+        .unwrap();
         let width = narrow.sections[0].props.page_size.unwrap().width.0;
         assert!(width >= twips(NARROWEST).0);
     }
@@ -239,7 +318,12 @@ mod tests {
         assert_eq!(outline_indent(&levels, 2), OUTLINE_STEP);
         assert_eq!(outline_indent(&levels, 4), 2.0 * OUTLINE_STEP);
 
-        let copy = view_document(&doc, LayoutView::Outline { width: 600.0 }).unwrap();
+        let copy = view_document(
+            &doc,
+            LayoutView::Outline { width: 600.0 },
+            &OutlineView::default(),
+        )
+        .unwrap();
         let left = |i: usize| match &copy.sections[0].blocks[i] {
             Block::Paragraph(p) => p.props.indentation.left,
             _ => None,
@@ -251,5 +335,70 @@ mod tests {
         assert_eq!(doc.sections[0].blocks.len(), copy.sections[0].blocks.len());
         assert!(matches!(&doc.sections[0].blocks[1],
             Block::Paragraph(p) if p.props.indentation.left.is_none()));
+    }
+
+    #[test]
+    fn outline_hides_by_level_and_collapse() {
+        // Глава 1, текст, раздел 2, текст, глава 1.
+        let levels = [Some(1), None, Some(2), None, Some(1)];
+        let all = OutlineView::default();
+        assert_eq!(outline_hidden(&levels, &all), [false; 5]);
+        let level1 = OutlineView {
+            show_level: Some(1),
+            ..OutlineView::default()
+        };
+        assert_eq!(
+            outline_hidden(&levels, &level1),
+            [false, true, true, true, false]
+        );
+        let level2 = OutlineView {
+            show_level: Some(2),
+            ..OutlineView::default()
+        };
+        assert_eq!(
+            outline_hidden(&levels, &level2),
+            [false, true, false, true, false]
+        );
+        let collapsed = OutlineView {
+            show_level: None,
+            collapsed: [2].into(),
+        };
+        assert_eq!(
+            outline_hidden(&levels, &collapsed),
+            [false, false, false, true, false]
+        );
+        let collapsed = OutlineView {
+            show_level: None,
+            collapsed: [0, 2].into(),
+        };
+        assert_eq!(
+            outline_hidden(&levels, &collapsed),
+            [false, true, true, true, false]
+        );
+
+        // Скрытый абзац почти не занимает места.
+        let doc = doc();
+        let view = LayoutView::Outline { width: 600.0 };
+        let open = view_document(&doc, view, &OutlineView::default()).unwrap();
+        let closed = view_document(
+            &doc,
+            view,
+            &OutlineView {
+                show_level: None,
+                collapsed: [0].into(),
+            },
+        )
+        .unwrap();
+        let fonts = FontLibrary::embedded_only();
+        let open = layout_document(&open, &mut Shaper::new(), &fonts);
+        let closed = layout_document(&closed, &mut Shaper::new(), &fonts);
+        let bottom = |l: &letter_layout::DocumentLayout| {
+            l.pages[0]
+                .lines
+                .iter()
+                .map(|line| line.baseline)
+                .fold(0.0, f32::max)
+        };
+        assert!(bottom(&closed) < bottom(&open) - 30.0);
     }
 }

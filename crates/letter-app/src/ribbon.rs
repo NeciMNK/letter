@@ -52,6 +52,8 @@ pub enum Tab {
     PictureFormat,
     /// «Колонтитулы»: видна, пока колонтитул открыт для правки.
     HeaderFooter,
+    /// «Структура»: видна в режиме «Структура».
+    Outline,
 }
 
 impl Tab {
@@ -80,6 +82,7 @@ impl Tab {
             Tab::TableLayout => "keytip-tab-table-layout",
             Tab::PictureFormat => "keytip-tab-picture-format",
             Tab::HeaderFooter => "keytip-tab-header-footer",
+            Tab::Outline => "keytip-tab-outline",
         }
     }
 
@@ -97,6 +100,7 @@ impl Tab {
             Tab::TableLayout => tr("tab-table-layout"),
             Tab::PictureFormat => tr("tab-picture-format"),
             Tab::HeaderFooter => tr("tab-header-footer"),
+            Tab::Outline => tr("tab-outline"),
         }
     }
 }
@@ -193,6 +197,11 @@ pub enum RibbonCommand {
     NextComment(bool),
     /// Показать или скрыть область примечаний.
     ToggleComments,
+    /// Развернуть (`true`) или свернуть заголовок у курсора (режим
+    /// «Структура»).
+    OutlineExpand(bool),
+    /// «Показать уровень»; `None` — все уровни.
+    ShowLevel(Option<u8>),
     /// Ctrl+Backspace и Ctrl+Delete: удалить слово до или после курсора.
     DeleteWord {
         /// Слово после курсора.
@@ -304,6 +313,8 @@ pub struct RibbonInfo {
     pub in_comment: bool,
     /// Область примечаний показана.
     pub comments: bool,
+    /// «Показать уровень» режима «Структура»; `None` — все уровни.
+    pub show_level: Option<u8>,
     /// Режим просмотра.
     pub view_mode: crate::view::ViewMode,
     /// Курсор в таблице.
@@ -339,6 +350,8 @@ pub struct Ribbon {
     pub keytips: KeyTips,
     /// В прошлом кадре был открыт колонтитул.
     story_open: bool,
+    /// В прошлом кадре был режим «Структура».
+    outline_open: bool,
 }
 
 impl Ribbon {
@@ -380,6 +393,15 @@ impl Ribbon {
             self.tab = Tab::Home;
         }
         self.story_open = info.story.is_some();
+        // Вкладка «Структура» открывается вместе с режимом.
+        let outline = info.view_mode == crate::view::ViewMode::Outline;
+        if outline && !self.outline_open {
+            self.tab = Tab::Outline;
+        }
+        if !outline && self.tab == Tab::Outline {
+            self.tab = Tab::Home;
+        }
+        self.outline_open = outline;
         self.tabs(ui, info, &mut out);
         if !self.collapsed {
             let colors = Palette::of(ui.ctx());
@@ -403,6 +425,7 @@ impl Ribbon {
                         Tab::PictureFormat => crate::insert::picture_format(ui, info, &mut out),
                         Tab::HeaderFooter => crate::headers::header_footer(ui, info, &mut out),
                         Tab::Review => crate::comments::review(ui, info, &mut out),
+                        Tab::Outline => crate::outlining::outlining(ui, info, &mut out),
                     });
                 });
         }
@@ -440,7 +463,10 @@ impl Ribbon {
             if info.story.is_some() {
                 contextual.push(Tab::HeaderFooter);
             }
-            for tab in Tab::ALL.into_iter().chain(contextual) {
+            // «Структура» — перед остальными вкладками, как в Word.
+            let outline =
+                (info.view_mode == crate::view::ViewMode::Outline).then_some(Tab::Outline);
+            for tab in outline.into_iter().chain(Tab::ALL).chain(contextual) {
                 let selected = self.tab == tab && !self.collapsed;
                 let text = if selected {
                     RichText::new(tab.title())

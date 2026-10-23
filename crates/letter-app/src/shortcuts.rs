@@ -2,7 +2,7 @@
 //! работают клавиши, и по ней же можно показать их список.
 
 use eframe::egui::{Key, Modifiers};
-use letter_editor::{Command, ParagraphFormat, RunFormat};
+use letter_editor::{Command, OutlineChange, ParagraphFormat, RunFormat};
 use letter_model::{Alignment, LineSpacing, NoteKind};
 
 use crate::ribbon::RibbonCommand;
@@ -26,6 +26,7 @@ pub struct Shortcut {
 const CTRL: Modifiers = Modifiers::COMMAND;
 const CTRL_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 const CTRL_ALT: Modifiers = Modifiers::COMMAND.plus(Modifiers::ALT);
+const ALT_SHIFT: Modifiers = Modifiers::ALT.plus(Modifiers::SHIFT);
 
 /// Все сочетания.
 pub fn table() -> Vec<Shortcut> {
@@ -46,6 +47,7 @@ pub fn table() -> Vec<Shortcut> {
     let para = |modifiers, key, format| local(modifiers, key, C::Paragraph(format));
     let align = |key, alignment| local(CTRL, key, C::Align(alignment));
     let spacing = |key, line| para(CTRL, key, ParagraphFormat::LineSpacing(line));
+    let outline = |change| C::Edit(Command::OutlineLevel(change));
     vec![
         // Файлы.
         global(CTRL, Key::N, C::New),
@@ -61,6 +63,12 @@ pub fn table() -> Vec<Shortcut> {
         local(CTRL_ALT, Key::P, C::ViewMode(ViewMode::Print)),
         local(CTRL_ALT, Key::O, C::ViewMode(ViewMode::Outline)),
         local(CTRL_ALT, Key::M, C::NewComment),
+        // Структура: уровни и сворачивание заголовков.
+        local(ALT_SHIFT, Key::ArrowLeft, outline(OutlineChange::Promote)),
+        local(ALT_SHIFT, Key::ArrowRight, outline(OutlineChange::Demote)),
+        local(ALT_SHIFT, Key::Plus, C::OutlineExpand(true)),
+        local(ALT_SHIFT, Key::Equals, C::OutlineExpand(true)),
+        local(ALT_SHIFT, Key::Minus, C::OutlineExpand(false)),
         local(CTRL_ALT, Key::N, C::ViewMode(ViewMode::Draft)),
         // Правка.
         local(CTRL, Key::Z, C::Undo),

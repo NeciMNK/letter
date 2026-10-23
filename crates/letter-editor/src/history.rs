@@ -26,6 +26,7 @@ use crate::fields::{FieldContext, update_fields};
 use crate::format::{
     ParagraphFormat, RunFormat, align_paragraphs, apply_style, format_paragraphs, format_runs,
 };
+use crate::levels::{OutlineChange, set_outline_level};
 use crate::links::{add_bookmark, delete_bookmark, link_at, set_link};
 use crate::lists::{
     ListKind, change_list_level, continue_numbering, multilevel_list, restart_numbering,
@@ -196,6 +197,8 @@ pub enum Command {
         /// Новый текст.
         blocks: Vec<Block>,
     },
+    /// Уровень структуры абзацев выделенного (режим структуры).
+    OutlineLevel(OutlineChange),
     /// «Создать примечание» к выделенному (номер даётся новый).
     AddComment(Box<Comment>),
     /// Ответить на примечание с этим номером.
@@ -527,6 +530,7 @@ impl History {
                 | Command::AddBookmark(_)
                 | Command::DeleteBookmark(_)
                 | Command::InsertCoverPage(_)
+                | Command::OutlineLevel(_)
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -702,6 +706,10 @@ impl History {
                 add_bookmark(doc, name, start, end);
                 Some(selection)
             }
+            Command::OutlineLevel(change) => {
+                set_outline_level(doc, start, end, *change);
+                Some(selection)
+            }
             Command::DeleteBookmark(name) => {
                 delete_bookmark(doc, name);
                 Some(selection)
@@ -788,6 +796,7 @@ impl History {
             | Command::CommentDone { .. }
             | Command::DeleteComment(_)
             | Command::DeleteAllComments
+            | Command::OutlineLevel(_)
             | Command::PageColor(_)
             | Command::AutoHyphenation(_)
             | Command::Watermark(_) => at,

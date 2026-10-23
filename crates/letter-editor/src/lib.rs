@@ -21,6 +21,7 @@ pub mod edit;
 pub mod fields;
 pub mod format;
 pub mod history;
+pub mod levels;
 pub mod links;
 pub mod lists;
 pub mod navigation;
@@ -44,7 +45,7 @@ pub use comments::{
 pub use cover::{CoverLayout, CoverPage, insert_cover_page};
 pub use edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, paragraph_count,
-    paragraph_mut, split_paragraph,
+    paragraph_mut, paragraph_ref, split_paragraph,
 };
 pub use fields::{DateTime, FieldContext, format_date, update_fields};
 pub use format::{
@@ -52,6 +53,7 @@ pub use format::{
     apply_style, format_paragraphs, format_runs, formatting_at, language_at,
 };
 pub use history::{Command, History};
+pub use levels::{OutlineChange, set_outline_level};
 pub use links::{
     add_bookmark, bookmark_position, bookmark_range, bookmarks, delete_bookmark, link_at, set_link,
 };
