@@ -15,6 +15,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod crypto;
 mod document;
 mod error;
 mod kind;
@@ -51,7 +52,22 @@ use package::CONTENT_TYPES_PART;
 /// (файл, буфер в памяти).
 ///
 /// Битый файл никогда не роняет программу: функция возвращает ошибку.
-pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
+///
+/// Зашифрованный документ даёт ошибку [`ReadError::PasswordRequired`];
+/// его открывает [`read_bytes_with_password`].
+pub fn read<R: Read + Seek>(mut reader: R) -> Result<Document, ReadError> {
+    let mut start = [0u8; 8];
+    let start_len = read_up_to(&mut reader, &mut start)?;
+    reader.seek(std::io::SeekFrom::Start(0))?;
+    if crypto::is_ole(&start[..start_len]) {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+        return Err(if crypto::is_encrypted_package(&bytes) {
+            ReadError::PasswordRequired
+        } else {
+            ReadError::NotAWordDocument("составной файл OLE (старый .doc?)".into())
+        });
+    }
     let mut package = package::Package::open(reader)?;
     let main = package.main_document_part()?;
     let bytes = package
@@ -360,6 +376,43 @@ fn read_related_xml<R: Read + Seek>(
     let bytes = package.read_part(&target).ok()??;
     let root = xml::parse(&bytes).ok()?;
     Some((target, root))
+}
+
+/// Читает в `buffer` сколько получится байт (меньше — если файл короче).
+fn read_up_to(reader: &mut impl Read, buffer: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match reader.read(&mut buffer[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    Ok(filled)
+}
+
+/// Зашифрован ли документ паролем на открытие.
+pub fn is_encrypted(bytes: &[u8]) -> bool {
+    crypto::is_encrypted_package(bytes)
+}
+
+/// Читает документ, зашифрованный паролем (ECMA-376: агильное
+/// и стандартное шифрование Word 2007–2024). Незашифрованный документ
+/// читается как обычно, пароль тогда не нужен.
+///
+/// Неверный пароль даёт [`ReadError::WrongPassword`].
+pub fn read_bytes_with_password(bytes: &[u8], password: &str) -> Result<Document, ReadError> {
+    if is_encrypted(bytes) {
+        read_bytes(&crypto::decrypt(bytes, password)?)
+    } else {
+        read_bytes(bytes)
+    }
+}
+
+/// Шифрует готовый файл .docx (байты ZIP-архива, например, из
+/// [`write_bytes_as`]) паролем на открытие так же, как Word 2010 и новее:
+/// AES-256, SHA-512, 100 000 повторов хеша.
+pub fn encrypt_bytes(docx: &[u8], password: &str) -> Result<Vec<u8>, WriteError> {
+    crypto::encrypt(docx, password)
 }
 
 /// Читает документ .docx из байтов в памяти.

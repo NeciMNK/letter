@@ -20,6 +20,16 @@ pub enum ReadError {
     /// Это пакет Office, но не документ Word (например, таблица Excel).
     #[error("это не документ Word (тип содержимого {0})")]
     NotAWordDocument(String),
+    /// Документ зашифрован: чтобы его открыть, нужен пароль
+    /// (см. [`read_bytes_with_password`](crate::read_bytes_with_password)).
+    #[error("документ защищён паролем")]
+    PasswordRequired,
+    /// Пароль не подходит.
+    #[error("неверный пароль")]
+    WrongPassword,
+    /// Документ зашифрован способом, который программа пока не понимает.
+    #[error("документ зашифрован неизвестным способом ({0})")]
+    UnsupportedEncryption(String),
     /// Повреждённый XML внутри файла.
     #[error("повреждённый XML: {0}")]
     Xml(String),

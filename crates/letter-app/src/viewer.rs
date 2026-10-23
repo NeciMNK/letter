@@ -49,6 +49,7 @@ use crate::font_dialog::{FontDialog, FontValues};
 use crate::icons::{self, Icon};
 use crate::link_dialog::{LinkAction, LinkDialog};
 use crate::paragraph_dialog::{ParagraphDialog, ParagraphValues};
+use crate::password_dialog::{PasswordAnswer, PasswordDialog};
 use crate::picture::{Handle, PictureDrag};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
 use crate::ruler::{self, RULER_SIZE, RulerParagraph, RulerState};
@@ -154,6 +155,8 @@ fn follow_link(ctx: &Context, doc: &Document, at: Position) -> Option<Position> 
 struct OpenDocument {
     /// Откуда открыт и куда сохранять; `None` — ещё не сохранён.
     path: Option<PathBuf>,
+    /// Пароль на открытие: с ним документ шифруется при сохранении.
+    password: Option<String>,
     /// [`History::state`] при последнем сохранении: если сейчас другое,
     /// документ изменён. `u64::MAX` — изменён заведомо (восстановлен).
     saved: u64,
@@ -210,6 +213,7 @@ impl OpenDocument {
         OpenDocument {
             cache,
             path,
+            password: None,
             saved: 0,
             autosaved: 0,
             doc,
@@ -670,6 +674,7 @@ pub struct Viewer {
     link_dialog: LinkDialog,
     /// Окно «Закладка».
     bookmark_dialog: BookmarkDialog,
+    password_dialog: PasswordDialog,
     /// Окно «Символ».
     symbol_dialog: SymbolDialog,
     /// Окно «Шрифт».
@@ -885,6 +890,7 @@ impl Viewer {
             paragraph_dialog: ParagraphDialog::default(),
             link_dialog: LinkDialog::default(),
             bookmark_dialog: BookmarkDialog::default(),
+            password_dialog: PasswordDialog::default(),
             symbol_dialog: SymbolDialog::default(),
             font_dialog: FontDialog::default(),
             applied_theme: None,
@@ -896,12 +902,53 @@ impl Viewer {
     ///
     /// Шаблон (.dotx, .dotm) открывается, как в Word, новым документом без
     /// имени: «Сохранить» спросит, куда его записать.
+    ///
+    /// Для зашифрованного файла сначала спрашивается пароль, а документ
+    /// открывается потом, в [`Viewer::open_with_password`].
     pub fn open(&mut self, path: &Path) -> Result<(), String> {
+        if files::is_encrypted(path) {
+            self.password_dialog.ask_to_open(path.to_owned());
+            return Ok(());
+        }
         let doc = files::read(path)?;
         let name = (!files::is_template(path)).then(|| path.to_owned());
         self.show(name, doc);
         self.recent.add(path);
         Ok(())
+    }
+
+    /// Открывает зашифрованный документ паролем `password`. При ошибке
+    /// (например, неверном пароле) прежний документ остаётся на экране.
+    pub fn open_with_password(&mut self, path: &Path, password: String) -> Result<(), String> {
+        let doc = files::read_with_password(path, &password)?;
+        let name = (!files::is_template(path)).then(|| path.to_owned());
+        self.show(name, doc);
+        if let Some(document) = &mut self.document {
+            document.password = Some(password);
+        }
+        self.recent.add(path);
+        Ok(())
+    }
+
+    /// Ответ из окна пароля.
+    fn password_answer(&mut self, answer: PasswordAnswer) {
+        match answer {
+            PasswordAnswer::Open(path, password) => {
+                if let Err(e) = self.open_with_password(&path, password) {
+                    self.report(tr("error-open"), e);
+                }
+            }
+            PasswordAnswer::Encrypt(password) => {
+                if let Some(document) = &mut self.document
+                    && document.password != password
+                {
+                    document.password = password;
+                    // Пароль — изменение: без сохранения его в файле нет.
+                    document.saved = u64::MAX;
+                    self.title_changed = true;
+                }
+            }
+        }
     }
 
     /// Открывает файл, а ошибку показывает пользователю.
@@ -965,6 +1012,7 @@ impl Viewer {
                     name: document.name(),
                     path: document.path.clone(),
                     modified: document.modified(),
+                    encrypted: document.password.is_some(),
                     pages: document.layout.pages.len(),
                     current_page: letter_editor::caret(&document.layout, document.cursor)
                         .map_or(self.current_page, |c| c.page),
@@ -1089,7 +1137,7 @@ impl Viewer {
         };
         // Колонтитул дописывается в документ до сохранения.
         document.end_story(&mut self.shaper, &self.library);
-        if let Err(e) = files::write(&document.doc, path) {
+        if let Err(e) = files::write(&document.doc, path, document.password.as_deref()) {
             self.report(tr("error-save"), e);
             return false;
         }
@@ -1204,6 +1252,10 @@ impl Viewer {
         let (Some(autosave), Some(document)) = (&self.autosave, &mut self.document) else {
             return;
         };
+        // Зашифрованный документ не пишется на диск открытым текстом.
+        if document.password.is_some() {
+            return;
+        }
         // Не вышло — попробуем в следующий раз; работе это не мешает.
         if autosave
             .save(document.body(), document.path.as_deref())
@@ -1242,6 +1294,7 @@ impl Viewer {
             && !self.paragraph_dialog.open
             && !self.link_dialog.open
             && !self.bookmark_dialog.open
+            && !self.password_dialog.open
             && !self.symbol_dialog.open
             && (self.ribbon.keytips.active() || !ctx.egui_wants_keyboard_input())
         {
@@ -1317,6 +1370,9 @@ impl Viewer {
             }
             if let Some(action) = self.bookmark_dialog.ui(&ctx) {
                 self.bookmark_action(&ctx, action);
+            }
+            if let Some(answer) = self.password_dialog.ui(&ctx) {
+                self.password_answer(answer);
             }
             if let Some(c) = self.symbol_dialog.ui(&ctx) {
                 crate::symbols::remember(&ctx, c);
@@ -2011,6 +2067,12 @@ impl Viewer {
                 }
                 RibbonCommand::SaveAs => {
                     self.save_as();
+                }
+                RibbonCommand::EncryptDialog => {
+                    if let Some(document) = &self.document {
+                        self.password_dialog
+                            .ask_to_encrypt(document.password.as_deref());
+                    }
                 }
                 RibbonCommand::Exit => ctx.send_viewport_cmd(ViewportCommand::Close),
                 RibbonCommand::Backstage => {
@@ -3241,7 +3303,7 @@ mod tests {
         let dir = crate::files::tests::temp_dir("template");
         let template = dir.join("бланк.dotx");
         let doc = letter_docx::read_file(fixture("plain-text.docx")).unwrap();
-        files::write(&doc, &template).unwrap();
+        files::write(&doc, &template, None).unwrap();
         let mut viewer = Viewer::new(FontLibrary::embedded_only());
         viewer.open(&template).unwrap();
         let document = viewer.document.as_ref().unwrap();
@@ -3249,9 +3311,41 @@ mod tests {
         assert_eq!(document.doc.plain_text(), doc.plain_text());
         let docx = dir.join("бланк.docx");
         viewer.open(&docx).unwrap_err();
-        files::write(&doc, &docx).unwrap();
+        files::write(&doc, &docx, None).unwrap();
         viewer.open(&docx).unwrap();
         assert_eq!(viewer.document.as_ref().unwrap().path, Some(docx));
+    }
+
+    #[test]
+    fn encrypted_document_asks_for_password_and_stays_encrypted() {
+        let dir = crate::files::tests::temp_dir("encrypted-viewer");
+        let path = dir.join("тайна.docx");
+        let doc = letter_docx::read_file(fixture("plain-text.docx")).unwrap();
+        files::write(&doc, &path, Some("пароль")).unwrap();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&path).unwrap();
+        assert!(viewer.document.is_none());
+        assert!(viewer.password_dialog.open);
+        viewer.password_answer(PasswordAnswer::Open(path.clone(), "не тот".into()));
+        assert!(viewer.document.is_none() && viewer.error.is_some());
+        viewer.error = None;
+        viewer.password_answer(PasswordAnswer::Open(path.clone(), "пароль".into()));
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(document.doc.plain_text(), doc.plain_text());
+        assert!(viewer.backstage_info().document.unwrap().encrypted);
+        // Сохранение оставляет пароль.
+        assert!(viewer.save());
+        assert!(files::is_encrypted(&path));
+
+        // «Зашифровать паролем» с пустым паролем снимает шифрование.
+        viewer.run_ribbon(&Context::default(), vec![RibbonCommand::EncryptDialog]);
+        assert!(viewer.password_dialog.open);
+        viewer.password_dialog.open = false;
+        viewer.password_answer(PasswordAnswer::Encrypt(None));
+        assert!(viewer.modified());
+        assert!(viewer.save());
+        assert!(!files::is_encrypted(&path));
+        assert!(files::read(&path).is_ok());
     }
 
     fn fixture(name: &str) -> PathBuf {

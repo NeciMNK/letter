@@ -130,10 +130,27 @@ pub fn read(path: &Path) -> Result<Document, String> {
     }
 }
 
+/// Зашифрован ли файл паролем на открытие (.docx и его разновидности).
+pub fn is_encrypted(path: &Path) -> bool {
+    FileFormat::from_path(path) == Some(FileFormat::Docx)
+        && fs::read(path).is_ok_and(|data| letter_docx::is_encrypted(&data))
+}
+
+/// Читает документ, зашифрованный паролем (см. [`is_encrypted`]).
+pub fn read_with_password(path: &Path, password: &str) -> Result<Document, String> {
+    let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let data = fs::read(path).map_err(|e| fail(&e))?;
+    letter_docx::read_bytes_with_password(&data, password).map_err(|e| fail(&e))
+}
+
 /// Записывает документ; формат — по расширению. Сначала пишется
 /// временный файл рядом, потом он заменяет прежний: если программа
 /// упадёт посреди записи, старый файл останется целым.
-pub fn write(doc: &Document, path: &Path) -> Result<(), String> {
+///
+/// Файл Word (.docx, .docm, .dotx, .dotm) с паролем `password`
+/// шифруется. Другие форматы шифровать нельзя, и пароль для них не
+/// используется.
+pub fn write(doc: &Document, path: &Path, password: Option<&str>) -> Result<(), String> {
     let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let format = FileFormat::from_path(path).ok_or_else(|| fail(&tr("error-unknown-format")))?;
     let data = match format {
@@ -143,6 +160,10 @@ pub fn write(doc: &Document, path: &Path) -> Result<(), String> {
             Some(kind) => letter_docx::write_bytes_as(doc, kind),
             None => letter_docx::write_bytes(doc),
         }
+        .and_then(|bytes| match password {
+            Some(password) => letter_docx::encrypt_bytes(&bytes, password),
+            None => Ok(bytes),
+        })
         .map_err(|e| fail(&e))?,
         FileFormat::Rtf => letter_rtf::write(doc).into_bytes(),
         FileFormat::Odt => letter_odt::write(doc).map_err(|e| fail(&e))?,
@@ -441,11 +462,27 @@ pub mod tests {
     }
 
     #[test]
+    fn encrypted_file_needs_its_password() {
+        let dir = temp_dir("encrypted");
+        let path = dir.join("тайна.docx");
+        write(&sample(), &path, Some("пароль")).unwrap();
+        assert!(is_encrypted(&path));
+        assert!(read(&path).is_err());
+        assert!(read_with_password(&path, "не тот").is_err());
+        let back = read_with_password(&path, "пароль").unwrap();
+        assert_eq!(back.plain_text().trim(), "Привет, мир\nвторой");
+        // В другие форматы пароль не пишется.
+        let rtf = dir.join("тайна.rtf");
+        write(&sample(), &rtf, Some("пароль")).unwrap();
+        assert!(!is_encrypted(&rtf) && read(&rtf).is_ok());
+    }
+
+    #[test]
     fn word_file_kind_follows_the_extension() {
         let dir = temp_dir("kinds");
         for kind in letter_docx::FileKind::ALL {
             let path = dir.join(format!("doc.{}", kind.extension()));
-            write(&sample(), &path).unwrap();
+            write(&sample(), &path, None).unwrap();
             assert_eq!(letter_docx::kind_of(&read(&path).unwrap()), kind);
             assert_eq!(is_template(&path), kind.is_template());
         }
@@ -467,7 +504,7 @@ pub mod tests {
             "docx", "docm", "dotx", "dotm", "rtf", "odt", "txt", "html", "md",
         ] {
             let path = dir.join(format!("doc.{ext}"));
-            write(&sample(), &path).unwrap();
+            write(&sample(), &path, None).unwrap();
             let back = read(&path).unwrap();
             assert_eq!(back.plain_text().trim(), "Привет, мир\nвторой", "{ext}");
             // Временный файл не остался.
@@ -479,7 +516,7 @@ pub mod tests {
             assert!(left.is_empty(), "{ext}");
         }
         assert!(read(&dir.join("missing.docx")).is_err());
-        assert!(write(&sample(), &dir.join("doc.pdf")).is_err());
+        assert!(write(&sample(), &dir.join("doc.pdf"), None).is_err());
         fs::write(dir.join("bad.docx"), b"not a zip").unwrap();
         assert!(read(&dir.join("bad.docx")).is_err());
         let _ = fs::remove_dir_all(dir);

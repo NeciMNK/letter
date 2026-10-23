@@ -12,14 +12,12 @@ rust-version = "1.95"
 [workspace.dependencies]
 letter-model = { path = "crates/letter-model" }
 letter-docx = { path = "crates/letter-docx" }
-letter-doc = { path = "crates/letter-doc" }
 letter-odt = { path = "crates/letter-odt" }
 letter-rtf = { path = "crates/letter-rtf" }
 letter-text = { path = "crates/letter-text" }
 letter-layout = { path = "crates/letter-layout" }
 letter-render = { path = "crates/letter-render" }
 letter-editor = { path = "crates/letter-editor" }
-letter-cli = { path = "crates/letter-cli" }
 
 eframe = "0.37"
 egui = { version = "0.37", default-features = false }
