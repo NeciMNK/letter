@@ -635,6 +635,20 @@ toc-update = Update Table
 toc-update-hint = Rebuild the table of contents: new headings and page numbers
 keytip-references-toc = T
 keytip-references-update-toc = U
+toc-delete = Remove Table of Contents
+toc-add-text = Add Text
+toc-add-text-hint = Include the paragraph in the table of contents as a heading of a level, or leave it out
+toc-add-text-body = Do Not Show in Table of Contents
+toc-add-text-level-1 = Level 1
+toc-add-text-level-2 = Level 2
+toc-add-text-level-3 = Level 3
+keytip-references-add-text = A
+next-footnote = Next Footnote
+next-footnote-hint = Go to the next or previous footnote
+previous-footnote = Previous Footnote
+next-endnote = Next Endnote
+previous-endnote = Previous Endnote
+keytip-references-next-note = O
 
 # Вкладка «Конструктор»
 tab-design = Design

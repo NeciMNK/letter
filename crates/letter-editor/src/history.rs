@@ -44,7 +44,7 @@ use crate::table::{
     BorderPreset, delete_columns, delete_rows, delete_table, in_table, insert_columns, insert_rows,
     insert_table, merge_cells, next_cell, set_cell_borders, set_cell_shading,
 };
-use crate::toc::{insert_toc, update_tocs};
+use crate::toc::{delete_toc, insert_toc, update_tocs};
 use crate::watermark::set_watermark;
 
 /// Правка документа.
@@ -177,6 +177,8 @@ pub enum Command {
     InsertToc(Box<FieldContext>),
     /// Перестроить все оглавления документа («Обновить таблицу»).
     UpdateToc(Box<FieldContext>),
+    /// «Удалить оглавление» (с курсором, иначе первое).
+    DeleteToc,
     /// «Цвет страницы»; `None` — «Нет цвета».
     PageColor(Option<Color>),
     /// «Расстановка переносов»: автоматическая (`true`) или нет.
@@ -526,6 +528,7 @@ impl History {
                 | Command::TitlePage { .. }
                 | Command::UpdateFields(_)
                 | Command::UpdateToc(_)
+                | Command::DeleteToc
                 | Command::Link { text: None, .. }
                 | Command::AddBookmark(_)
                 | Command::DeleteBookmark(_)
@@ -544,6 +547,7 @@ impl History {
             | Command::DeleteBookmark(_)
             | Command::UpdateFields(_)
             | Command::UpdateToc(_)
+            | Command::DeleteToc
             | Command::InsertToc(_)
             | Command::PageSetup(PageSetup::Borders(_)) => {
                 (0, paragraph_count(doc).saturating_sub(1))
@@ -714,6 +718,13 @@ impl History {
                 delete_bookmark(doc, name);
                 Some(selection)
             }
+            Command::DeleteToc => {
+                delete_toc(doc, start.paragraph);
+                Some(Selection {
+                    anchor: clamp(doc, selection.anchor),
+                    focus: clamp(doc, selection.focus),
+                })
+            }
             Command::UpdateToc(context) => {
                 let last = paragraph_count(doc).saturating_sub(1);
                 update_tocs(doc, 0, last, context);
@@ -786,6 +797,7 @@ impl History {
             | Command::TitlePage { .. }
             | Command::UpdateFields(_)
             | Command::UpdateToc(_)
+            | Command::DeleteToc
             | Command::Link { text: None, .. }
             | Command::AddBookmark(_)
             | Command::DeleteBookmark(_)

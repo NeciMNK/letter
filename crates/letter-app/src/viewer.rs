@@ -2287,6 +2287,37 @@ impl Viewer {
         }
     }
 
+    /// «Следующая сноска» (`forward`) или «Предыдущая»: выделяет ссылку
+    /// на сноску вида `kind` после курсора или до него, по кругу.
+    fn next_note(&mut self, kind: letter_model::NoteKind, forward: bool) {
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        if document.story.is_some() {
+            return;
+        }
+        let places = letter_editor::note_places(&document.doc, kind);
+        let key = |p: Position| (p.paragraph, p.offset);
+        let start = key(document.cursor).min(key(document.anchor));
+        let found = if forward {
+            places
+                .iter()
+                .find(|(p, _)| key(*p) > start)
+                .or_else(|| places.first())
+        } else {
+            places
+                .iter()
+                .rev()
+                .find(|(p, _)| key(*p) < start)
+                .or_else(|| places.last())
+        };
+        if let Some(&(at, len)) = found {
+            let end = Position::new(at.paragraph, at.offset + len);
+            document.set_selection(Selection::new(at, end));
+            self.reveal_cursor = true;
+        }
+    }
+
     /// Переход из области навигации.
     fn navigation_action(&mut self, action: crate::navigation::NavAction) {
         use crate::navigation::NavAction;
@@ -2342,6 +2373,9 @@ impl Viewer {
         };
         if let Some(document) = &self.document {
             info.has_document = true;
+            info.outline_level =
+                letter_editor::paragraph_ref(&document.doc, document.cursor.paragraph)
+                    .and_then(|p| letter_editor::outline_level(&document.doc, &p.props));
             info.can_undo = document.history.can_undo();
             info.styles = crate::styles::gallery(&document.doc);
             info.can_redo = document.history.can_redo();
@@ -2474,6 +2508,10 @@ impl Viewer {
                 RibbonCommand::NextComment(forward) => {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
                     self.next_comment(forward);
+                }
+                RibbonCommand::NextNote { kind, forward } => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    self.next_note(kind, forward);
                 }
                 RibbonCommand::NewComment => {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
@@ -4812,6 +4850,59 @@ mod tests {
         viewer.run_ribbon(&ctx, vec![RibbonCommand::UpdateToc]);
         let document = viewer.document.as_ref().unwrap();
         assert_eq!(document.layout.pages[0].lines.len(), lines.len());
+    }
+
+    #[test]
+    fn toc_is_deleted_and_add_text_sets_levels() {
+        use letter_editor::OutlineChange;
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("headings.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let text = |viewer: &Viewer| viewer.document.as_ref().unwrap().doc.plain_text();
+        let before = text(&viewer);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::InsertToc]);
+        assert_ne!(text(&viewer), before);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Edit(Command::DeleteToc)]);
+        assert_eq!(text(&viewer), before);
+
+        // «Добавить текст → Уровень 2» у обычного текста и обратно.
+        let document = viewer.document.as_mut().unwrap();
+        document.set_selection(Selection::caret(Position::new(2, 0)));
+        assert_eq!(viewer.ribbon_info().outline_level, None);
+        let add = |change| vec![RibbonCommand::Edit(Command::OutlineLevel(change))];
+        viewer.run_ribbon(&ctx, add(OutlineChange::Level(2)));
+        assert_eq!(viewer.ribbon_info().outline_level, Some(2));
+        viewer.run_ribbon(&ctx, add(OutlineChange::Body));
+        assert_eq!(viewer.ribbon_info().outline_level, None);
+    }
+
+    #[test]
+    fn next_footnote_goes_round() {
+        use letter_model::NoteKind;
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("notes.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let next = |kind, forward| vec![RibbonCommand::NextNote { kind, forward }];
+        let start = |viewer: &Viewer| {
+            let document = viewer.document.as_ref().unwrap();
+            assert!(!document.selection().is_empty());
+            document.selection().start()
+        };
+        let first = Position::new(0, "First claim".len());
+        viewer.run_ribbon(&ctx, next(NoteKind::Footnote, true));
+        assert_eq!(start(&viewer), first);
+        viewer.run_ribbon(&ctx, next(NoteKind::Footnote, true));
+        let second = start(&viewer);
+        assert!(second.offset > first.offset && second.paragraph == 0);
+        // По кругу к первой и назад к последней.
+        viewer.run_ribbon(&ctx, next(NoteKind::Footnote, true));
+        assert_eq!(start(&viewer), first);
+        viewer.run_ribbon(&ctx, next(NoteKind::Footnote, false));
+        assert_eq!(start(&viewer), second);
+        viewer.run_ribbon(&ctx, next(NoteKind::Endnote, true));
+        assert_eq!(start(&viewer).paragraph, 1);
     }
 
     #[test]

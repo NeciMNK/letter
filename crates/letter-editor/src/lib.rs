@@ -62,7 +62,7 @@ pub use lists::{
     multilevel_list, remove_from_list, restart_numbering, tab_changes_level, toggle_list,
 };
 pub use navigation::{Motion, Moved, move_cursor};
-pub use notes::{insert_note, note_styles, notes, notes_mut};
+pub use notes::{insert_note, note_places, note_styles, notes, notes_mut};
 pub use outline::{OutlineEntry, bookmark_places, document_outline};
 pub use picture::{
     MIN_PICTURE_SIZE, PictureBox, PictureWrap, anchor_with_wrap, insert_picture, is_picture,
@@ -81,5 +81,5 @@ pub use table::{
     BorderPreset, can_merge, delete_columns, delete_rows, delete_table, in_table, insert_columns,
     insert_rows, insert_table, merge_cells, next_cell, set_cell_borders, set_cell_shading,
 };
-pub use toc::{TOC_CODE, insert_toc, outline_level, update_tocs};
+pub use toc::{TOC_CODE, delete_toc, insert_toc, outline_level, update_tocs};
 pub use watermark::set_watermark;

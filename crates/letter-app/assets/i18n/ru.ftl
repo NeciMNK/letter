@@ -627,6 +627,20 @@ toc-update = Обновить таблицу
 toc-update-hint = Перестроить оглавление: новые заголовки и номера страниц
 keytip-references-toc = ОГ
 keytip-references-update-toc = ОН
+toc-delete = Удалить оглавление
+toc-add-text = Добавить текст
+toc-add-text-hint = Включить абзац в оглавление как заголовок нужного уровня или убрать из него
+toc-add-text-body = Не включать в оглавление
+toc-add-text-level-1 = Уровень 1
+toc-add-text-level-2 = Уровень 2
+toc-add-text-level-3 = Уровень 3
+keytip-references-add-text = Т
+next-footnote = Следующая сноска
+next-footnote-hint = Перейти к следующей или предыдущей сноске
+previous-footnote = Предыдущая сноска
+next-endnote = Следующая концевая сноска
+previous-endnote = Предыдущая концевая сноска
+keytip-references-next-note = ПС
 
 # Вкладка «Конструктор»
 tab-design = Конструктор
