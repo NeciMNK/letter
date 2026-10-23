@@ -3,13 +3,14 @@
 use std::io::{Cursor, Read};
 
 use letter_model::{
-    Block, BreakKind, CellProps, Columns, Document, FieldChar, FieldCharKind, HalfPoints, Inline,
-    PageMargins, PageSize, Paragraph, ParagraphProps, Run, RunContent, RunFonts, RunProps, Section,
-    SectionProps, Style, StyleKind, Table, TableCell, TableRow, TableWidth, Twips,
+    Block, BreakKind, CellProps, Columns, Comment, Document, FieldChar, FieldCharKind, HalfPoints,
+    HeaderFooter, HeaderFooters, Inline, LineSpacing, Note, NoteKind, NoteReference, PageMargins,
+    PageSize, Paragraph, ParagraphProps, RawXml, Run, RunContent, RunFonts, RunProps, Section,
+    SectionProps, Spacing, Style, StyleKind, Table, TableCell, TableRow, TableWidth, Twips,
 };
 
 use crate::ReadError;
-use crate::fib::{Fib, index, plc, u16_at, u32_at};
+use crate::fib::{Fib, Stories, index, plc, u16_at, u32_at};
 use crate::sprm::{Sep, TableMarks, apply_chp, apply_pap, apply_sep, sprms};
 use crate::styles::{ISTD_NIL, StyleSheet, builtin_name, fonts, style_id};
 
@@ -87,7 +88,7 @@ pub(crate) fn read(data: &[u8]) -> Result<Document, ReadError> {
         .part(&table, index::CLX)
         .ok_or_else(|| ReadError::Corrupt("нет таблицы кусков текста".into()))?;
     let (pieces, prcs) = read_clx(clx)?;
-    let chars = read_chars(&word, &pieces, fib.ccp_text);
+    let chars = read_chars(&word, &pieces, fib.stories.total());
     let chpx = fib
         .part(&table, index::PLCF_BTE_CHPX)
         .map(|plc| read_fkps(&word, plc, false))
@@ -101,6 +102,19 @@ pub(crate) fn read(data: &[u8]) -> Result<Document, ReadError> {
         .map(|plc| read_sections(&word, plc))
         .unwrap_or_default();
 
+    let notes = Notes::read(&fib, &table);
+    let headers = fib
+        .part(&table, index::PLCF_HDD)
+        .and_then(|bytes| plc(bytes, 0))
+        .map(|(positions, _)| positions)
+        .unwrap_or_default();
+
+    // «Различать колонтитулы чётных и нечётных страниц» — первый бит `Dop`.
+    let even_and_odd = fib
+        .part(&table, index::DOP)
+        .and_then(|dop| dop.first())
+        .is_some_and(|b| b & 1 != 0);
+
     let ids = style_ids(&sheet);
     let mut doc = Document::new();
     fill_styles(&mut doc, &sheet, &ids, &fonts);
@@ -113,8 +127,16 @@ pub(crate) fn read(data: &[u8]) -> Result<Document, ReadError> {
         sections: &sections,
         fonts: &fonts,
         ids: &ids,
+        stories: fib.stories,
+        notes: &notes,
+        headers: &headers,
+        even_and_odd,
     };
     doc.sections = builder.build();
+    doc.footnotes = builder.notes(NoteKind::Footnote);
+    doc.endnotes = builder.notes(NoteKind::Endnote);
+    doc.comments = builder.comments();
+    doc.settings.even_and_odd_headers = even_and_odd;
     Ok(doc)
 }
 
@@ -155,7 +177,8 @@ fn read_clx(clx: &[u8]) -> Result<(Vec<Piece>, Vec<Vec<u8>>), ReadError> {
     Ok((pieces, prcs))
 }
 
-/// Знаки основного текста (первые `ccp_text`).
+/// Знаки текста документа (первые `ccp_text`: основной текст, сноски,
+/// колонтитулы и т. д.). Номер в списке — позиция знака (`CP`).
 fn read_chars(word: &[u8], pieces: &[Piece], ccp_text: u32) -> Vec<Char> {
     let mut chars = Vec::new();
     for (index, piece) in pieces.iter().enumerate() {
@@ -387,6 +410,134 @@ struct Builder<'a> {
     sections: &'a [(u32, Sep)],
     fonts: &'a [String],
     ids: &'a [Option<String>],
+    stories: Stories,
+    notes: &'a Notes,
+    /// Границы колонтитулов (`PlcfHdd`) от начала колонтитулов.
+    headers: &'a [u32],
+    /// Колонтитулы чётных страниц отдельно.
+    even_and_odd: bool,
+}
+
+/// Сноски, концевые сноски и примечания: где ссылки и где текст.
+#[derive(Debug, Clone, Default)]
+struct Notes {
+    /// Ссылки на сноски: позиция и «номер ставится сам».
+    footnote_refs: Vec<(u32, bool)>,
+    /// Границы текста сносок от начала сносок.
+    footnote_texts: Vec<u32>,
+    endnote_refs: Vec<(u32, bool)>,
+    endnote_texts: Vec<u32>,
+    /// Ссылки на примечания.
+    comment_refs: Vec<u32>,
+    /// Границы текста примечаний от начала примечаний.
+    comment_texts: Vec<u32>,
+    /// Автор и инициалы каждого примечания.
+    comment_authors: Vec<(String, String)>,
+    /// К какому тексту относится примечание: id и отрезок позиций.
+    comments: Vec<(String, std::ops::Range<u32>)>,
+}
+
+impl Notes {
+    fn read(fib: &Fib, table: &[u8]) -> Notes {
+        let part = |i| fib.part(table, i);
+        let refs = |i| -> Vec<(u32, bool)> {
+            part(i)
+                .and_then(|b| plc(b, 2))
+                .map(|(cps, frds)| {
+                    frds.iter()
+                        .zip(cps)
+                        .map(|(frd, cp)| (cp, u16_at(frd, 0).unwrap_or(1) != 0))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let texts = |i| -> Vec<u32> {
+            part(i)
+                .and_then(|b| plc(b, 0))
+                .map(|(cps, _)| cps)
+                .unwrap_or_default()
+        };
+        let mut notes = Notes {
+            footnote_refs: refs(index::PLCFFND_REF),
+            footnote_texts: texts(index::PLCFFND_TXT),
+            endnote_refs: refs(index::PLCFEND_REF),
+            endnote_texts: texts(index::PLCFEND_TXT),
+            comment_texts: texts(index::PLCFAND_TXT),
+            ..Notes::default()
+        };
+
+        // Примечания: ссылки с инициалами, номером автора и меткой
+        // закладки, которая отмечает текст примечания.
+        let owners = part(index::GRP_XST_ATN_OWNERS)
+            .map(xst_list)
+            .unwrap_or_default();
+        let bookmarks = part(index::STTBF_ATN_BKMK)
+            .map(|b| sttb_extra(b).into_iter().map(|e| u32_at(&e, 2)).collect())
+            .unwrap_or_else(Vec::new);
+        let starts = part(index::PLCF_ATN_BKF).and_then(|b| plc(b, 4));
+        let ends = texts(index::PLCF_ATN_BKL);
+        if let Some((cps, atrds)) = part(index::PLCFAND_REF).and_then(|b| plc(b, 30)) {
+            for (i, (atrd, cp)) in atrds.iter().zip(cps).enumerate() {
+                let initials_len = usize::from(u16_at(atrd, 0).unwrap_or(0)).min(9);
+                let initials: Vec<u16> = (0..initials_len)
+                    .filter_map(|k| u16_at(atrd, 2 + k * 2))
+                    .collect();
+                let owner = u16_at(atrd, 20).unwrap_or(u16::MAX);
+                let author = owners.get(usize::from(owner)).cloned().unwrap_or_default();
+                notes
+                    .comment_authors
+                    .push((author, String::from_utf16_lossy(&initials)));
+                notes.comment_refs.push(cp);
+                let tag = u32_at(atrd, 26);
+                let range = tag
+                    .filter(|&t| t != u32::MAX)
+                    .and_then(|t| bookmarks.iter().position(|b| *b == Some(t)))
+                    .and_then(|j| {
+                        let (bkf_cps, fbkfs) = starts.as_ref()?;
+                        let start = *bkf_cps.get(j)?;
+                        let end = *ends.get(usize::from(u16_at(fbkfs.get(j)?, 0)?))?;
+                        Some(start..end)
+                    })
+                    .unwrap_or(cp..cp);
+                notes.comments.push((i.to_string(), range));
+            }
+        }
+        notes
+    }
+}
+
+/// Строки `Xst` подряд: длина в знаках и знаки UTF-16.
+fn xst_list(bytes: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(len) = u16_at(bytes, at).map(usize::from) {
+        let units: Vec<u16> = (0..len)
+            .filter_map(|k| u16_at(bytes, at + 2 + k * 2))
+            .collect();
+        out.push(String::from_utf16_lossy(&units));
+        at += 2 + len * 2;
+    }
+    out
+}
+
+/// Добавочные данные каждой строки расширенной таблицы строк (`STTB`).
+fn sttb_extra(bytes: &[u8]) -> Vec<Vec<u8>> {
+    if u16_at(bytes, 0) != Some(0xFFFF) {
+        return Vec::new();
+    }
+    let count = usize::from(u16_at(bytes, 2).unwrap_or(0));
+    let extra = usize::from(u16_at(bytes, 4).unwrap_or(0));
+    let mut at = 6;
+    let mut out = Vec::new();
+    for _ in 0..count {
+        let Some(len) = u16_at(bytes, at).map(usize::from) else {
+            break;
+        };
+        at += 2 + len * 2;
+        out.push(bytes.get(at..at + extra).unwrap_or_default().to_vec());
+        at += extra;
+    }
+    out
 }
 
 /// Таблица, которая сейчас собирается.
@@ -403,31 +554,66 @@ impl TableState {
     }
 }
 
+/// Какую часть текста собираем: от неё зависит смысл особых знаков.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Story {
+    /// Основной текст: делится на разделы.
+    Main,
+    Footnote,
+    Endnote,
+    Comment,
+    Header,
+}
+
 impl Builder<'_> {
+    /// Разделы основного текста.
     fn build(&self) -> Vec<Section> {
+        let parts = self.story(0..self.stories.text, Story::Main);
+        parts
+            .into_iter()
+            .enumerate()
+            .map(|(i, blocks)| self.section(i, blocks))
+            .collect()
+    }
+
+    /// Блоки части текста `range` (позиции `CP`). Основной текст
+    /// делится на разделы, остальные части — один список блоков.
+    fn story(&self, range: std::ops::Range<u32>, story: Story) -> Vec<Vec<Block>> {
         let mut sections = Vec::new();
         let mut blocks: Vec<Block> = Vec::new();
         let mut table = TableState::default();
-        let mut runs: Vec<Run> = Vec::new();
+        let mut content: Vec<Inline> = Vec::new();
         let mut run_key = None;
         // Вложенные поля: `true` — сейчас код поля.
         let mut fields: Vec<bool> = Vec::new();
-        let mut section = 0;
+        let start = range.start as usize;
+        let end = (range.end as usize).min(self.chars.len());
+        let chars = self.chars.get(start..end).unwrap_or_default();
 
-        for (cp, ch) in self.chars.iter().enumerate() {
-            let cp = cp as u32;
+        for (offset, ch) in chars.iter().enumerate() {
+            let cp = range.start + offset as u32;
+            if story == Story::Main {
+                for (id, _) in self.notes.comments.iter().filter(|(_, r)| r.start == cp) {
+                    content.push(Inline::CommentStart(id.clone()));
+                    run_key = None;
+                }
+                for (id, _) in self.notes.comments.iter().filter(|(_, r)| r.end == cp) {
+                    content.push(Inline::CommentEnd(id.clone()));
+                    run_key = None;
+                }
+            }
             let key = (find(self.chpx, ch.fc).map(|r| r.start), ch.piece);
-            if run_key != Some(key) || runs.is_empty() {
+            if run_key != Some(key) {
                 run_key = Some(key);
-                runs.push(Run {
+                content.push(Inline::Run(Run {
                     props: self.run_props(ch),
                     content: Vec::new(),
-                });
+                }));
             }
             let in_code = fields.last() == Some(&true);
-            let content = match ch.code {
+            let item = match ch.code {
                 0x0D | 0x07 => None,
-                0x0C if self.section_ends_at(cp) => None,
+                0x0C if story == Story::Main && self.section_ends_at(cp) => None,
                 0x13 => {
                     fields.push(true);
                     Some(RunContent::FieldChar(FieldChar::new(FieldCharKind::Begin)))
@@ -450,7 +636,18 @@ impl Builder<'_> {
                 0x09 if !in_code => Some(RunContent::Tab),
                 0x1E => Some(text("\u{2011}")),
                 0x1F => Some(text("\u{ad}")),
-                // Картинки, сноски и прочие особые знаки — позже.
+                0x02 => match story {
+                    Story::Footnote => Some(RunContent::NoteMark(NoteKind::Footnote)),
+                    Story::Endnote => Some(RunContent::NoteMark(NoteKind::Endnote)),
+                    _ => self.note_reference(cp).map(RunContent::NoteReference),
+                },
+                0x05 if story == Story::Main => self
+                    .notes
+                    .comment_refs
+                    .iter()
+                    .position(|&c| c == cp)
+                    .map(|i| RunContent::CommentReference(i.to_string())),
+                // Картинки и прочие особые знаки — позже.
                 code if code < 0x20 && code != 0x09 => continue,
                 code => {
                     let s = String::from_utf16_lossy(&[code]);
@@ -461,9 +658,9 @@ impl Builder<'_> {
                     })
                 }
             };
-            if let Some(content) = content {
-                if let Some(run) = runs.last_mut() {
-                    push_content(&mut run.content, content);
+            if let Some(item) = item {
+                if let Some(Inline::Run(run)) = content.last_mut() {
+                    push_content(&mut run.content, item);
                 }
                 continue;
             }
@@ -472,11 +669,7 @@ impl Builder<'_> {
             let (props, marks) = self.paragraph_props(ch);
             let paragraph = Paragraph {
                 props,
-                content: std::mem::take(&mut runs)
-                    .into_iter()
-                    .filter(|r| !r.content.is_empty())
-                    .map(Inline::Run)
-                    .collect(),
+                content: take_content(&mut content),
             };
             run_key = None;
             if ch.code == 0x07 && marks.row_end {
@@ -496,26 +689,41 @@ impl Builder<'_> {
                 flush_table(&mut table, &mut blocks);
                 blocks.push(paragraph.into());
             }
-            if ch.code == 0x0C && self.section_ends_at(cp) {
+            if story == Story::Main && ch.code == 0x0C && self.section_ends_at(cp) {
                 flush_table(&mut table, &mut blocks);
-                sections.push(self.section(section, std::mem::take(&mut blocks)));
-                section += 1;
+                sections.push(std::mem::take(&mut blocks));
             }
         }
-        if runs.iter().any(|r| !r.content.is_empty()) {
+        let rest = take_content(&mut content);
+        if !rest.is_empty() {
             blocks.push(
                 Paragraph {
                     props: ParagraphProps::default(),
-                    content: runs.into_iter().map(Inline::Run).collect(),
+                    content: rest,
                 }
                 .into(),
             );
         }
         flush_table(&mut table, &mut blocks);
         if !blocks.is_empty() || sections.is_empty() {
-            sections.push(self.section(section, blocks));
+            sections.push(blocks);
         }
         sections
+    }
+
+    /// Ссылка на сноску или концевую сноску в позиции `cp`.
+    fn note_reference(&self, cp: u32) -> Option<NoteReference> {
+        let find = |refs: &[(u32, bool)], kind| {
+            refs.iter()
+                .position(|&(c, _)| c == cp)
+                .map(|i| NoteReference {
+                    kind,
+                    id: (i + 1).to_string(),
+                    custom_mark: !refs[i].1,
+                })
+        };
+        find(&self.notes.footnote_refs, NoteKind::Footnote)
+            .or_else(|| find(&self.notes.endnote_refs, NoteKind::Endnote))
     }
 
     /// Заканчивается ли раздел знаком `cp`.
@@ -533,10 +741,114 @@ impl Builder<'_> {
             .or(self.sections.last())
             .map(|(_, sep)| *sep)
             .unwrap_or_default();
-        Section {
-            props: section_props(&sep),
-            blocks,
+        let mut props = section_props(&sep);
+        // Колонтитулы раздела: после шести служебных частей по шесть на
+        // раздел — чётный и нечётный верхние, чётный и нечётный нижние,
+        // первой страницы верхний и нижний.
+        // Колонтитулы первой и чётных страниц, которые не показываются,
+        // не берём: Word хранит их в .doc, но в .docx их нет.
+        let story = |k: usize| self.header_story(6 + index * 6 + k);
+        let first = |k: usize| story(k).filter(|_| props.title_page);
+        let even = |k: usize| story(k).filter(|_| self.even_and_odd);
+        props.headers = HeaderFooters {
+            default: story(1),
+            first: first(4),
+            even: even(0),
+        };
+        props.footers = HeaderFooters {
+            default: story(3),
+            first: first(5),
+            even: even(2),
+        };
+        Section { props, blocks }
+    }
+
+    /// Колонтитул номер `index` в `PlcfHdd`; `None` — пустой (тогда
+    /// берётся колонтитул предыдущего раздела).
+    fn header_story(&self, index: usize) -> Option<HeaderFooter> {
+        let start = *self.headers.get(index)?;
+        let end = *self.headers.get(index + 1)?;
+        if end <= start {
+            return None;
         }
+        let base = self.stories.headers_start();
+        let mut blocks = self.blocks(base + start..base + end, Story::Header);
+        // Каждый колонтитул кончается лишним знаком абзаца.
+        if blocks.len() > 1
+            && matches!(blocks.last(), Some(Block::Paragraph(p)) if p.content.is_empty())
+        {
+            blocks.pop();
+        }
+        Some(HeaderFooter {
+            blocks,
+            relationship: None,
+        })
+    }
+
+    /// Блоки части текста одним списком.
+    fn blocks(&self, range: std::ops::Range<u32>, story: Story) -> Vec<Block> {
+        let mut blocks: Vec<Block> = self.story(range, story).concat();
+        if blocks.is_empty() {
+            blocks.push(Paragraph::default().into());
+        }
+        blocks
+    }
+
+    /// Сноски или концевые сноски; первыми — служебные черты, как в .docx.
+    fn notes(&self, kind: NoteKind) -> Vec<Note> {
+        let (refs, texts, start, story) = match kind {
+            NoteKind::Footnote => (
+                &self.notes.footnote_refs,
+                &self.notes.footnote_texts,
+                self.stories.footnotes_start(),
+                Story::Footnote,
+            ),
+            NoteKind::Endnote => (
+                &self.notes.endnote_refs,
+                &self.notes.endnote_texts,
+                self.stories.endnotes_start(),
+                Story::Endnote,
+            ),
+        };
+        if refs.is_empty() {
+            return Vec::new();
+        }
+        let mut notes = vec![
+            separator("-1", "separator"),
+            separator("0", "continuationSeparator"),
+        ];
+        for i in 0..refs.len() {
+            let (Some(&a), Some(&b)) = (texts.get(i), texts.get(i + 1)) else {
+                break;
+            };
+            notes.push(Note {
+                id: (i + 1).to_string(),
+                special: None,
+                blocks: self.blocks(start + a..start + b, story),
+            });
+        }
+        notes
+    }
+
+    /// Примечания.
+    fn comments(&self) -> Vec<Comment> {
+        let start = self.stories.comments_start();
+        let texts = &self.notes.comment_texts;
+        self.notes
+            .comment_authors
+            .iter()
+            .enumerate()
+            .map_while(|(i, (author, initials))| {
+                let (&a, &b) = (texts.get(i)?, texts.get(i + 1)?);
+                Some(Comment {
+                    id: i.to_string(),
+                    author: author.clone(),
+                    initials: (!initials.is_empty()).then(|| initials.clone()),
+                    blocks: self.blocks(start + a..start + b, Story::Comment),
+                    ..Comment::default()
+                })
+            })
+            .collect()
     }
 
     /// Добавочное оформление куска (после «быстрого сохранения»).
@@ -584,6 +896,14 @@ impl Builder<'_> {
     }
 }
 
+/// Содержимое абзаца без пустых фрагментов.
+fn take_content(content: &mut Vec<Inline>) -> Vec<Inline> {
+    std::mem::take(content)
+        .into_iter()
+        .filter(|i| !matches!(i, Inline::Run(r) if r.content.is_empty()))
+        .collect()
+}
+
 fn text(s: &str) -> RunContent {
     RunContent::Text(s.to_string())
 }
@@ -594,6 +914,24 @@ fn push_content(content: &mut Vec<RunContent>, item: RunContent) {
         (Some(RunContent::Text(last)), RunContent::Text(more)) => last.push_str(&more),
         (Some(RunContent::FieldCode(last)), RunContent::FieldCode(more)) => last.push_str(&more),
         (_, item) => content.push(item),
+    }
+}
+
+/// Служебная сноска-черта (`separator`, `continuationSeparator`).
+fn separator(id: &str, kind: &str) -> Note {
+    let mut paragraph = Paragraph::from_runs([Run {
+        props: RunProps::default(),
+        content: vec![RunContent::Unknown(RawXml::new(format!("<w:{kind}/>")))],
+    }]);
+    paragraph.props.spacing = Spacing {
+        after: Some(Twips(0)),
+        line: Some(LineSpacing::Multiple(240)),
+        ..Spacing::default()
+    };
+    Note {
+        id: id.to_string(),
+        special: Some(kind.to_string()),
+        blocks: vec![Block::Paragraph(paragraph)],
     }
 }
 
