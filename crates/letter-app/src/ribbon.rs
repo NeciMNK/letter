@@ -179,6 +179,8 @@ pub enum RibbonCommand {
     PageWidth,
     /// Показать или скрыть линейку.
     ToggleRuler,
+    /// «Вид → Область навигации»: показать или скрыть.
+    ToggleNavigation,
     /// Ctrl+Backspace и Ctrl+Delete: удалить слово до или после курсора.
     DeleteWord {
         /// Слово после курсора.
@@ -282,6 +284,8 @@ pub struct RibbonInfo {
     pub page_width: bool,
     /// Линейка показана.
     pub ruler: bool,
+    /// Область навигации показана.
+    pub navigation: bool,
     /// Курсор в таблице.
     pub in_table: bool,
     /// Выделено несколько ячеек таблицы: их можно объединить.
@@ -610,6 +614,18 @@ fn view(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
         );
         if response.changed() {
             out.push(RibbonCommand::ToggleRuler);
+        }
+        let mut navigation = info.navigation;
+        let response = ui.checkbox(&mut navigation, tr("nav-title"));
+        keytips::tip(
+            ui,
+            &response,
+            Level::Commands,
+            "keytip-view-navigation",
+            TipAction::Command(RibbonCommand::ToggleNavigation),
+        );
+        if response.changed() {
+            out.push(RibbonCommand::ToggleNavigation);
         }
     });
     group(ui, tr("zoom"), |ui| {

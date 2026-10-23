@@ -426,6 +426,7 @@ keytip-home-replace = R
 keytip-home-select-all = SL
 keytip-home-styles = L
 keytip-view-ruler = R
+keytip-view-navigation = K
 keytip-view-zoom-in = ZI
 keytip-view-zoom-out = ZO
 keytip-view-100 = J
@@ -746,3 +747,18 @@ print-printer = Printer
 print-searching = Looking for printers…
 print-settings = Settings
 print-uncollated = Uncollated: 1,1 2,2 3,3
+
+# Navigation pane.
+nav-close = Close the navigation pane
+nav-collapse = Collapse
+nav-expand = Expand
+nav-headings = Headings
+nav-no-headings = The document has no headings. Apply the Heading 1, Heading 2… styles to paragraphs to see them here.
+nav-nothing-found = Nothing found.
+nav-page = Page { $n }
+nav-pages = Pages
+nav-results = Results
+nav-results-count = Found: { $n }
+nav-search-help = Type text in the search box to see everything found here.
+nav-search-hint = Search document
+nav-title = Navigation pane

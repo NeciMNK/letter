@@ -14,6 +14,8 @@ use crate::toc::headings;
 /// Заголовок документа и где он на страницах.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutlineEntry {
+    /// Номер абзаца заголовка.
+    pub paragraph: usize,
     /// Уровень, 1–9.
     pub level: u8,
     /// Текст заголовка.
@@ -34,6 +36,7 @@ pub fn document_outline(doc: &Document, layout: &DocumentLayout) -> Vec<OutlineE
         .filter_map(|heading| {
             let place = caret(layout, Position::new(heading.paragraph, 0))?;
             Some(OutlineEntry {
+                paragraph: heading.paragraph,
                 level: heading.level,
                 title: heading.text,
                 page: place.page,

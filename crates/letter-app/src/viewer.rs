@@ -642,6 +642,14 @@ pub struct Viewer {
     picture_drag: Option<PictureDrag>,
     /// Курсор сдвинули с клавиатуры: прокрутить так, чтобы он был виден.
     reveal_cursor: bool,
+    /// Прокрутить к листу (номер с нуля) так, чтобы место `top` (пт от
+    /// верха листа) оказалось вверху окна.
+    scroll_to: Option<(usize, f32)>,
+    /// Область навигации.
+    navigation: crate::navigation::NavigationPane,
+    /// Найденное для области навигации: строка поиска, состояние
+    /// документа и результат (чтобы не искать каждый кадр).
+    nav_found: Option<(String, u64, Vec<letter_editor::Found>)>,
     /// Буфер обмена.
     clipboard: Clipboard,
     /// Лента.
@@ -865,6 +873,9 @@ impl Viewer {
             picture_requested: false,
             picture_drag: None,
             reveal_cursor: false,
+            scroll_to: None,
+            navigation: Default::default(),
+            nav_found: None,
             clipboard: Clipboard::new(Box::new(SystemBuffer::default())),
             ribbon: Ribbon::default(),
             show_marks: false,
@@ -1308,6 +1319,25 @@ impl Viewer {
                 self.run_ribbon(&ctx, vec![RibbonCommand::InsertSymbol(c)]);
             }
             egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+            if self.navigation.open && self.document.is_some() {
+                let info = self.navigation_info();
+                let (library, painter, document) =
+                    (&self.library, &mut self.painter, &self.document);
+                let mut thumbnail = |p: &egui::Painter, index: usize, rect: egui::Rect| {
+                    if let Some(page) = document.as_ref().and_then(|d| d.layout.pages.get(index)) {
+                        painter.paint_page(p, library, page, rect);
+                    }
+                };
+                let navigation = &mut self.navigation;
+                let action = egui::Panel::left("navigation")
+                    .default_size(260.0)
+                    .size_range(180.0..=500.0)
+                    .show(ui, |ui| navigation.ui(ui, &info, &mut thumbnail))
+                    .inner;
+                if let Some(action) = action {
+                    self.navigation_action(action);
+                }
+            }
             egui::CentralPanel::no_frame()
                 .frame(egui::Frame::new().fill(Palette::of(&ctx).desk))
                 .show(ui, |ui| self.document_area(ui));
@@ -1808,10 +1838,108 @@ impl Viewer {
         }
     }
 
+    /// Что показать в области навигации. Пока открыт колонтитул —
+    /// только листы.
+    fn navigation_info(&mut self) -> crate::navigation::NavInfo {
+        use crate::navigation::{NavHeading, NavInfo, NavTab};
+        let Some(document) = &self.document else {
+            return NavInfo::default();
+        };
+        let pages = match &document.story {
+            Some(story) => &story.display.pages,
+            None => &document.layout.pages,
+        };
+        let mut info = NavInfo {
+            pages: pages.iter().map(|p| (p.width, p.height)).collect(),
+            current_page: self.current_page,
+            ..NavInfo::default()
+        };
+        if document.story.is_some() {
+            return info;
+        }
+        if self.navigation.tab == NavTab::Headings {
+            let outline = letter_editor::document_outline(&document.doc, &document.layout);
+            info.current_heading = outline
+                .iter()
+                .rposition(|h| h.paragraph <= document.cursor.paragraph);
+            info.headings = outline
+                .into_iter()
+                .map(|h| NavHeading {
+                    level: h.level,
+                    title: h.title,
+                })
+                .collect();
+        }
+        let query = &self.navigation.query;
+        if !query.is_empty() {
+            let state = document.history.state();
+            let stale = self
+                .nav_found
+                .as_ref()
+                .is_none_or(|(q, s, _)| q != query || *s != state);
+            if stale {
+                let found = find_all(&document.doc, query, Default::default());
+                self.nav_found = Some((query.clone(), state, found));
+            }
+            if let Some((_, _, found)) = &self.nav_found {
+                let selection = document.selection();
+                info.current_result = found
+                    .iter()
+                    .position(|f| (f.0, f.1) == (selection.start(), selection.end()));
+                if self.navigation.tab == NavTab::Results {
+                    info.results = found
+                        .iter()
+                        .map(|&f| letter_editor::found_context(&document.doc, f, 30))
+                        .collect();
+                }
+            }
+        }
+        info
+    }
+
+    /// Переход из области навигации.
+    fn navigation_action(&mut self, action: crate::navigation::NavAction) {
+        use crate::navigation::NavAction;
+        if action == NavAction::Close {
+            self.navigation.open = false;
+            return;
+        }
+        if let NavAction::Page(page) = action {
+            self.scroll_to = Some((page, 0.0));
+            return;
+        }
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        document.end_story(&mut self.shaper, &self.library);
+        match action {
+            NavAction::Heading(index) => {
+                let outline = letter_editor::document_outline(&document.doc, &document.layout);
+                if let Some(heading) = outline.get(index) {
+                    let at = Position::new(heading.paragraph, 0);
+                    document.set_selection(Selection::new(at, at));
+                    self.scroll_to = Some((heading.page, heading.top - 12.0));
+                }
+            }
+            NavAction::Result(index) => {
+                if let Some(&(start, end)) = self
+                    .nav_found
+                    .as_ref()
+                    .and_then(|(_, _, found)| found.get(index))
+                {
+                    document.set_selection(Selection::new(start, end));
+                    self.reveal_cursor = true;
+                }
+            }
+            NavAction::Page(_) | NavAction::Close => {}
+        }
+    }
+
     fn ribbon_info(&self) -> RibbonInfo {
         let mut info = RibbonInfo {
             page_width: self.zoom == Zoom::PageWidth,
             ruler: self.show_ruler,
+            navigation: self.navigation.open,
             marks: self.show_marks,
             fonts: self.font_names.clone(),
             ..RibbonInfo::default()
@@ -1927,6 +2055,7 @@ impl Viewer {
                 RibbonCommand::ZoomReset => self.set_zoom(Zoom::Fixed(1.0), None),
                 RibbonCommand::PageWidth => self.set_zoom(Zoom::PageWidth, None),
                 RibbonCommand::ToggleRuler => self.show_ruler = !self.show_ruler,
+                RibbonCommand::ToggleNavigation => self.navigation.open = !self.navigation.open,
                 RibbonCommand::ToggleMarks => self.show_marks = !self.show_marks,
                 RibbonCommand::Paragraph(format) => {
                     actions.push(Action::Edit(Command::Paragraph(format)));
@@ -2391,6 +2520,15 @@ impl Viewer {
             );
             let base = self.pending_offset.unwrap_or(self.offset);
             self.pending_offset = Some(reveal(base, area_rect.size(), bar));
+        }
+
+        if let Some((page, top)) = self.scroll_to.take()
+            && let Some(rect) = placement.rects.get(page)
+        {
+            let scale = zoom * SCREEN_PIXELS_PER_POINT;
+            let base = self.pending_offset.unwrap_or(self.offset);
+            let y = (rect.min.y + top.max(0.0) * scale - PAGE_GAP).max(0.0);
+            self.pending_offset = Some(Vec2::new(base.x, y));
         }
 
         let mut area = egui::ScrollArea::both().auto_shrink(false);
@@ -3137,6 +3275,57 @@ mod tests {
         // Тень, лист и буквы добавились к меню и строке состояния.
         assert!(drawn >= empty + 3, "{empty} → {drawn}");
         assert_eq!(viewer.current_page, 0);
+    }
+
+    #[test]
+    fn navigation_pane_moves_to_headings_pages_and_results() {
+        use crate::navigation::{NavAction, NavTab};
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ToggleNavigation]);
+        assert!(viewer.ribbon_info().navigation);
+        frame(&ctx, &mut viewer, screen());
+
+        let info = viewer.navigation_info();
+        assert!(info.pages.len() >= 3);
+        let last = info.headings.len() - 1;
+        assert!(info.headings[last].title.starts_with("Chapter"));
+        assert_eq!(info.current_heading, Some(0));
+        viewer.navigation_action(NavAction::Heading(last));
+        let document = viewer.document.as_ref().unwrap();
+        let heading_page = caret(&document.layout, document.cursor).unwrap().page;
+        assert!(heading_page > 0);
+        assert_eq!(viewer.navigation_info().current_heading, Some(last));
+        // Окно прокручивается к заголовку.
+        frame(&ctx, &mut viewer, screen());
+        frame(&ctx, &mut viewer, screen());
+        assert_eq!(viewer.current_page, heading_page);
+
+        viewer.navigation_action(NavAction::Page(0));
+        frame(&ctx, &mut viewer, screen());
+        frame(&ctx, &mut viewer, screen());
+        assert_eq!(viewer.current_page, 0);
+
+        viewer.navigation.tab = NavTab::Results;
+        viewer.navigation.query = "Chapter".into();
+        let info = viewer.navigation_info();
+        assert_eq!(info.results.len(), info_headings_named(&viewer, "Chapter"));
+        assert_eq!(info.results[0].1, "Chapter");
+        viewer.navigation_action(NavAction::Result(1));
+        assert_eq!(viewer.navigation_info().current_result, Some(1));
+        assert!(viewer.ribbon_info().has_selection);
+
+        viewer.navigation_action(NavAction::Close);
+        assert!(!viewer.navigation.open);
+    }
+
+    fn info_headings_named(viewer: &Viewer, prefix: &str) -> usize {
+        let document = viewer.document.as_ref().unwrap();
+        letter_editor::document_outline(&document.doc, &document.layout)
+            .iter()
+            .filter(|h| h.title.starts_with(prefix))
+            .count()
     }
 
     #[test]
