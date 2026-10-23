@@ -337,7 +337,10 @@ pub(crate) fn plain_text(paragraph: &Paragraph) -> String {
                     text.push(letter_model::OBJECT_CHAR);
                 }
                 RunContent::NoteReference(_) => {}
-                RunContent::FieldChar(_) | RunContent::FieldCode(_) | RunContent::Unknown(_) => {}
+                RunContent::FieldChar(_)
+                | RunContent::FieldCode(_)
+                | RunContent::CommentReference(_)
+                | RunContent::Unknown(_) => {}
             }
         }
     }

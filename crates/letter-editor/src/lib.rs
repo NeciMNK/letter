@@ -19,12 +19,14 @@
 
 pub mod caret;
 pub mod clipboard;
+pub mod comments;
 pub mod compare;
 pub mod cover;
 pub mod edit;
 pub mod fields;
 pub mod format;
 pub mod history;
+pub mod levels;
 pub mod links;
 pub mod lists;
 pub mod navigation;
@@ -44,6 +46,10 @@ pub mod watermark;
 
 pub use caret::{Caret, CaretStop, caret, hit_test, line_stops, position_in_line};
 pub use clipboard::{copy_range, insert_fragment, insert_plain_text};
+pub use comments::{
+    CommentPlace, add_comment, comment_blocks, comment_places, delete_all_comments, delete_comment,
+    reply_to_comment, set_comment_done, set_comment_text, thread_root,
+};
 pub use compare::compare_documents;
 pub use cover::{CoverLayout, CoverPage, insert_cover_page};
 pub use edit::{
@@ -56,6 +62,7 @@ pub use format::{
     apply_style, format_paragraphs, format_runs, formatting_at, language_at,
 };
 pub use history::{Command, History};
+pub use levels::{OutlineChange, set_outline_level};
 pub use links::{
     add_bookmark, bookmark_position, bookmark_range, bookmarks, delete_bookmark, link_at, set_link,
 };

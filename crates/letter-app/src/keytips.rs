@@ -428,6 +428,8 @@ mod tests {
                 &crate::layout::KEYTIPS[..],
                 &crate::headers::KEYTIPS[..],
                 &crate::references::KEYTIPS[..],
+                &crate::comments::KEYTIPS[..],
+                &crate::outlining::KEYTIPS[..],
                 &crate::design::KEYTIPS[..],
                 &crate::review::KEYTIPS[..],
             ] {

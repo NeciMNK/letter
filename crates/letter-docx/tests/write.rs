@@ -32,6 +32,7 @@ const FIXTURES: &[&str] = &[
     "headers.docx",
     "links.docx",
     "notes.docx",
+    "comments.docx",
     "borders.docx",
     "watermark.docx",
     "header-footer.docx",
@@ -168,6 +169,7 @@ fn untouched_parts_are_copied_byte_for_byte() {
                 "word/footer",
                 "word/footnotes",
                 "word/endnotes",
+                "word/comments",
             ]
             .iter()
             .any(|prefix| part.starts_with(prefix));
@@ -917,4 +919,59 @@ fn notes_get_their_part() {
     let reopened = read_bytes(&write_bytes(&doc).unwrap()).unwrap();
     assert!(reopened.footnotes.iter().all(|n| n.id != "99"));
     assert_eq!(reopened.footnotes.len(), doc.footnotes.len() - 1);
+}
+
+#[test]
+fn comments_get_their_parts() {
+    let source = read_bytes(&fixture_bytes("comments.docx")).unwrap();
+    // Новый документ с примечаниями из другого: части появляются.
+    let mut doc = Document::new();
+    doc.sections = source.sections.clone();
+    doc.styles = source.styles.clone();
+    doc.comments = source.comments.clone();
+    doc.comments[0].blocks = vec![Paragraph::text("Changed").into()];
+    // Новое примечание без метки получает свою.
+    doc.comments[2].para_id = None;
+    let bytes = write_bytes(&doc).unwrap();
+    let parts = zip_parts(&bytes);
+    assert!(parts.contains_key("word/comments.xml"));
+    assert!(parts.contains_key("word/commentsExtended.xml"));
+    let types = String::from_utf8(parts["[Content_Types].xml"].clone()).unwrap();
+    assert!(types.contains("comments+xml"));
+    assert!(types.contains("commentsExtended+xml"));
+    let reopened = read_bytes(&bytes).unwrap();
+    assert_eq!(reopened.sections, doc.sections);
+    assert_eq!(reopened.comments.len(), 3);
+    assert_eq!(reopened.comments[0].plain_text(), "Changed");
+    assert_eq!(reopened.comments[1].parent.as_deref(), Some("0"));
+    assert!(reopened.comments[2].done);
+    let ids: Vec<_> = reopened
+        .comments
+        .iter()
+        .map(|c| c.para_id.clone())
+        .collect();
+    assert!(ids.iter().all(Option::is_some));
+    assert!(ids[2] != ids[0] && ids[2] != ids[1]);
+    // Примечание без отметок в тексте в файл не идёт, ответ на него — тоже.
+    let mut doc = reopened;
+    for section in &mut doc.sections {
+        for block in &mut section.blocks {
+            if let Block::Paragraph(p) = block {
+                p.content.retain(|i| {
+                    !matches!(i, Inline::CommentStart(id)
+                        | Inline::CommentEnd(id) if id == "0" || id == "1")
+                });
+                for inline in &mut p.content {
+                    if let Inline::Run(run) = inline {
+                        run.content.retain(
+                            |c| !matches!(c, RunContent::CommentReference(id) if id == "0"),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    let reopened = read_bytes(&write_bytes(&doc).unwrap()).unwrap();
+    let ids: Vec<_> = reopened.comments.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids, ["1", "2"]);
 }

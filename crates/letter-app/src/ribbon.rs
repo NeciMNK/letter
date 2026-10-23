@@ -52,6 +52,8 @@ pub enum Tab {
     PictureFormat,
     /// «Колонтитулы»: видна, пока колонтитул открыт для правки.
     HeaderFooter,
+    /// «Структура»: видна в режиме «Структура».
+    Outline,
 }
 
 impl Tab {
@@ -80,6 +82,7 @@ impl Tab {
             Tab::TableLayout => "keytip-tab-table-layout",
             Tab::PictureFormat => "keytip-tab-picture-format",
             Tab::HeaderFooter => "keytip-tab-header-footer",
+            Tab::Outline => "keytip-tab-outline",
         }
     }
 
@@ -97,6 +100,7 @@ impl Tab {
             Tab::TableLayout => tr("tab-table-layout"),
             Tab::PictureFormat => tr("tab-picture-format"),
             Tab::HeaderFooter => tr("tab-header-footer"),
+            Tab::Outline => tr("tab-outline"),
         }
     }
 }
@@ -159,6 +163,8 @@ pub enum RibbonCommand {
     Style(String),
     /// Окно «Найти».
     Find,
+    /// Режим просмотра («Вид → Режимы», кнопки в строке состояния).
+    ViewMode(crate::view::ViewMode),
     /// Окно «Заменить».
     Replace,
     /// «Выделить все».
@@ -181,6 +187,21 @@ pub enum RibbonCommand {
     ToggleRuler,
     /// «Вид → Область навигации»: показать или скрыть.
     ToggleNavigation,
+    /// «Создать примечание» (Ctrl+Alt+M).
+    NewComment,
+    /// Удалить примечание у курсора.
+    DeleteComment,
+    /// «Удалить все примечания в документе».
+    DeleteAllComments,
+    /// Предыдущее (`false`) или следующее примечание.
+    NextComment(bool),
+    /// Показать или скрыть область примечаний.
+    ToggleComments,
+    /// Развернуть (`true`) или свернуть заголовок у курсора (режим
+    /// «Структура»).
+    OutlineExpand(bool),
+    /// «Показать уровень»; `None` — все уровни.
+    ShowLevel(Option<u8>),
     /// Ctrl+Backspace и Ctrl+Delete: удалить слово до или после курсора.
     DeleteWord {
         /// Слово после курсора.
@@ -312,6 +333,16 @@ pub struct RibbonInfo {
     pub ruler: bool,
     /// Область навигации показана.
     pub navigation: bool,
+    /// В документе есть примечания.
+    pub has_comments: bool,
+    /// Курсор в тексте примечания.
+    pub in_comment: bool,
+    /// Область примечаний показана.
+    pub comments: bool,
+    /// «Показать уровень» режима «Структура»; `None` — все уровни.
+    pub show_level: Option<u8>,
+    /// Режим просмотра.
+    pub view_mode: crate::view::ViewMode,
     /// Курсор в таблице.
     pub in_table: bool,
     /// Выделено несколько ячеек таблицы: их можно объединить.
@@ -353,6 +384,8 @@ pub struct Ribbon {
     pub keytips: KeyTips,
     /// В прошлом кадре был открыт колонтитул.
     story_open: bool,
+    /// В прошлом кадре был режим «Структура».
+    outline_open: bool,
 }
 
 impl Ribbon {
@@ -394,6 +427,15 @@ impl Ribbon {
             self.tab = Tab::Home;
         }
         self.story_open = info.story.is_some();
+        // Вкладка «Структура» открывается вместе с режимом.
+        let outline = info.view_mode == crate::view::ViewMode::Outline;
+        if outline && !self.outline_open {
+            self.tab = Tab::Outline;
+        }
+        if !outline && self.tab == Tab::Outline {
+            self.tab = Tab::Home;
+        }
+        self.outline_open = outline;
         self.tabs(ui, info, &mut out);
         if !self.collapsed {
             let colors = Palette::of(ui.ctx());
@@ -417,6 +459,7 @@ impl Ribbon {
                         Tab::TableLayout => crate::insert::table_layout(ui, info, &mut out),
                         Tab::PictureFormat => crate::insert::picture_format(ui, info, &mut out),
                         Tab::HeaderFooter => crate::headers::header_footer(ui, info, &mut out),
+                        Tab::Outline => crate::outlining::outlining(ui, info, &mut out),
                     });
                 });
         }
@@ -454,7 +497,10 @@ impl Ribbon {
             if info.story.is_some() {
                 contextual.push(Tab::HeaderFooter);
             }
-            for tab in Tab::ALL.into_iter().chain(contextual) {
+            // «Структура» — перед остальными вкладками, как в Word.
+            let outline =
+                (info.view_mode == crate::view::ViewMode::Outline).then_some(Tab::Outline);
+            for tab in outline.into_iter().chain(Tab::ALL).chain(contextual) {
                 let selected = self.tab == tab && !self.collapsed;
                 let text = if selected {
                     RichText::new(tab.title())
@@ -634,6 +680,24 @@ fn command_button(
 
 /// Вкладка «Вид».
 fn view(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+    group(ui, tr("group-views"), |ui| {
+        ui.horizontal(|ui| {
+            for mode in crate::view::ViewMode::ALL {
+                let response = ui.add(egui::Button::selectable(
+                    info.view_mode == mode,
+                    tr(mode.key()),
+                ));
+                let keytip = match mode {
+                    crate::view::ViewMode::Read => "keytip-view-read",
+                    crate::view::ViewMode::Print => "keytip-view-print",
+                    crate::view::ViewMode::Web => "keytip-view-web",
+                    crate::view::ViewMode::Outline => "keytip-view-outline",
+                    crate::view::ViewMode::Draft => "keytip-view-draft",
+                };
+                command_button(ui, response, keytip, RibbonCommand::ViewMode(mode), out);
+            }
+        });
+    });
     group(ui, tr("group-show"), |ui| {
         let mut ruler = info.ruler;
         let response = ui.checkbox(&mut ruler, tr("ruler"));

@@ -48,6 +48,10 @@ use crate::find::{FindAction, FindDialog};
 use crate::font_dialog::{FontDialog, FontValues};
 use crate::icons::{self, Icon};
 use crate::link_dialog::{LinkAction, LinkDialog};
+use crate::modes::{
+    LayoutView, OutlineView, WEB_MARGIN, outline_hidden, outline_indent, outline_levels,
+    view_document,
+};
 use crate::paragraph_dialog::{ParagraphDialog, ParagraphValues};
 use crate::picture::{Handle, PictureDrag};
 use crate::protect_dialog::{ProtectAction, ProtectDialog, ProtectMode};
@@ -57,8 +61,8 @@ use crate::settings::Settings;
 use crate::symbols::SymbolDialog;
 use crate::theme::{Palette, ThemeChoice};
 use crate::view::{
-    MAX_ZOOM, MIN_ZOOM, PAGE_GAP, Zoom, anchored_offset, clamp_zoom, current_page, page_width_zoom,
-    place_pages, step_zoom,
+    MAX_ZOOM, MIN_ZOOM, PAGE_GAP, PageBox, ViewMode, Zoom, anchored_offset, clamp_zoom,
+    current_page, page_width_zoom, place_view, read_zoom, step_zoom,
 };
 use letter_editor::CoverPage;
 
@@ -123,6 +127,10 @@ const UNTITLED: &str = "new-document";
 
 /// Заливка выделения: полупрозрачная серо-голубая, текст под ней виден.
 const SELECTION_COLOR: Color32 = Color32::from_rgba_premultiplied(0, 50, 110, 70);
+/// Подсветка текста примечания.
+const COMMENT_COLOR: Color32 = Color32::from_rgba_premultiplied(120, 90, 0, 50);
+/// Подсветка текста примечания, в котором курсор.
+const COMMENT_CURRENT_COLOR: Color32 = Color32::from_rgba_premultiplied(170, 120, 0, 100);
 
 /// Сколько курсор виден и сколько скрыт при мигании, секунды (как
 /// в Windows по умолчанию).
@@ -188,6 +196,16 @@ struct OpenDocument {
     /// Открыт только для чтения: у файла пароль на изменение или
     /// «рекомендовать только чтение», и правку ещё не разрешили.
     read_only: bool,
+    /// Как верстается документ: по листам или по ширине окна
+    /// («Веб-документ», «Структура»).
+    view: LayoutView,
+    /// Уровни абзацев для значков режима «Структура» (посчитаны при
+    /// вёрстке в этом режиме).
+    outline: Vec<Option<u8>>,
+    /// Что видно в режиме «Структура» (уровни, свёрнутые заголовки).
+    outline_view: OutlineView,
+    /// Скрытые в режиме «Структура» абзацы (посчитаны при вёрстке).
+    outline_hidden: Vec<bool>,
 }
 
 /// Статистика документа и выделения для строки состояния.
@@ -236,6 +254,10 @@ impl OpenDocument {
             goal_x: None,
             counts: None,
             story: None,
+            view: LayoutView::Pages,
+            outline: Vec::new(),
+            outline_view: OutlineView::default(),
+            outline_hidden: Vec::new(),
             read_only: doc
                 .settings
                 .write_protection
@@ -306,9 +328,64 @@ impl OpenDocument {
                 self.layout = story.edit_layout();
             }
             None => {
-                self.layout = layout_document_cached(&self.doc, shaper, library, &mut self.cache);
+                let copy = view_document(&self.doc, self.view, &self.outline_view);
+                let doc = copy.as_ref().unwrap_or(&self.doc);
+                self.layout = layout_document_cached(doc, shaper, library, &mut self.cache);
+                self.outline = match self.view {
+                    LayoutView::Outline { .. } => outline_levels(&self.doc),
+                    _ => Vec::new(),
+                };
+                self.outline_hidden = outline_hidden(&self.outline, &self.outline_view);
             }
         }
+    }
+
+    /// Разворачивает (`expand`) или сворачивает в режиме «Структура»
+    /// заголовок у курсора (у обычного текста — заголовок над ним).
+    fn expand_heading(&mut self, expand: bool) {
+        let levels = outline_levels(&self.doc);
+        let Some(heading) = (0..=self.cursor.paragraph)
+            .rev()
+            .find(|&i| levels.get(i).copied().flatten().is_some())
+        else {
+            return;
+        };
+        if expand {
+            self.outline_view.collapsed.remove(&heading);
+        } else {
+            self.outline_view.collapsed.insert(heading);
+        }
+    }
+
+    /// Курсор в скрытом абзаце режима «Структура» уходит из него: если
+    /// он пришёл сверху (`forward`) — в начало ближайшего видимого абзаца
+    /// ниже, иначе — в конец ближайшего видимого выше.
+    fn leave_hidden_towards(&mut self, forward: bool) {
+        let hidden = |i: usize| self.outline_hidden.get(i).copied().unwrap_or(false);
+        if !hidden(self.cursor.paragraph) && !hidden(self.anchor.paragraph) {
+            return;
+        }
+        let count = letter_editor::paragraph_count(&self.doc);
+        let below = (self.cursor.paragraph..count).find(|&i| !hidden(i));
+        let above = (0..=self.cursor.paragraph).rev().find(|&i| !hidden(i));
+        let end = |index: usize| {
+            let len =
+                letter_editor::paragraph_ref(&self.doc, index).map_or(0, |p| p.plain_text().len());
+            Position::new(index, len)
+        };
+        let at = match (forward, below, above) {
+            (true, Some(index), _) => Position::new(index, 0),
+            (_, _, Some(index)) => end(index),
+            (_, Some(index), None) => Position::new(index, 0),
+            (_, None, None) => Position::default(),
+        };
+        self.set_selection(Selection::caret(at));
+    }
+
+    /// То же, когда курсор поставлен командой (сворачивание и т. п.):
+    /// в видимый абзац выше.
+    fn leave_hidden(&mut self) {
+        self.leave_hidden_towards(false);
     }
 
     /// Сам документ (и во время правки колонтитула — с ним).
@@ -692,6 +769,11 @@ pub struct Viewer {
     scroll_to: Option<(usize, f32)>,
     /// Область навигации.
     navigation: crate::navigation::NavigationPane,
+    /// Область примечаний.
+    comments: crate::comments::CommentsPane,
+    /// Абзац курсора в прошлом кадре режима «Структура»: куда он шёл,
+    /// чтобы перешагнуть скрытые абзацы.
+    outline_cursor: usize,
     /// Найденное для области навигации: строка поиска, состояние
     /// документа и результат (чтобы не искать каждый кадр).
     nav_found: Option<(String, u64, Vec<letter_editor::Found>)>,
@@ -701,6 +783,8 @@ pub struct Viewer {
     ribbon: Ribbon,
     /// Показывать линейки.
     show_ruler: bool,
+    /// Режим просмотра.
+    view_mode: ViewMode,
     /// Показывать знаки форматирования (¶).
     show_marks: bool,
     /// Открыто окно «Статистика» (щелчок по числу слов).
@@ -903,6 +987,7 @@ impl Viewer {
             find: FindDialog::default(),
             backstage: Backstage::default(),
             show_ruler: settings.show_ruler,
+            view_mode: ViewMode::Print,
             settings,
             dir: dir.clone(),
             library,
@@ -924,6 +1009,8 @@ impl Viewer {
             reveal_cursor: false,
             scroll_to: None,
             navigation: Default::default(),
+            comments: Default::default(),
+            outline_cursor: 0,
             nav_found: None,
             clipboard: Clipboard::new(Box::new(SystemBuffer::default())),
             ribbon: Ribbon::default(),
@@ -970,6 +1057,9 @@ impl Viewer {
     fn show(&mut self, path: Option<PathBuf>, doc: Document) {
         let mut cache = LayoutCache::default();
         let layout = layout_document_cached(&doc, &mut self.shaper, &self.library, &mut cache);
+        // Примечания документа видны сразу, как в Word.
+        self.comments = crate::comments::CommentsPane::default();
+        self.comments.open = !doc.comments.is_empty();
         self.document = Some(OpenDocument::new(path, doc, layout, cache));
         if let Some(autosave) = &self.autosave {
             autosave.clear();
@@ -1366,11 +1456,31 @@ impl Viewer {
                 .inner;
             self.run_ribbon(&ctx, commands);
         } else {
-            let info = self.ribbon_info();
-            let commands = egui::Panel::top("ribbon")
-                .show(ui, |ui| self.ribbon.ui(ui, &info))
-                .inner;
-            self.run_ribbon(&ctx, commands);
+            if self.view_mode == ViewMode::Read {
+                // В режиме чтения ленты нет: только имя и выход.
+                let title = self.title();
+                let close = egui::Panel::top("read-bar")
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(title);
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.button(tr("read-close")).clicked()
+                            })
+                            .inner
+                        })
+                        .inner
+                    })
+                    .inner;
+                if close {
+                    self.set_view_mode(ViewMode::Print);
+                }
+            } else {
+                let info = self.ribbon_info();
+                let commands = egui::Panel::top("ribbon")
+                    .show(ui, |ui| self.ribbon.ui(ui, &info))
+                    .inner;
+                self.run_ribbon(&ctx, commands);
+            }
             if let Some(action) = self.find.ui(&ctx) {
                 self.find_action(&ctx, action);
             }
@@ -1413,7 +1523,7 @@ impl Viewer {
             }
             egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
             self.protection_bar(ui);
-            if self.navigation.open && self.document.is_some() {
+            if self.navigation.open && self.document.is_some() && self.view_mode != ViewMode::Read {
                 let info = self.navigation_info();
                 let (library, painter, document) =
                     (&self.library, &mut self.painter, &self.document);
@@ -1430,6 +1540,18 @@ impl Viewer {
                     .inner;
                 if let Some(action) = action {
                     self.navigation_action(action);
+                }
+            }
+            if self.comments.open && self.document.is_some() && self.view_mode != ViewMode::Read {
+                let info = self.comments_info();
+                let comments = &mut self.comments;
+                let action = egui::Panel::right("comments")
+                    .default_size(280.0)
+                    .size_range(200.0..=500.0)
+                    .show(ui, |ui| comments.ui(ui, &info))
+                    .inner;
+                if let Some(action) = action {
+                    self.comment_action(&ctx, action);
                 }
             }
             egui::CentralPanel::no_frame()
@@ -1489,6 +1611,13 @@ impl Viewer {
 
     /// Масштаб при ширине видимой части `view_width`.
     fn effective_zoom(&self, view_width: f32) -> f32 {
+        // В режиме чтения два листа рядом всегда целиком в окне.
+        if self.view_mode == ViewMode::Read {
+            let first = self.document.as_ref().and_then(|d| d.layout.pages.first());
+            return first.map_or(1.0, |p| {
+                read_zoom((p.width, p.height), Vec2::new(view_width, self.view_size.y))
+            });
+        }
         match self.zoom {
             Zoom::Fixed(z) => clamp_zoom(z),
             Zoom::PageWidth => {
@@ -1497,6 +1626,85 @@ impl Viewer {
                 });
                 page_width_zoom(widest, view_width)
             }
+        }
+    }
+
+    /// Клавиши режима чтения: текст не правится, стрелки, PageUp/PageDown
+    /// и пробел листают по два листа, Esc выходит.
+    fn read_keys(&mut self, ctx: &Context) {
+        let pages = self.page_count();
+        let mut target = None;
+        let mut close = false;
+        let current = self.current_page - self.current_page % 2;
+        ctx.input_mut(|i| {
+            i.events.retain(|event| {
+                let egui::Event::Key {
+                    key, pressed: true, ..
+                } = event
+                else {
+                    // Набранный текст в режиме чтения не нужен.
+                    return !matches!(event, egui::Event::Text(_) | egui::Event::Paste(_));
+                };
+                match key {
+                    Key::Escape => close = true,
+                    Key::ArrowRight | Key::ArrowDown | Key::PageDown | Key::Space => {
+                        target = Some((current + 2).min(pages.saturating_sub(1)));
+                    }
+                    Key::ArrowLeft | Key::ArrowUp | Key::PageUp => {
+                        target = Some(current.saturating_sub(2));
+                    }
+                    Key::Home => target = Some(0),
+                    Key::End => target = Some(pages.saturating_sub(1)),
+                    _ => return true,
+                }
+                false
+            });
+        });
+        if close {
+            self.set_view_mode(ViewMode::Print);
+        } else if let Some(page) = target {
+            self.scroll_to = Some((page - page % 2, 0.0));
+        }
+    }
+
+    /// Включает режим просмотра `mode`.
+    fn set_view_mode(&mut self, mode: ViewMode) {
+        if self.view_mode == mode {
+            return;
+        }
+        self.view_mode = mode;
+        // Колонтитулы правятся только в разметке страницы.
+        if mode != ViewMode::Print
+            && let Some(document) = &mut self.document
+        {
+            document.end_story(&mut self.shaper, &self.library);
+        }
+        self.reveal_cursor = true;
+    }
+
+    /// Верстает документ заново, если режим просмотра или ширина окна
+    /// (в режимах без листов) изменились. `view_width` — ширина области
+    /// листов, точки.
+    fn sync_layout_view(&mut self, view_width: f32, zoom: f32) {
+        // Поля вокруг листа и место под полосу прокрутки.
+        let free = view_width - 2.0 * PAGE_GAP - 16.0;
+        let width = (free / (zoom * SCREEN_PIXELS_PER_POINT)).floor();
+        let wanted = match self.view_mode {
+            ViewMode::Web => LayoutView::Web { width },
+            ViewMode::Outline => LayoutView::Outline { width },
+            ViewMode::Print | ViewMode::Read | ViewMode::Draft => LayoutView::Pages,
+        };
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        if document.story.is_none() && document.view != wanted {
+            document.view = wanted;
+            document.relayout(&mut self.shaper, &self.library);
+        }
+        if matches!(document.view, LayoutView::Outline { .. }) {
+            let forward = document.cursor.paragraph > self.outline_cursor;
+            document.leave_hidden_towards(forward);
+            self.outline_cursor = document.cursor.paragraph;
         }
     }
 
@@ -1553,6 +1761,10 @@ impl Viewer {
         let screen = self.view_size.y * points;
         // Клавиши достаются полю ввода (например, размер шрифта на ленте).
         if self.document.is_none() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        if self.view_mode == ViewMode::Read {
+            self.read_keys(ctx);
             return;
         }
         // Esc кончает правку колонтитула.
@@ -2092,6 +2304,184 @@ impl Viewer {
         info
     }
 
+    /// Ветка примечаний, в тексте которой курсор (номер первого
+    /// примечания ветки); из вложенных — самая внутренняя.
+    fn current_comment(&self) -> Option<String> {
+        let document = self.document.as_ref()?;
+        let at = (document.cursor.paragraph, document.cursor.offset);
+        let doc = &document.doc;
+        letter_editor::comment_places(doc)
+            .into_iter()
+            .filter(|p| {
+                (p.start.paragraph, p.start.offset) <= at && at <= (p.end.paragraph, p.end.offset)
+            })
+            .filter_map(|p| letter_editor::thread_root(doc, &p.id))
+            .next_back()
+    }
+
+    /// Что показать в области примечаний: ветки по порядку в тексте.
+    fn comments_info(&self) -> crate::comments::CommentsInfo {
+        use crate::comments::{CommentEntry, CommentThread, CommentsInfo};
+        let Some(document) = &self.document else {
+            return CommentsInfo::default();
+        };
+        let doc = &document.doc;
+        let entry = |c: &letter_model::Comment| CommentEntry {
+            id: c.id.clone(),
+            author: c.author.clone(),
+            date: c.date.as_deref().map(comment_date).unwrap_or_default(),
+            text: c.plain_text(),
+        };
+        let mut threads = Vec::new();
+        for place in letter_editor::comment_places(doc) {
+            let Some(comment) = doc
+                .comments
+                .iter()
+                .find(|c| c.id == place.id && c.parent.is_none())
+            else {
+                continue;
+            };
+            threads.push(CommentThread {
+                comment: entry(comment),
+                replies: doc
+                    .comments
+                    .iter()
+                    .filter(|c| c.parent.is_some())
+                    .filter(|c| {
+                        letter_editor::thread_root(doc, &c.id).as_ref() == Some(&comment.id)
+                    })
+                    .map(entry)
+                    .collect(),
+                done: comment.done,
+            });
+        }
+        CommentsInfo {
+            threads,
+            current: self.current_comment(),
+        }
+    }
+
+    /// Новое примечание (или ответ) с текстом `text` от имени
+    /// пользователя, с текущим временем.
+    fn new_comment(&self, text: &str) -> Option<letter_model::Comment> {
+        let document = self.document.as_ref()?;
+        let author = std::env::var("USERNAME")
+            .or_else(|_| std::env::var("USER"))
+            .ok()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| tr("comment-author-default").to_owned());
+        let initials: String = author
+            .split_whitespace()
+            .filter_map(|w| w.chars().next())
+            .flat_map(char::to_uppercase)
+            .collect();
+        Some(letter_model::Comment {
+            initials: Some(initials),
+            author,
+            date: Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()),
+            blocks: letter_editor::comment_blocks(&document.doc, text),
+            ..Default::default()
+        })
+    }
+
+    /// Выполняет выбранное в области примечаний.
+    fn comment_action(&mut self, ctx: &Context, action: crate::comments::CommentAction) {
+        use crate::comments::CommentAction;
+        if let Some(document) = &mut self.document {
+            document.end_story(&mut self.shaper, &self.library);
+        }
+        let command = match action {
+            CommentAction::Close => {
+                self.comments.open = false;
+                return;
+            }
+            CommentAction::Select(id) => {
+                self.select_comment(&id);
+                return;
+            }
+            CommentAction::Add { at, text } => {
+                let Some(comment) = self.new_comment(&text) else {
+                    return;
+                };
+                if let Some(document) = &mut self.document {
+                    document.set_selection(at);
+                }
+                Command::AddComment(Box::new(comment))
+            }
+            CommentAction::Reply { parent, text } => {
+                let Some(reply) = self.new_comment(&text) else {
+                    return;
+                };
+                Command::ReplyComment {
+                    parent,
+                    reply: Box::new(reply),
+                }
+            }
+            CommentAction::Edit { id, text } => {
+                let Some(document) = &self.document else {
+                    return;
+                };
+                Command::SetComment {
+                    id,
+                    blocks: letter_editor::comment_blocks(&document.doc, &text),
+                }
+            }
+            CommentAction::Done { id, done } => Command::CommentDone { id, done },
+            CommentAction::Delete(id) => Command::DeleteComment(id),
+        };
+        self.run_ribbon(ctx, vec![RibbonCommand::Edit(command)]);
+    }
+
+    /// Выделяет текст примечания `id` и прокручивает к нему.
+    fn select_comment(&mut self, id: &str) {
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        if let Some(place) = letter_editor::comment_places(&document.doc)
+            .into_iter()
+            .find(|p| p.id == id)
+        {
+            document.set_selection(Selection::new(place.start, place.end));
+            self.reveal_cursor = true;
+        }
+    }
+
+    /// «Далее» (`forward`) или «Назад»: к следующему примечанию после
+    /// курсора или предыдущему до него, по кругу.
+    fn next_comment(&mut self, forward: bool) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        let doc = &document.doc;
+        let at = (document.cursor.paragraph, document.cursor.offset);
+        let starts: Vec<(String, (usize, usize))> = letter_editor::comment_places(doc)
+            .into_iter()
+            .filter(|p| {
+                doc.comments
+                    .iter()
+                    .any(|c| c.id == p.id && c.parent.is_none())
+            })
+            .map(|p| (p.id, (p.start.paragraph, p.start.offset)))
+            .collect();
+        let found = if forward {
+            starts
+                .iter()
+                .find(|(_, s)| *s > at)
+                .or_else(|| starts.first())
+        } else {
+            let anchor = (document.anchor.paragraph, document.anchor.offset).min(at);
+            starts
+                .iter()
+                .rev()
+                .find(|(_, s)| *s < anchor)
+                .or_else(|| starts.last())
+        };
+        if let Some((id, _)) = found.cloned() {
+            self.comments.open = true;
+            self.select_comment(&id);
+        }
+    }
+
     /// Переход из области навигации.
     fn navigation_action(&mut self, action: crate::navigation::NavAction) {
         use crate::navigation::NavAction;
@@ -2135,6 +2525,12 @@ impl Viewer {
             page_width: self.zoom == Zoom::PageWidth,
             ruler: self.show_ruler,
             navigation: self.navigation.open,
+            comments: self.comments.open,
+            show_level: self
+                .document
+                .as_ref()
+                .and_then(|d| d.outline_view.show_level),
+            view_mode: self.view_mode,
             marks: self.show_marks,
             fonts: self.font_names.clone(),
             ..RibbonInfo::default()
@@ -2183,6 +2579,8 @@ impl Viewer {
             });
             info.has_revisions = letter_editor::revisions::has_revisions(document.body(), None);
             info.spelling = self.spelling.enabled;
+            info.has_comments = !document.doc.comments.is_empty();
+            info.in_comment = info.has_comments && self.current_comment().is_some();
             if let Some(story) = &document.story
                 && let Some(header) = story.header()
             {
@@ -2258,6 +2656,48 @@ impl Viewer {
                 RibbonCommand::PageWidth => self.set_zoom(Zoom::PageWidth, None),
                 RibbonCommand::ToggleRuler => self.show_ruler = !self.show_ruler,
                 RibbonCommand::ToggleNavigation => self.navigation.open = !self.navigation.open,
+                RibbonCommand::ToggleComments => self.comments.open = !self.comments.open,
+                RibbonCommand::ShowLevel(level) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &mut self.document {
+                        document.outline_view.show_level = level;
+                        document.relayout(&mut self.shaper, &self.library);
+                        document.leave_hidden();
+                    }
+                }
+                RibbonCommand::OutlineExpand(expand) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &mut self.document {
+                        document.expand_heading(expand);
+                        document.relayout(&mut self.shaper, &self.library);
+                        document.leave_hidden();
+                    }
+                }
+                RibbonCommand::NextComment(forward) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    self.next_comment(forward);
+                }
+                RibbonCommand::NewComment => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &mut self.document {
+                        document.end_story(&mut self.shaper, &self.library);
+                        let mut at = document.selection();
+                        // Без выделения примечание — к слову у курсора.
+                        if at.is_empty() {
+                            at = word_at(&document.layout, document.cursor);
+                        }
+                        self.comments.start_new(at);
+                    }
+                }
+                RibbonCommand::DeleteComment => {
+                    if let Some(id) = self.current_comment() {
+                        actions.push(Action::Edit(Command::DeleteComment(id)));
+                    }
+                }
+                RibbonCommand::DeleteAllComments => {
+                    actions.push(Action::Edit(Command::DeleteAllComments));
+                }
+                RibbonCommand::ViewMode(mode) => self.set_view_mode(mode),
                 RibbonCommand::ToggleMarks => self.show_marks = !self.show_marks,
                 RibbonCommand::Paragraph(format) => {
                     actions.push(Action::Edit(Command::Paragraph(format)));
@@ -2546,7 +2986,9 @@ impl Viewer {
     /// Область документа: линейки сверху и слева, листы.
     fn document_area(&mut self, ui: &mut egui::Ui) {
         let full = ui.available_rect_before_wrap();
-        if !self.show_ruler || self.document.is_none() {
+        // Линейки размечают лист — они только в разметке страницы.
+        let ruled = self.view_mode == ViewMode::Print;
+        if !self.show_ruler || !ruled || self.document.is_none() {
             self.pages(ui);
             return;
         }
@@ -2688,12 +3130,19 @@ impl Viewer {
                     self.set_zoom(Zoom::PageWidth, None);
                 }
                 ui.separator();
-                // Режимы просмотра справа налево; пока есть только
-                // разметка страницы, остальные появятся в фазе 6.
+                // Режимы просмотра справа налево, как в Word.
                 let size = egui::vec2(22.0, 18.0);
-                icons::icon_button(ui, Icon::WebLayout, tr("view-web-soon"), size, false, false);
-                icons::icon_button(ui, Icon::PrintLayout, tr("view-print"), size, true, true);
-                icons::icon_button(ui, Icon::ReadMode, tr("view-read-soon"), size, false, false);
+                for (icon, mode) in [
+                    (Icon::WebLayout, ViewMode::Web),
+                    (Icon::PrintLayout, ViewMode::Print),
+                    (Icon::ReadMode, ViewMode::Read),
+                ] {
+                    let on = self.view_mode == mode;
+                    let has = self.document.is_some();
+                    if icons::icon_button(ui, icon, tr(mode.key()), size, has, on).clicked() {
+                        self.set_view_mode(mode);
+                    }
+                }
             });
         });
     }
@@ -2779,6 +3228,8 @@ impl Viewer {
             Some(d) if d.story.is_none() => self.spelling.errors(&d.doc, d.history.state()),
             _ => Vec::new(),
         };
+        self.sync_layout_view(area_rect.width(), zoom);
+        let mode = self.view_mode;
         let Viewer {
             library,
             painter,
@@ -2795,8 +3246,8 @@ impl Viewer {
             Some(story) => &story.display.pages,
             None => &document.layout.pages,
         };
-        let sizes: Vec<(f32, f32)> = pages.iter().map(|p| (p.width, p.height)).collect();
-        let placement = place_pages(&sizes, zoom, area_rect.width());
+        let boxes: Vec<PageBox> = pages.iter().map(|p| page_box(p, mode)).collect();
+        let placement = place_view(&boxes, zoom, area_rect.width(), mode);
 
         if std::mem::take(&mut self.reveal_cursor)
             && let Some(c) = caret(&document.layout, document.cursor)
@@ -2863,7 +3314,7 @@ impl Viewer {
                 )
             });
             let spot = pointer.and_then(|pointer| {
-                let page = nearest_page(&placement.rects, pointer - origin.to_vec2())?;
+                let page = nearest_page(&placement.clips, pointer - origin.to_vec2())?;
                 Some((page, (pointer - screen_rect(page).min) * points))
             });
             let under_pointer =
@@ -3111,8 +3562,29 @@ impl Viewer {
             // Тень листа выходит за его края: рисуем и чуть невидимые.
             let visible = viewport.expand(PAGE_GAP);
             for (i, page) in pages.iter().enumerate() {
-                if placement.rects[i].intersects(visible) {
-                    painter.paint_page(ui.painter(), library, page, screen_rect(i));
+                if placement.clips[i].intersects(visible) {
+                    // В черновике и без листов видна только полоса текста:
+                    // ни полей, ни тени.
+                    let clip = placement.clips[i].translate(origin.to_vec2());
+                    let sheet = if mode.continuous() {
+                        ui.painter().with_clip_rect(clip.intersect(ui.clip_rect()))
+                    } else {
+                        ui.painter().clone()
+                    };
+                    painter.paint_page(&sheet, library, page, screen_rect(i));
+                    if mode == ViewMode::Draft && i + 1 < pages.len() {
+                        paint_page_break(ui.painter(), clip);
+                    }
+                    if mode == ViewMode::Outline {
+                        paint_outline_marks(
+                            &sheet,
+                            page,
+                            screen_rect(i),
+                            1.0 / points,
+                            &document.outline,
+                            &document.outline_hidden,
+                        );
+                    }
                     if *show_marks {
                         paint_marks(ui.painter(), page, screen_rect(i).min, 1.0 / points);
                     }
@@ -3134,6 +3606,41 @@ impl Viewer {
                             page.min + Vec2::new(r.right, r.bottom) * scale,
                         );
                         crate::spelling::paint_wave(ui.painter(), rect, scale);
+                    }
+                }
+            }
+
+            // Текст примечаний подсвечен (нерешённых), текущей ветки —
+            // ярче, как в Word.
+            if document.story.is_none() && !document.doc.comments.is_empty() {
+                let doc = &document.doc;
+                let at = (document.cursor.paragraph, document.cursor.offset);
+                for place in letter_editor::comment_places(doc) {
+                    let open = doc
+                        .comments
+                        .iter()
+                        .any(|c| c.id == place.id && c.parent.is_none() && !c.done);
+                    if !open {
+                        continue;
+                    }
+                    let inside = (place.start.paragraph, place.start.offset) <= at
+                        && at <= (place.end.paragraph, place.end.offset);
+                    let color = if inside {
+                        COMMENT_CURRENT_COLOR
+                    } else {
+                        COMMENT_COLOR
+                    };
+                    let range = Selection::new(place.start, place.end);
+                    for r in selection_rects(&document.layout, range) {
+                        if r.page < placement.rects.len() {
+                            let page = screen_rect(r.page);
+                            let scale = 1.0 / points;
+                            let rect = Rect::from_min_max(
+                                page.min + Vec2::new(r.left, r.top) * scale,
+                                page.min + Vec2::new(r.right, r.bottom) * scale,
+                            );
+                            ui.painter().rect_filled(rect, 0.0, color);
+                        }
                     }
                 }
             }
@@ -3174,7 +3681,7 @@ impl Viewer {
             // что посередине окна.
             let caret_page = caret(&document.layout, document.cursor)
                 .map(|c| c.page)
-                .filter(|&p| p < placement.rects.len() && placement.rects[p].intersects(viewport))
+                .filter(|&p| p < placement.clips.len() && placement.clips[p].intersects(viewport))
                 .unwrap_or_else(|| current_page(&placement, viewport.top(), viewport.height()));
             if caret_page < placement.rects.len() {
                 ruler_page = Some((caret_page, screen_rect(caret_page)));
@@ -3457,6 +3964,104 @@ fn reveal(offset: Vec2, view: Vec2, target: Rect) -> Vec2 {
     )
 }
 
+/// Лист для расстановки в режиме `mode`. В режимах без листов «лист» —
+/// одна длинная полоса: видна только часть с текстом.
+fn page_box(page: &letter_layout::Page, mode: ViewMode) -> PageBox {
+    let (top, bottom) = match mode {
+        ViewMode::Draft => (page.margins.top, page.margins.bottom),
+        ViewMode::Web | ViewMode::Outline => {
+            let end = page
+                .lines
+                .iter()
+                .map(|l| l.top + l.height)
+                .fold(page.margins.top, f32::max);
+            (0.0, (page.height - end - WEB_MARGIN).max(0.0))
+        }
+        ViewMode::Print | ViewMode::Read => (0.0, 0.0),
+    };
+    PageBox {
+        width: page.width,
+        height: page.height,
+        top,
+        bottom,
+    }
+}
+
+/// Пунктир между листами в черновике, по нижнему краю полосы `band`.
+fn paint_page_break(painter: &egui::Painter, band: Rect) {
+    let y = band.bottom();
+    let stroke = egui::Stroke::new(1.0, Color32::from_gray(150));
+    let shapes = egui::Shape::dashed_line(
+        &[Pos2::new(band.left(), y), Pos2::new(band.right(), y)],
+        stroke,
+        3.0,
+        3.0,
+    );
+    painter.extend(shapes);
+}
+
+/// Значки режима «Структура» у первой строки каждого абзаца: у заголовка
+/// с текстом под ним — кружок с плюсом, у заголовка без него — с минусом,
+/// у основного текста — точка. `levels` — из [`outline_levels`].
+fn paint_outline_marks(
+    painter: &egui::Painter,
+    page: &letter_layout::Page,
+    rect: Rect,
+    scale: f32,
+    levels: &[Option<u8>],
+    hidden: &[bool],
+) {
+    let color = Color32::from_gray(90);
+    let is_hidden = |i: usize| hidden.get(i).copied().unwrap_or(false);
+    let stroke = egui::Stroke::new(1.0, color);
+    for line in page
+        .lines
+        .iter()
+        .filter(|l| l.line.range.start == 0 && l.cell.is_none())
+    {
+        let index = line.paragraph;
+        let Some(&level) = levels.get(index) else {
+            continue;
+        };
+        if is_hidden(index) {
+            continue;
+        }
+        let x = rect.left() + (line.x + outline_indent(levels, index) - 9.0) * scale;
+        let y = rect.top() + (line.baseline - 3.5) * scale;
+        let center = Pos2::new(x, y);
+        match level {
+            Some(level) => {
+                let r = 4.0 * scale;
+                painter.circle_stroke(center, r, stroke);
+                let arm = 2.5 * scale;
+                painter.hline(x - arm..=x + arm, y, stroke);
+                // Плюс, если под заголовком есть что-то до следующего
+                // заголовка того же или старшего уровня.
+                let children = levels
+                    .get(index + 1)
+                    .is_some_and(|next| next.is_none_or(|n| n > level));
+                if children {
+                    painter.vline(x, y - arm..=y + arm, stroke);
+                }
+                // Под свёрнутым заголовком — серая черта, как в Word.
+                if children && is_hidden(index + 1) {
+                    let left = rect.left() + (line.x + outline_indent(levels, index)) * scale;
+                    let right = left + line.line.width.max(20.0) * scale;
+                    let below = rect.top() + (line.baseline + 3.0) * scale;
+                    painter.hline(
+                        left..=right,
+                        below,
+                        egui::Stroke::new(1.0, Color32::from_gray(150)),
+                    );
+                }
+            }
+            None => {
+                painter.circle_filled(center, 1.6 * scale, color);
+            }
+        }
+    }
+}
+
 /// Лист под точкой `point` (координаты содержимого прокрутки) или,
 /// если точка между листами, ближайший по вертикали.
 fn nearest_page(rects: &[Rect], point: Pos2) -> Option<usize> {
@@ -3476,9 +4081,22 @@ fn nearest_page(rects: &[Rect], point: Pos2) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// Дата примечания из файла (`2026-10-23T12:00:00Z`) по местному
+/// времени: «23.10.2026 15:00». Непонятная дата показывается как есть.
+fn comment_date(date: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(date) {
+        Ok(at) => at
+            .with_timezone(&chrono::Local)
+            .format("%d.%m.%Y %H:%M")
+            .to_string(),
+        Err(_) => date.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view::place_pages;
     use eframe::egui::{Event, MouseWheelUnit, Pos2, RawInput, Rect, vec2};
     use letter_editor::ParagraphFormat;
 
@@ -3593,6 +4211,88 @@ mod tests {
         // Тень, лист и буквы добавились к меню и строке состояния.
         assert!(drawn >= empty + 3, "{empty} → {drawn}");
         assert_eq!(viewer.current_page, 0);
+    }
+
+    #[test]
+    fn comments_pane_adds_replies_resolves_and_deletes() {
+        use crate::comments::CommentAction;
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("comments.docx")).unwrap();
+        // Примечания документа видны сразу.
+        assert!(viewer.ribbon_info().comments);
+        frame(&ctx, &mut viewer, screen());
+        let info = viewer.comments_info();
+        assert_eq!(info.threads.len(), 2);
+        assert_eq!(info.threads[0].comment.author, "Anna Reviewer");
+        assert_eq!(info.threads[0].replies.len(), 1);
+        assert!(info.threads[1].done);
+
+        // «Далее» выделяет текст первого примечания, курсор в нём.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::NextComment(true)]);
+        assert_eq!(viewer.comments_info().current.as_deref(), Some("0"));
+        assert!(viewer.ribbon_info().in_comment);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::NextComment(true)]);
+        assert_eq!(viewer.comments_info().current.as_deref(), Some("2"));
+
+        // Новое примечание к выделенному.
+        let at = Selection::new(Position::new(1, 0), Position::new(1, 5));
+        viewer.comment_action(
+            &ctx,
+            CommentAction::Add {
+                at,
+                text: "New one".into(),
+            },
+        );
+        let doc = &viewer.document.as_ref().unwrap().doc;
+        let added = doc.comments.last().unwrap().clone();
+        assert_eq!(added.plain_text(), "New one");
+        assert!(added.date.is_some());
+        assert!(!added.author.is_empty());
+        assert_eq!(viewer.comments_info().threads.len(), 3);
+
+        viewer.comment_action(
+            &ctx,
+            CommentAction::Reply {
+                parent: added.id.clone(),
+                text: "Agreed".into(),
+            },
+        );
+        viewer.comment_action(
+            &ctx,
+            CommentAction::Edit {
+                id: added.id.clone(),
+                text: "Changed".into(),
+            },
+        );
+        viewer.comment_action(
+            &ctx,
+            CommentAction::Done {
+                id: added.id.clone(),
+                done: true,
+            },
+        );
+        let info = viewer.comments_info();
+        let thread = info
+            .threads
+            .iter()
+            .find(|t| t.comment.id == added.id)
+            .unwrap();
+        assert_eq!(thread.comment.text, "Changed");
+        assert_eq!(thread.replies[0].text, "Agreed");
+        assert!(thread.done);
+
+        viewer.comment_action(&ctx, CommentAction::Delete(added.id.clone()));
+        assert_eq!(viewer.comments_info().threads.len(), 2);
+        // Всё отменяется по шагам.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
+        assert_eq!(viewer.comments_info().threads.len(), 3);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::DeleteAllComments]);
+        assert!(viewer.comments_info().threads.is_empty());
+        frame(&ctx, &mut viewer, screen());
+
+        viewer.comment_action(&ctx, CommentAction::Close);
+        assert!(!viewer.ribbon_info().comments);
     }
 
     #[test]
@@ -5359,6 +6059,126 @@ mod tests {
         h.run();
         h.get_by_label("Число слов: 1 из 3");
         h.get_by_label("Разметка страницы");
-        h.get_by_label("Режим чтения (скоро)");
+        h.get_by_label("Режим чтения");
+    }
+
+    #[test]
+    fn outline_collapses_and_changes_levels() {
+        use letter_editor::OutlineChange;
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("headings.docx")).unwrap();
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Outline)]);
+        frame(&ctx, &mut viewer, screen());
+        frame(&ctx, &mut viewer, screen());
+        let hidden = |viewer: &Viewer| viewer.document.as_ref().unwrap().outline_hidden.clone();
+        assert!(hidden(&viewer).iter().all(|h| !h));
+
+        // Свернуть «Heading 1» (курсор в тексте под ним): всё ниже скрыто.
+        let document = viewer.document.as_mut().unwrap();
+        document.set_selection(Selection::caret(Position::new(2, 3)));
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::OutlineExpand(false)]);
+        assert_eq!(
+            hidden(&viewer),
+            [false, false, true, true, true, true, true]
+        );
+        // Курсор ушёл из скрытого абзаца в конец заголовка.
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(document.cursor, Position::new(1, "Heading 1".len()));
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::OutlineExpand(true)]);
+        assert!(hidden(&viewer).iter().all(|h| !h));
+
+        // «Показать уровень 2»: без основного текста и третьего уровня.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ShowLevel(Some(2))]);
+        assert_eq!(viewer.ribbon_info().show_level, Some(2));
+        assert_eq!(
+            hidden(&viewer),
+            [true, false, true, false, true, true, true]
+        );
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ShowLevel(None)]);
+
+        // Понизить «Heading 1» до второго уровня и вернуть.
+        let document = viewer.document.as_mut().unwrap();
+        document.set_selection(Selection::caret(Position::new(1, 0)));
+        let level = |viewer: &Viewer| viewer.document.as_ref().unwrap().outline[1];
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::Edit(Command::OutlineLevel(
+                OutlineChange::Demote,
+            ))],
+        );
+        assert_eq!(level(&viewer), Some(2));
+        frame(
+            &ctx,
+            &mut viewer,
+            key(Key::ArrowLeft, Modifiers::ALT | Modifiers::SHIFT),
+        );
+        assert_eq!(level(&viewer), Some(1));
+
+        // «Закрыть режим структуры».
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Print)]);
+        frame(&ctx, &mut viewer, screen());
+        assert!(viewer.document.as_ref().unwrap().outline_hidden.is_empty());
+    }
+
+    #[test]
+    fn view_modes() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("headings.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let print_width = viewer.document.as_ref().unwrap().layout.pages[0].width;
+
+        // Веб-документ: «лист» шириной в окно, без колонтитулов.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Web)]);
+        frame(&ctx, &mut viewer, screen());
+        frame(&ctx, &mut viewer, screen());
+        let page = &viewer.document.as_ref().unwrap().layout.pages[0];
+        assert!(page.width > print_width, "{} vs {print_width}", page.width);
+        assert!((page.margins.left - WEB_MARGIN).abs() < 0.1);
+        // Текст по-прежнему правится — в самом документе.
+        frame(&ctx, &mut viewer, events(vec![Event::Text("Z".into())]));
+        assert!(first_text(&mut viewer).starts_with('Z'));
+        let document = viewer.document.as_ref().unwrap();
+        assert!(document.layout.pages[0].lines[0].text.starts_with('Z'));
+        assert_eq!(document.doc.sections[0].props.margins, {
+            let doc = letter_docx::read_file(fixture("headings.docx")).unwrap();
+            doc.sections[0].props.margins
+        });
+
+        // Структура: заголовки второго уровня с отступом, у абзацев — значки.
+        frame(
+            &ctx,
+            &mut viewer,
+            key(Key::O, Modifiers::COMMAND | Modifiers::ALT),
+        );
+        assert_eq!(viewer.view_mode, ViewMode::Outline);
+        let plain = frame(&ctx, &mut viewer, screen());
+        let document = viewer.document.as_ref().unwrap();
+        assert!(document.outline.iter().any(Option::is_some));
+        let lines = &document.layout.pages[0].lines;
+        let xs: Vec<f32> = lines.iter().map(|l| l.line.x).collect();
+        assert!(xs.iter().any(|&x| x > 1.0), "{xs:?}");
+
+        // Черновик: вёрстка по листам, как в разметке страницы.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Draft)]);
+        let draft = frame(&ctx, &mut viewer, screen());
+        let page = &viewer.document.as_ref().unwrap().layout.pages[0];
+        assert_eq!(page.width, print_width);
+        assert!(draft > 0 && plain > 0);
+
+        // Режим чтения: ленты нет, текст не правится, Esc — обратно.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Read)]);
+        frame(&ctx, &mut viewer, screen());
+        let before = first_text(&mut viewer);
+        frame(&ctx, &mut viewer, events(vec![Event::Text("Q".into())]));
+        assert_eq!(first_text(&mut viewer), before);
+        let zoom = viewer.zoom();
+        assert!(zoom < 1.0, "{zoom}");
+        frame(&ctx, &mut viewer, key(Key::Escape, Modifiers::NONE));
+        assert_eq!(viewer.view_mode, ViewMode::Print);
+        frame(&ctx, &mut viewer, screen());
+        let page = &viewer.document.as_ref().unwrap().layout.pages[0];
+        assert_eq!(page.width, print_width);
     }
 }

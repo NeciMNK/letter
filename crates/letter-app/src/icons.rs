@@ -171,6 +171,12 @@ pub enum Icon {
     BorderRight,
     /// Объединить ячейки.
     MergeCells,
+    /// Создать примечание.
+    NewComment,
+    /// Удалить примечание.
+    DeleteComment,
+    /// Показать примечания.
+    Comments,
 }
 
 /// Шрифт со значками.
@@ -272,6 +278,9 @@ impl Icon {
             Icon::BorderLeft => ("panel-left", '\u{E12A}'),
             Icon::BorderRight => ("panel-right", '\u{E431}'),
             Icon::MergeCells => ("table-cells-merge", '\u{E5C7}'),
+            Icon::NewComment => ("message-square-plus", '\u{E40C}'),
+            Icon::DeleteComment => ("message-square-x", '\u{E577}'),
+            Icon::Comments => ("messages-square", '\u{E40D}'),
         }
     }
 }

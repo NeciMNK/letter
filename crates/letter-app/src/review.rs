@@ -1,5 +1,6 @@
-//! Вкладка «Рецензирование»: группы «Запись исправлений» и «Изменения»
-//! (принять, отклонить, перейти к исправлению) и «Защитить»
+//! Вкладка «Рецензирование»: группы «Правописание», «Примечания»
+//! (см. [`crate::comments`]), «Запись исправлений», «Изменения» (принять,
+//! отклонить, перейти к исправлению), «Сравнение» и «Защитить»
 //! («Ограничить редактирование»).
 
 use eframe::egui::{Button, Response, Ui, vec2};
@@ -17,8 +18,8 @@ pub const KEYTIPS: [&str; 9] = [
     "keytip-review-track",
     "keytip-review-accept",
     "keytip-review-reject",
-    "keytip-review-previous",
-    "keytip-review-next",
+    "keytip-review-previous-change",
+    "keytip-review-next-change",
     "keytip-review-compare",
     "keytip-review-restrict",
 ];
@@ -73,6 +74,7 @@ pub fn review(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
             );
         });
     });
+    crate::comments::review(ui, info, out);
     group(ui, tr("group-tracking"), |ui| {
         let response = ui
             .add_enabled(
@@ -108,7 +110,7 @@ pub fn review(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 command(ui, response, "keytip-review-reject", reject, out);
                 let response = ui.add_enabled(active, Button::new(tr("revision-previous")));
                 let previous = RibbonCommand::NextRevision(false);
-                command(ui, response, "keytip-review-previous", previous, out);
+                command(ui, response, "keytip-review-previous-change", previous, out);
             });
             ui.horizontal(|ui| {
                 for (label, all) in [
@@ -127,7 +129,7 @@ pub fn review(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 }
                 let response = ui.add_enabled(active, Button::new(tr("revision-next")));
                 let next = RibbonCommand::NextRevision(true);
-                command(ui, response, "keytip-review-next", next, out);
+                command(ui, response, "keytip-review-next-change", next, out);
             });
         });
     });

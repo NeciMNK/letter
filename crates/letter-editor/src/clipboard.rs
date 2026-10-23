@@ -36,6 +36,7 @@ pub fn copy_range(doc: &Document, start: Position, end: Position) -> Document {
     if blocks.is_empty() {
         blocks.push(Paragraph::default().into());
     }
+    crate::comments::strip_comment_marks(&mut blocks);
     fragment.sections[0].blocks = blocks;
     fragment
 }
