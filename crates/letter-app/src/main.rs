@@ -29,6 +29,7 @@ mod modes;
 mod navigation;
 mod outlining;
 mod paragraph_dialog;
+mod password_dialog;
 mod picture;
 mod print;
 mod references;

@@ -27,6 +27,7 @@ letter-docx.workspace = true
 letter-editor.workspace = true
 letter-layout.workspace = true
 letter-model.workspace = true
+letter-doc.workspace = true
 letter-odt.workspace = true
 letter-render.workspace = true
 letter-rtf.workspace = true
