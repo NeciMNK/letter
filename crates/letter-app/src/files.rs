@@ -19,6 +19,8 @@ use letter_model::Document;
 pub enum FileFormat {
     /// Документ Word (.docx).
     Docx,
+    /// Старый документ Word 97–2003 (.doc, .dot) — только чтение.
+    Doc,
     /// RTF.
     Rtf,
     /// OpenDocument (.odt, а для чтения ещё и плоский .fodt).
@@ -33,10 +35,16 @@ impl FileFormat {
         let extension = path.extension()?.to_str()?.to_ascii_lowercase();
         Some(match extension.as_str() {
             "docx" | "docm" | "dotx" | "dotm" => FileFormat::Docx,
+            "doc" | "dot" => FileFormat::Doc,
             "rtf" => FileFormat::Rtf,
             "odt" | "fodt" => FileFormat::Odt,
             _ => FileFormat::Text(letter_text::Format::from_path(path)?),
         })
+    }
+
+    /// Можно ли записать документ в этом формате.
+    pub fn writable(self) -> bool {
+        self != FileFormat::Doc
     }
 }
 
@@ -45,10 +53,12 @@ pub const OPEN_FILTERS: &[(&str, &[&str])] = &[
     (
         "filter-all-documents",
         &[
-            "docx", "docm", "dotx", "dotm", "rtf", "odt", "fodt", "txt", "html", "htm", "md",
+            "docx", "docm", "dotx", "dotm", "doc", "dot", "rtf", "odt", "fodt", "txt", "html",
+            "htm", "md",
         ],
     ),
     ("filter-docx", &["docx", "docm", "dotx", "dotm"]),
+    ("filter-doc", &["doc", "dot"]),
     ("filter-rtf", &["rtf"]),
     ("filter-odt", &["odt", "fodt"]),
     ("filter-txt", &["txt"]),
@@ -59,6 +69,9 @@ pub const OPEN_FILTERS: &[(&str, &[&str])] = &[
 /// Фильтры окна «Сохранить как». Первый — формат по умолчанию.
 pub const SAVE_FILTERS: &[(&str, &[&str])] = &[
     ("filter-docx", &["docx"]),
+    ("filter-docm", &["docm"]),
+    ("filter-dotx", &["dotx"]),
+    ("filter-dotm", &["dotm"]),
     ("filter-rtf", &["rtf"]),
     ("filter-odt", &["odt"]),
     ("filter-txt", &["txt"]),
@@ -106,6 +119,15 @@ pub fn blank() -> Document {
     letter_text::read_txt(&[])
 }
 
+/// Шаблон ли это Word (.dotx, .dotm). Как в Word, шаблон открывается
+/// новым документом на его основе, а сам файл шаблона не меняется.
+pub fn is_template(path: &Path) -> bool {
+    letter_docx::FileKind::from_path(path).is_some_and(letter_docx::FileKind::is_template)
+        || path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("dot"))
+}
+
 /// Читает документ; формат — по расширению.
 pub fn read(path: &Path) -> Result<Document, String> {
     let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
@@ -113,6 +135,7 @@ pub fn read(path: &Path) -> Result<Document, String> {
     let data = fs::read(path).map_err(|e| fail(&e))?;
     match format {
         FileFormat::Docx => letter_docx::read_bytes(&data).map_err(|e| fail(&e)),
+        FileFormat::Doc => letter_doc::read(&data).map_err(|e| fail(&e)),
         FileFormat::Rtf => letter_rtf::read(&data).map_err(|e| fail(&e)),
         FileFormat::Odt => letter_odt::read(&data).map_err(|e| fail(&e)),
         FileFormat::Text(letter_text::Format::Text) => Ok(letter_text::read_txt(&data)),
@@ -121,14 +144,42 @@ pub fn read(path: &Path) -> Result<Document, String> {
     }
 }
 
+/// Зашифрован ли файл паролем на открытие (.docx и его разновидности).
+pub fn is_encrypted(path: &Path) -> bool {
+    FileFormat::from_path(path) == Some(FileFormat::Docx)
+        && fs::read(path).is_ok_and(|data| letter_docx::is_encrypted(&data))
+}
+
+/// Читает документ, зашифрованный паролем (см. [`is_encrypted`]).
+pub fn read_with_password(path: &Path, password: &str) -> Result<Document, String> {
+    let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let data = fs::read(path).map_err(|e| fail(&e))?;
+    letter_docx::read_bytes_with_password(&data, password).map_err(|e| fail(&e))
+}
+
 /// Записывает документ; формат — по расширению. Сначала пишется
 /// временный файл рядом, потом он заменяет прежний: если программа
 /// упадёт посреди записи, старый файл останется целым.
-pub fn write(doc: &Document, path: &Path) -> Result<(), String> {
+///
+/// Файл Word (.docx, .docm, .dotx, .dotm) с паролем `password`
+/// шифруется. Другие форматы шифровать нельзя, и пароль для них не
+/// используется.
+pub fn write(doc: &Document, path: &Path, password: Option<&str>) -> Result<(), String> {
     let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let format = FileFormat::from_path(path).ok_or_else(|| fail(&tr("error-unknown-format")))?;
     let data = match format {
-        FileFormat::Docx => letter_docx::write_bytes(doc).map_err(|e| fail(&e))?,
+        // Разновидность (.docx, .docm, .dotx, .dotm) — по расширению: Word
+        // не откроет файл, у которого они не совпадают.
+        FileFormat::Docx => match letter_docx::FileKind::from_path(path) {
+            Some(kind) => letter_docx::write_bytes_as(doc, kind),
+            None => letter_docx::write_bytes(doc),
+        }
+        .and_then(|bytes| match password {
+            Some(password) => letter_docx::encrypt_bytes(&bytes, password),
+            None => Ok(bytes),
+        })
+        .map_err(|e| fail(&e))?,
+        FileFormat::Doc => return Err(fail(&tr("error-read-only-format"))),
         FileFormat::Rtf => letter_rtf::write(doc).into_bytes(),
         FileFormat::Odt => letter_odt::write(doc).map_err(|e| fail(&e))?,
         FileFormat::Text(letter_text::Format::Text) => letter_text::write_txt(doc),
@@ -426,6 +477,46 @@ pub mod tests {
     }
 
     #[test]
+    fn encrypted_file_needs_its_password() {
+        let dir = temp_dir("encrypted");
+        let path = dir.join("тайна.docx");
+        write(&sample(), &path, Some("пароль")).unwrap();
+        assert!(is_encrypted(&path));
+        assert!(read(&path).is_err());
+        assert!(read_with_password(&path, "не тот").is_err());
+        let back = read_with_password(&path, "пароль").unwrap();
+        assert_eq!(back.plain_text().trim(), "Привет, мир\nвторой");
+        // В другие форматы пароль не пишется.
+        let rtf = dir.join("тайна.rtf");
+        write(&sample(), &rtf, Some("пароль")).unwrap();
+        assert!(!is_encrypted(&rtf) && read(&rtf).is_ok());
+    }
+
+    #[test]
+    fn old_word_documents_are_read_only() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/doc/table.doc");
+        assert_eq!(FileFormat::from_path(&path), Some(FileFormat::Doc));
+        assert!(!FileFormat::Doc.writable() && FileFormat::Docx.writable());
+        let doc = read(&path).unwrap();
+        assert!(doc.plain_text().contains("R1C1"));
+        let dir = temp_dir("doc");
+        assert!(write(&doc, &dir.join("copy.doc"), None).is_err());
+        assert!(is_template(Path::new("a.DOT")));
+    }
+
+    #[test]
+    fn word_file_kind_follows_the_extension() {
+        let dir = temp_dir("kinds");
+        for kind in letter_docx::FileKind::ALL {
+            let path = dir.join(format!("doc.{}", kind.extension()));
+            write(&sample(), &path, None).unwrap();
+            assert_eq!(letter_docx::kind_of(&read(&path).unwrap()), kind);
+            assert_eq!(is_template(&path), kind.is_template());
+        }
+        assert!(!is_template(Path::new("a.rtf")));
+    }
+
+    #[test]
     fn blank_document_has_one_empty_paragraph_and_styles() {
         let doc = blank();
         assert_eq!(doc.plain_text(), "");
@@ -436,9 +527,11 @@ pub mod tests {
     #[test]
     fn every_format_round_trips_its_text() {
         let dir = temp_dir("formats");
-        for ext in ["docx", "rtf", "odt", "txt", "html", "md"] {
+        for ext in [
+            "docx", "docm", "dotx", "dotm", "rtf", "odt", "txt", "html", "md",
+        ] {
             let path = dir.join(format!("doc.{ext}"));
-            write(&sample(), &path).unwrap();
+            write(&sample(), &path, None).unwrap();
             let back = read(&path).unwrap();
             assert_eq!(back.plain_text().trim(), "Привет, мир\nвторой", "{ext}");
             // Временный файл не остался.
@@ -450,7 +543,7 @@ pub mod tests {
             assert!(left.is_empty(), "{ext}");
         }
         assert!(read(&dir.join("missing.docx")).is_err());
-        assert!(write(&sample(), &dir.join("doc.pdf")).is_err());
+        assert!(write(&sample(), &dir.join("doc.pdf"), None).is_err());
         fs::write(dir.join("bad.docx"), b"not a zip").unwrap();
         assert!(read(&dir.join("bad.docx")).is_err());
         let _ = fs::remove_dir_all(dir);
