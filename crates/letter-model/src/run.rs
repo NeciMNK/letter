@@ -66,6 +66,9 @@ pub enum RunContent {
     /// Номер сноски в начале её текста (`w:footnoteRef`, `w:endnoteRef`).
     /// В тексте абзаца — знак [`OBJECT_CHAR`].
     NoteMark(crate::NoteKind),
+    /// Ссылка на примечание (`w:commentReference`) с его номером. Места
+    /// в тексте не занимает.
+    CommentReference(String),
     /// Знак из шрифта (`w:sym`). В тексте абзаца — знак [`OBJECT_CHAR`].
     Symbol(crate::Symbol),
     /// Непонятый элемент (рисунок, поле, символ и т. п.), сохранённый как есть.
@@ -90,6 +93,7 @@ impl RunContent {
             RunContent::NoteReference(r) if !r.custom_mark => OBJECT_CHAR.len_utf8(),
             RunContent::NoteReference(_)
             | RunContent::Unknown(_)
+            | RunContent::CommentReference(_)
             | RunContent::FieldChar(_)
             | RunContent::FieldCode(_) => 0,
         }
@@ -107,6 +111,7 @@ impl RunContent {
             RunContent::NoteReference(r) if !r.custom_mark => out.push(OBJECT_CHAR),
             RunContent::NoteReference(_)
             | RunContent::Unknown(_)
+            | RunContent::CommentReference(_)
             | RunContent::FieldChar(_)
             | RunContent::FieldCode(_) => {}
         }
