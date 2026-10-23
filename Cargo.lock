@@ -2066,6 +2066,7 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "fluent-bundle",
+ "letter-doc",
  "letter-docx",
  "letter-editor",
  "letter-layout",
@@ -2094,6 +2095,13 @@ dependencies = [
 [[package]]
 name = "letter-doc"
 version = "0.1.0"
+dependencies = [
+ "cfb",
+ "encoding_rs",
+ "letter-docx",
+ "letter-model",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "letter-docx"

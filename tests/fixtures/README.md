@@ -83,3 +83,16 @@ soffice --headless --convert-to odt ../docx/имя.docx
 **Источник:** зашифрован программой
 [msoffcrypto-tool](https://github.com/nolze/msoffcrypto-tool) (лицензия MIT)
 из нашего `docx/ru-en.docx`; распространяется по лицензии проекта (MIT).
+
+## Word 97–2003 (`doc/`)
+
+`plain-text`, `bold-italic`, `headings`, `lists`, `table`, `ru-en`, `pages`,
+`header-footer` — наши файлы из `docx/`, сохранённые LibreOffice в формате
+Word 97–2003:
+
+```sh
+cd tests/fixtures/doc
+soffice --headless --convert-to doc:"MS Word 97" ../docx/имя.docx
+```
+
+Распространяются по лицензии проекта (MIT).

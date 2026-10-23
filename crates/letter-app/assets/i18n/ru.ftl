@@ -769,3 +769,5 @@ backstage-protect = Защита документа
 backstage-encrypt = Зашифровать паролем…
 backstage-encrypted = Для открытия документа нужен пароль.
 backstage-not-encrypted = Документ открывается без пароля.
+filter-doc = Документ Word 97–2003 (*.doc)
+error-read-only-format = Этот формат можно только открыть. Сохраните документ как .docx.

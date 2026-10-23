@@ -19,6 +19,8 @@ use letter_model::Document;
 pub enum FileFormat {
     /// Документ Word (.docx).
     Docx,
+    /// Старый документ Word 97–2003 (.doc, .dot) — только чтение.
+    Doc,
     /// RTF.
     Rtf,
     /// OpenDocument (.odt, а для чтения ещё и плоский .fodt).
@@ -33,10 +35,16 @@ impl FileFormat {
         let extension = path.extension()?.to_str()?.to_ascii_lowercase();
         Some(match extension.as_str() {
             "docx" | "docm" | "dotx" | "dotm" => FileFormat::Docx,
+            "doc" | "dot" => FileFormat::Doc,
             "rtf" => FileFormat::Rtf,
             "odt" | "fodt" => FileFormat::Odt,
             _ => FileFormat::Text(letter_text::Format::from_path(path)?),
         })
+    }
+
+    /// Можно ли записать документ в этом формате.
+    pub fn writable(self) -> bool {
+        self != FileFormat::Doc
     }
 }
 
@@ -45,10 +53,12 @@ pub const OPEN_FILTERS: &[(&str, &[&str])] = &[
     (
         "filter-all-documents",
         &[
-            "docx", "docm", "dotx", "dotm", "rtf", "odt", "fodt", "txt", "html", "htm", "md",
+            "docx", "docm", "dotx", "dotm", "doc", "dot", "rtf", "odt", "fodt", "txt", "html",
+            "htm", "md",
         ],
     ),
     ("filter-docx", &["docx", "docm", "dotx", "dotm"]),
+    ("filter-doc", &["doc", "dot"]),
     ("filter-rtf", &["rtf"]),
     ("filter-odt", &["odt", "fodt"]),
     ("filter-txt", &["txt"]),
@@ -113,6 +123,9 @@ pub fn blank() -> Document {
 /// новым документом на его основе, а сам файл шаблона не меняется.
 pub fn is_template(path: &Path) -> bool {
     letter_docx::FileKind::from_path(path).is_some_and(letter_docx::FileKind::is_template)
+        || path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("dot"))
 }
 
 /// Читает документ; формат — по расширению.
@@ -122,6 +135,7 @@ pub fn read(path: &Path) -> Result<Document, String> {
     let data = fs::read(path).map_err(|e| fail(&e))?;
     match format {
         FileFormat::Docx => letter_docx::read_bytes(&data).map_err(|e| fail(&e)),
+        FileFormat::Doc => letter_doc::read(&data).map_err(|e| fail(&e)),
         FileFormat::Rtf => letter_rtf::read(&data).map_err(|e| fail(&e)),
         FileFormat::Odt => letter_odt::read(&data).map_err(|e| fail(&e)),
         FileFormat::Text(letter_text::Format::Text) => Ok(letter_text::read_txt(&data)),
@@ -165,6 +179,7 @@ pub fn write(doc: &Document, path: &Path, password: Option<&str>) -> Result<(), 
             None => Ok(bytes),
         })
         .map_err(|e| fail(&e))?,
+        FileFormat::Doc => return Err(fail(&tr("error-read-only-format"))),
         FileFormat::Rtf => letter_rtf::write(doc).into_bytes(),
         FileFormat::Odt => letter_odt::write(doc).map_err(|e| fail(&e))?,
         FileFormat::Text(letter_text::Format::Text) => letter_text::write_txt(doc),
@@ -475,6 +490,18 @@ pub mod tests {
         let rtf = dir.join("тайна.rtf");
         write(&sample(), &rtf, Some("пароль")).unwrap();
         assert!(!is_encrypted(&rtf) && read(&rtf).is_ok());
+    }
+
+    #[test]
+    fn old_word_documents_are_read_only() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/doc/table.doc");
+        assert_eq!(FileFormat::from_path(&path), Some(FileFormat::Doc));
+        assert!(!FileFormat::Doc.writable() && FileFormat::Docx.writable());
+        let doc = read(&path).unwrap();
+        assert!(doc.plain_text().contains("R1C1"));
+        let dir = temp_dir("doc");
+        assert!(write(&doc, &dir.join("copy.doc"), None).is_err());
+        assert!(is_template(Path::new("a.DOT")));
     }
 
     #[test]
