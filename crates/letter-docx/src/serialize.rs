@@ -8,8 +8,9 @@
 use letter_model::{
     Block, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind, FirstLineIndent,
     HeaderFooterKind, Hyperlink, Inline, LineSpacing, Note, NoteKind, Orientation,
-    PageBorderDisplay, PageBorders, Paragraph, ParagraphProps, RawXml, Run, RunContent, RunFonts,
-    RunProps, Section, SectionProps, SectionStart, Style, StyleKind, Styles, VerticalAlign,
+    PageBorderDisplay, PageBorders, Paragraph, ParagraphProps, RawXml, RevisionKind, Run,
+    RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Style, StyleKind, Styles,
+    VerticalAlign,
 };
 
 use crate::document::{W_NS, is_w_ns};
@@ -192,6 +193,7 @@ pub(crate) fn document_xml(doc: &Document) -> String {
             .map(|s| s.main_root_attributes.as_slice()),
     );
     NEW_PICTURES.with(|n| n.set(0));
+    NEW_REVISIONS.with(|n| n.set(0));
     let mut children = Children::new(DOCUMENT_ORDER);
     if let Some(color) = doc.background {
         children.push(
@@ -306,8 +308,12 @@ fn paragraph(p: &Paragraph, section: Option<&SectionProps>) -> String {
             _ => None,
         };
         let Some(link) = link else {
-            out.push_str(&inline_xml(&p.content[i]));
-            i += 1;
+            // Всё до следующей ссылки — с исправлениями.
+            let end = (i + 1..p.content.len())
+                .find(|&j| matches!(&p.content[j], Inline::Run(r) if r.props.link.is_some()))
+                .unwrap_or(p.content.len());
+            out.push_str(&revisions_xml(&p.content[i..end]));
+            i = end;
             continue;
         };
         // Соседние фрагменты с той же ссылкой (и закладки между ними) —
@@ -322,7 +328,7 @@ fn paragraph(p: &Paragraph, section: Option<&SectionProps>) -> String {
             }
             end += 1;
         }
-        let inner: String = p.content[i..=last_run].iter().map(inline_xml).collect();
+        let inner = revisions_xml(&p.content[i..=last_run]);
         out.push_str(&format!(
             "<w:hyperlink{}>{inner}</w:hyperlink>",
             hyperlink_attributes(link)
@@ -330,6 +336,57 @@ fn paragraph(p: &Paragraph, section: Option<&SectionProps>) -> String {
         i = last_run + 1;
     }
     element("w:p", &out)
+}
+
+/// Содержимое абзаца, где соседние фрагменты с одним исправлением
+/// записаны внутри одного `w:ins` или `w:del`.
+fn revisions_xml(items: &[Inline]) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < items.len() {
+        let revision = match &items[i] {
+            Inline::Run(run) => run.props.revision.as_ref(),
+            _ => None,
+        };
+        let Some(revision) = revision else {
+            out.push_str(&inline_xml(&items[i]));
+            i += 1;
+            continue;
+        };
+        let end = (i + 1..items.len())
+            .find(|&j| !matches!(&items[j], Inline::Run(r) if r.props.revision.as_ref() == Some(revision)))
+            .unwrap_or(items.len());
+        let inner: String = items[i..end].iter().map(inline_xml).collect();
+        let name = match revision.kind {
+            RevisionKind::Insert => "w:ins",
+            RevisionKind::Delete => "w:del",
+        };
+        let id = NEW_REVISIONS.with(|n| {
+            n.set(n.get() + 1);
+            n.get()
+        });
+        let date = revision
+            .date
+            .as_ref()
+            .map(|d| format!(r#" w:date="{}""#, escape_attr(d)))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            r#"<{name} w:id="{}" w:author="{}"{date}>{inner}</{name}>"#,
+            REVISION_IDS + id,
+            escape_attr(&revision.author)
+        ));
+        i = end;
+    }
+    out
+}
+
+/// С этого номера раздаются номера исправлений (`w:id`), чтобы не
+/// совпасть с номерами закладок и примечаний из файла.
+const REVISION_IDS: u64 = 100_000;
+
+thread_local! {
+    /// Счётчик номеров исправлений при записи.
+    static NEW_REVISIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 fn inline_xml(inline: &Inline) -> String {
@@ -522,6 +579,20 @@ fn run_xml(run: &Run) -> String {
             )),
             RunContent::Unknown(raw) => out.push_str(raw.as_str()),
         }
+    }
+    if run
+        .props
+        .revision
+        .as_ref()
+        .is_some_and(|r| r.kind == RevisionKind::Delete)
+    {
+        // Удалённый текст пишется в `w:delText` и `w:delInstrText`.
+        out = out
+            .replace("<w:t>", "<w:delText>")
+            .replace("<w:t xml:space", "<w:delText xml:space")
+            .replace("</w:t>", "</w:delText>")
+            .replace("<w:instrText", "<w:delInstrText")
+            .replace("</w:instrText>", "</w:delInstrText>");
     }
     element("w:r", &out)
 }

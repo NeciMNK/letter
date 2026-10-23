@@ -8,9 +8,9 @@ use letter_model::{
     Block, Bookmark, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind,
     FirstLineIndent, HalfPoints, HeaderFooter, HeaderFooterKind, HeaderFooters, Hyperlink,
     Indentation, Inline, LineSpacing, Note, NoteKind, NoteReference, NumberingRef, Orientation,
-    PageBorderDisplay, PageBorders, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run,
-    RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Spacing, Symbol, TabStop,
-    ThemeColor, Twips, Underline, VerticalAlign,
+    PageBorderDisplay, PageBorders, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml,
+    Revision, RevisionKind, Run, RunContent, RunFonts, RunProps, Section, SectionProps,
+    SectionStart, Spacing, Symbol, TabStop, ThemeColor, Twips, Underline, VerticalAlign,
 };
 
 use crate::ReadError;
@@ -141,6 +141,8 @@ fn read_paragraph(p: &Element, allow_section: bool) -> (Paragraph, Option<Sectio
             paragraph.content.extend(runs.into_iter().map(Inline::Run));
         } else if let Some(items) = read_hyperlink(child) {
             paragraph.content.extend(items);
+        } else if let Some(items) = read_revision(child) {
+            paragraph.content.extend(items);
         } else if let Some(mark) = read_bookmark(child) {
             paragraph.content.push(mark);
         } else {
@@ -148,6 +150,52 @@ fn read_paragraph(p: &Element, allow_section: bool) -> (Paragraph, Option<Sectio
         }
     }
     (paragraph, section)
+}
+
+/// Исправление `w:ins` или `w:del` вокруг фрагментов: фрагменты получают
+/// исправление в оформлении. С чем-то, кроме фрагментов, простых полей,
+/// ссылок и закладок, — `None` (остаётся как есть). Номер исправления
+/// (`w:id`) не хранится: при записи номера раздаются заново.
+fn read_revision(element: &Element) -> Option<Vec<Inline>> {
+    let kind = match element.local.as_str() {
+        "ins" if element.is_w("ins") => RevisionKind::Insert,
+        "del" if element.is_w("del") => RevisionKind::Delete,
+        _ => return None,
+    };
+    // Атрибуты других пространств (например, `w16du:dateUtc`, то же
+    // время в UTC) не нужны.
+    if element
+        .attrs
+        .iter()
+        .any(|a| is_w_ns(a.ns.as_deref()) && !["id", "author", "date"].contains(&a.local.as_str()))
+    {
+        return None;
+    }
+    let revision = Revision {
+        kind,
+        author: element.w_attr("author").unwrap_or_default().to_string(),
+        date: element.w_attr("date").map(str::to_string),
+    };
+    let mark = |item: Inline| match item {
+        Inline::Run(mut run) => {
+            run.props.revision = Some(revision.clone());
+            Inline::Run(run)
+        }
+        other => other,
+    };
+    let mut items = Vec::new();
+    for child in element.elements() {
+        if child.is_w("r") {
+            items.push(mark(Inline::Run(read_run(child))));
+        } else if let Some(runs) = simple_field(child) {
+            items.extend(runs.into_iter().map(|r| mark(Inline::Run(r))));
+        } else if let Some(links) = read_hyperlink(child) {
+            items.extend(links.into_iter().map(mark));
+        } else {
+            items.push(read_bookmark(child)?);
+        }
+    }
+    Some(items)
 }
 
 /// Начало или конец закладки; с другими атрибутами (закладка столбцов
@@ -209,6 +257,13 @@ fn read_hyperlink(element: &Element) -> Option<Vec<Inline>> {
             items.push(with_link(read_run(child)));
         } else if let Some(runs) = simple_field(child) {
             items.extend(runs.into_iter().map(with_link));
+        } else if let Some(revised) = read_revision(child) {
+            for item in revised {
+                items.push(match item {
+                    Inline::Run(run) => with_link(run),
+                    other => other,
+                });
+            }
         } else {
             items.push(read_bookmark(child)?);
         }
@@ -404,7 +459,7 @@ fn read_run(r: &Element) -> Run {
                     run.props = read_run_props(child);
                     continue;
                 }
-                "t" => RunContent::Text(child.text()),
+                "t" | "delText" => RunContent::Text(child.text()),
                 "tab" if child.attrs.is_empty() => RunContent::Tab,
                 "noBreakHyphen" if child.attrs.is_empty() => RunContent::Text("\u{2011}".into()),
                 "softHyphen" if child.attrs.is_empty() => RunContent::Text("\u{ad}".into()),
@@ -438,7 +493,7 @@ fn read_run(r: &Element) -> Run {
                     Some(c) => RunContent::FieldChar(c),
                     None => RunContent::Unknown(child.raw()),
                 },
-                "instrText"
+                "instrText" | "delInstrText"
                     if child.elements().next().is_none()
                         && child.attrs.iter().all(|a| a.local == "space") =>
                 {
@@ -1003,6 +1058,30 @@ mod tests {
             Some(Block::Paragraph(p)) => p,
             other => panic!("expected paragraph, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn revisions_are_read() {
+        let doc = read_body_xml(
+            r#"<w:p><w:r><w:t>a</w:t></w:r>
+               <w:ins w:id="1" w:author="Аня" w:date="2024-05-01T10:00:00Z"><w:r><w:t>b</w:t></w:r></w:ins>
+               <w:del w:id="2" w:author="Боря"><w:r><w:delText>c</w:delText></w:r></w:del>
+               <w:ins w:id="3" w:author="X" w:other="1"><w:r><w:t>d</w:t></w:r></w:ins></w:p>"#,
+        );
+        let p = first_paragraph(&doc);
+        assert_eq!(p.plain_text(), "abc");
+        let runs: Vec<&Run> = p.runs().collect();
+        assert_eq!(runs[0].props.revision, None);
+        let ins = runs[1].props.revision.clone().unwrap();
+        assert_eq!(
+            (ins.kind, ins.author.as_str()),
+            (RevisionKind::Insert, "Аня")
+        );
+        assert_eq!(ins.date.as_deref(), Some("2024-05-01T10:00:00Z"));
+        let del = runs[2].props.revision.clone().unwrap();
+        assert_eq!((del.kind, del.date), (RevisionKind::Delete, None));
+        // Незнакомый атрибут — исправление остаётся как есть.
+        assert!(matches!(p.content.last(), Some(Inline::Unknown(_))));
     }
 
     #[test]

@@ -12,7 +12,8 @@
 //! - [`lists`] — списки: маркеры, нумерация, уровни;
 //! - [`search`] — поиск и замена;
 //! - [`table`] — таблицы: вставка, ячейки, строки и столбцы;
-//! - [`protection`] — пароли защиты документа.
+//! - [`protection`] — пароли защиты документа;
+//! - [`revisions`] — исправления: запись, принять и отклонить.
 
 pub mod caret;
 pub mod clipboard;
@@ -29,6 +30,7 @@ pub mod outline;
 pub mod picture;
 pub mod position;
 pub mod protection;
+pub mod revisions;
 pub mod search;
 pub mod section;
 pub mod selection;

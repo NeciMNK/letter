@@ -60,8 +60,9 @@ pub use protection::{DocumentProtection, EditRestriction, PasswordHash, WritePro
 pub use raw::RawXml;
 pub use resolve::{ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps, overlay_borders};
 pub use run::{
-    BreakKind, Color, FieldChar, FieldCharKind, Highlight, Hyperlink, OBJECT_CHAR, Run, RunContent,
-    RunFonts, RunProps, ThemeColor, ThemeFont, Underline, VerticalAlign,
+    BreakKind, Color, FieldChar, FieldCharKind, Highlight, Hyperlink, OBJECT_CHAR, Revision,
+    RevisionKind, Run, RunContent, RunFonts, RunProps, ThemeColor, ThemeFont, Underline,
+    VerticalAlign,
 };
 pub use section::{
     Columns, HeaderFooter, HeaderFooterKind, HeaderFooters, Orientation, PageBorderDisplay,

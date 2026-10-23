@@ -9,16 +9,17 @@
 
 use letter_model::{
     Alignment, Anchor, Block, BreakKind, Color, Document, DocumentProtection, HeaderFooter,
-    HeaderFooterKind, Hyperlink, Note, NoteKind, Picture, Section, SectionStart, Settings,
-    WriteProtection,
+    HeaderFooterKind, Hyperlink, Note, NoteKind, Picture, RevisionKind, Section, SectionStart,
+    Settings, WriteProtection,
 };
 
+use crate::Position;
 use crate::clipboard::{insert_fragment, insert_plain_text};
-use crate::edit::paragraph_count;
 use crate::edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, split_paragraph,
     top_level,
 };
+use crate::edit::{paragraph_count, paragraph_ref, text_len};
 use crate::fields::{FieldContext, update_fields};
 use crate::format::{
     ParagraphFormat, RunFormat, align_paragraphs, apply_style, format_paragraphs, format_runs,
@@ -30,6 +31,9 @@ use crate::lists::{
 };
 use crate::notes::{insert_note, notes_mut};
 use crate::picture::{insert_picture, resize_picture, set_picture_anchor};
+use crate::revisions::{
+    delete_tracked, grapheme_step, insert_tracked, resolve_revisions, revision_now,
+};
 use crate::search::{SearchOptions, clamp, replace_all};
 use crate::section::{
     PageSetup, insert_break, insert_section_break, set_header_footer, set_page_setup,
@@ -184,6 +188,19 @@ pub enum Command {
     /// Пароль на изменение файла и «рекомендовать только чтение»;
     /// `None` — убрать.
     WriteProtection(Option<WriteProtection>),
+    /// «Исправления»: записывать правку как исправления (`true`) или нет.
+    TrackChanges(bool),
+    /// «Принять» исправления: во всём документе (`all`) или в абзацах
+    /// выделенного.
+    AcceptRevisions {
+        /// Во всём документе.
+        all: bool,
+    },
+    /// «Отклонить» исправления: во всём документе или в выделенном.
+    RejectRevisions {
+        /// Во всём документе.
+        all: bool,
+    },
     /// «Титульная страница»: вставить в начало документа.
     InsertCoverPage(Box<crate::cover::CoverPage>),
     /// «Пустая страница»: два разрыва страницы у курсора.
@@ -326,9 +343,25 @@ pub struct History {
     sealed: bool,
     /// Последний выданный номер состояния.
     last_id: u64,
+    /// Автор исправлений (см. [`History::set_author`]).
+    author: String,
 }
 
 impl History {
+    /// Имя автора, которым подписываются исправления.
+    pub fn set_author(&mut self, author: impl Into<String>) {
+        self.author = author.into();
+    }
+
+    /// Автор исправлений; если не задан — «letter».
+    fn author(&self) -> &str {
+        if self.author.is_empty() {
+            "letter"
+        } else {
+            &self.author
+        }
+    }
+
     /// Пустая история.
     pub fn new() -> History {
         History::default()
@@ -377,6 +410,10 @@ impl History {
             }
             Command::WriteProtection(protection) => {
                 self.change_settings(doc, selection, |s| s.write_protection = protection);
+                return selection;
+            }
+            Command::TrackChanges(on) => {
+                self.change_settings(doc, selection, |s| s.track_revisions = on);
                 return selection;
             }
             Command::Watermark(text) => {
@@ -449,7 +486,16 @@ impl History {
                 | Command::AddBookmark(_)
                 | Command::DeleteBookmark(_)
                 | Command::InsertCoverPage(_)
+                | Command::AcceptRevisions { .. }
+                | Command::RejectRevisions { .. }
         );
+        // Запись исправлений: набор и стирание помечаются, а не меняют
+        // текст сразу.
+        let tracking = doc.settings.track_revisions
+            && matches!(
+                command,
+                Command::Type(_) | Command::DeleteBackward | Command::DeleteForward
+            );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
             Command::DeleteBackward if !erasing => {
@@ -463,6 +509,8 @@ impl History {
             | Command::UpdateFields(_)
             | Command::UpdateToc(_)
             | Command::InsertToc(_)
+            | Command::AcceptRevisions { all: true }
+            | Command::RejectRevisions { all: true }
             | Command::PageSetup(PageSetup::Borders(_)) => {
                 (0, paragraph_count(doc).saturating_sub(1))
             }
@@ -504,7 +552,18 @@ impl History {
             Saved::Sections(doc.sections[from.0..=to.0].to_vec())
         };
 
-        let at = if erasing {
+        let author = self.author().to_string();
+        let at = if erasing && tracking {
+            let revision = revision_now(RevisionKind::Delete, &author);
+            let end = delete_tracked(doc, start, end, &revision);
+            // Набранное встаёт после удалённого, стирание оставляет курсор
+            // в начале.
+            if matches!(command, Command::Type(_)) {
+                end
+            } else {
+                start
+            }
+        } else if erasing {
             delete_range(doc, start, end)
         } else {
             selection.focus
@@ -628,6 +687,15 @@ impl History {
                 delete_bookmark(doc, name);
                 Some(selection)
             }
+            Command::AcceptRevisions { all } | Command::RejectRevisions { all } => {
+                let range = (!all).then_some((start.paragraph, end.paragraph));
+                let accept = matches!(command, Command::AcceptRevisions { .. });
+                resolve_revisions(doc, range, accept);
+                Some(Selection {
+                    anchor: clamp(doc, selection.anchor),
+                    focus: clamp(doc, selection.focus),
+                })
+            }
             Command::UpdateToc(context) => {
                 let last = paragraph_count(doc).saturating_sub(1);
                 update_tocs(doc, 0, last, context);
@@ -647,6 +715,9 @@ impl History {
         };
         let focus = match &command {
             _ if after.is_some() => at,
+            Command::Type(text) if tracking => {
+                insert_tracked(doc, at, text, &revision_now(RevisionKind::Insert, &author))
+            }
             Command::Type(text) => insert_text(doc, at, text),
             Command::Link {
                 link,
@@ -659,6 +730,29 @@ impl History {
             Command::SplitParagraph => split_paragraph(doc, at),
             Command::LineBreak => insert_line_break(doc, at),
             Command::DeleteBackward | Command::DeleteForward if erasing => at,
+            Command::DeleteBackward | Command::DeleteForward if tracking => {
+                let forward = matches!(command, Command::DeleteForward);
+                let revision = revision_now(RevisionKind::Delete, &author);
+                match grapheme_step(doc, at, forward) {
+                    Some(offset) if forward => {
+                        delete_tracked(doc, at, Position::new(at.paragraph, offset), &revision)
+                    }
+                    Some(offset) => {
+                        let to = Position::new(at.paragraph, offset);
+                        delete_tracked(doc, to, at, &revision);
+                        to
+                    }
+                    // Знак абзаца не стирается: курсор переходит в соседний.
+                    None if forward && at.paragraph + 1 < paragraph_count(doc) => {
+                        Position::new(at.paragraph + 1, 0)
+                    }
+                    None if !forward && at.paragraph > 0 => {
+                        let len = paragraph_ref(doc, at.paragraph - 1).map_or(0, text_len);
+                        Position::new(at.paragraph - 1, len)
+                    }
+                    None => at,
+                }
+            }
             Command::DeleteBackward => delete_backward(doc, at),
             Command::DeleteForward => delete_forward(doc, at),
             Command::Paste(fragment) => insert_fragment(doc, at, fragment),
@@ -708,6 +802,9 @@ impl History {
             | Command::AutoHyphenation(_)
             | Command::Protection(_)
             | Command::WriteProtection(_)
+            | Command::TrackChanges(_)
+            | Command::AcceptRevisions { .. }
+            | Command::RejectRevisions { .. }
             | Command::Watermark(_) => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
@@ -1209,6 +1306,54 @@ mod tests {
         assert_eq!(d, original);
         h.redo(&mut d);
         assert_eq!(d.sections.len(), 2);
+    }
+
+    #[test]
+    fn tracked_typing_and_deleting() {
+        let mut d = doc(&["abc"]);
+        let mut h = History::new();
+        h.set_author("Аня");
+        h.run(&mut d, caret(0, 0), Command::TrackChanges(true));
+        let s = h.run(&mut d, caret(0, 3), Command::Type("d".into()));
+        assert_eq!(s, caret(0, 4));
+        // Backspace стирает своё вставленное, затем помечает «c».
+        let s = h.run(&mut d, s, Command::DeleteBackward);
+        let s = h.run(&mut d, s, Command::DeleteBackward);
+        assert_eq!(s, caret(0, 2));
+        assert_eq!(d.plain_text(), "abc");
+        let kinds: Vec<_> = crate::edit::paragraph_ref(&d, 0)
+            .map(|p| {
+                p.runs()
+                    .map(|r| {
+                        r.props
+                            .revision
+                            .as_ref()
+                            .map(|r| (r.kind, r.author.clone()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            kinds,
+            [None, Some((RevisionKind::Delete, "Аня".to_string()))]
+        );
+        // Выделение и набор: выделенное удалено, новое — после него.
+        let s = h.run(
+            &mut d,
+            Selection {
+                anchor: Position::new(0, 0),
+                focus: Position::new(0, 1),
+            },
+            Command::Type("X".into()),
+        );
+        assert_eq!(s, caret(0, 2));
+        assert_eq!(d.plain_text(), "aXbc");
+        h.run(&mut d, s, Command::AcceptRevisions { all: true });
+        assert_eq!(d.plain_text(), "Xb");
+        h.undo(&mut d);
+        h.run(&mut d, s, Command::RejectRevisions { all: false });
+        assert_eq!(d.plain_text(), "abc");
+        assert!(!crate::revisions::has_revisions(&d, None));
     }
 
     #[test]

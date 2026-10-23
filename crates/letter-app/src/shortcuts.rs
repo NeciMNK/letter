@@ -71,6 +71,7 @@ pub fn table() -> Vec<Shortcut> {
         local(CTRL_SHIFT, Key::Minus, C::Insert("\u{2011}")),
         local(CTRL, Key::Minus, C::Insert("\u{ad}")),
         local(CTRL_SHIFT, Key::Num8, C::ToggleMarks),
+        local(CTRL_SHIFT, Key::E, C::ToggleTrackChanges),
         local(Modifiers::NONE, Key::F9, C::UpdateFields),
         local(
             CTRL_ALT,

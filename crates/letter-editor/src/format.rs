@@ -300,6 +300,7 @@ pub fn format_runs(doc: &mut Document, start: Position, end: Position, format: R
                 // Ссылка — не оформление: остаётся.
                 *props = RunProps {
                     link: props.link.take(),
+                    revision: props.revision.take(),
                     unknown: std::mem::take(&mut props.unknown),
                     ..RunProps::default()
                 };

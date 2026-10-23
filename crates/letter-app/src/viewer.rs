@@ -203,6 +203,14 @@ struct Counts {
     selected: Option<Statistics>,
 }
 
+/// Имя пользователя системы: им подписываются исправления.
+fn user_name() -> String {
+    ["USERNAME", "USER", "LOGNAME"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok().filter(|v| !v.trim().is_empty()))
+        .unwrap_or_else(|| "letter".to_string())
+}
+
 impl OpenDocument {
     /// Новый открытый документ, курсор в начале.
     fn new(
@@ -216,7 +224,11 @@ impl OpenDocument {
             path,
             saved: 0,
             autosaved: 0,
-            history: History::new(),
+            history: {
+                let mut history = History::new();
+                history.set_author(user_name());
+                history
+            },
             layout,
             cursor: Position::default(),
             anchor: Position::default(),
@@ -1761,6 +1773,13 @@ impl Viewer {
         let settings = &document.doc.settings;
         let command = match action {
             ProtectAction::Protect { edit, password } => {
+                // «Запись исправлений» включает запись.
+                if edit == letter_model::EditRestriction::TrackedChanges {
+                    let selection = document.selection();
+                    document
+                        .history
+                        .run(&mut document.doc, selection, Command::TrackChanges(true));
+                }
                 Command::Protection(Some(protect(edit, &password)))
             }
             ProtectAction::Unprotect(password) => match settings.protection.as_ref() {
@@ -2112,6 +2131,12 @@ impl Viewer {
             info.section =
                 letter_editor::section_props(&document.doc, document.cursor.paragraph).cloned();
             info.auto_hyphenation = document.doc.settings.auto_hyphenation;
+            let settings = &document.body().settings;
+            info.track_changes = settings.track_revisions;
+            info.track_changes_forced = settings.protection.as_ref().is_some_and(|p| {
+                p.enforced && p.edit == letter_model::EditRestriction::TrackedChanges
+            });
+            info.has_revisions = letter_editor::revisions::has_revisions(document.body(), None);
             if let Some(story) = &document.story
                 && let Some(header) = story.header()
             {
@@ -2238,6 +2263,35 @@ impl Viewer {
                     if let Some(document) = &mut self.document {
                         document.begin_story(page, header, &mut self.shaper, &self.library);
                         document.cursor_since = ctx.input(|i| i.time);
+                        self.reveal_cursor = true;
+                    }
+                }
+                RibbonCommand::ToggleTrackChanges => {
+                    if let Some(document) = &self.document
+                        && document.story.is_none()
+                    {
+                        let settings = &document.doc.settings;
+                        let forced = settings.protection.as_ref().is_some_and(|p| {
+                            p.enforced && p.edit == letter_model::EditRestriction::TrackedChanges
+                        });
+                        if !forced {
+                            let on = !settings.track_revisions;
+                            actions.push(Action::Edit(Command::TrackChanges(on)));
+                        }
+                    }
+                }
+                RibbonCommand::NextRevision(forward) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &mut self.document
+                        && document.story.is_none()
+                        && let Some(at) = letter_editor::revisions::next_revision(
+                            &document.doc,
+                            document.cursor,
+                            forward,
+                        )
+                    {
+                        document.set_selection(Selection::caret(at));
+                        document.history.seal();
                         self.reveal_cursor = true;
                     }
                 }
@@ -3811,6 +3865,40 @@ mod tests {
         // Курсор после правки рисуется, IME знает, где он.
         let output = ctx.run_ui(screen(), |ui| viewer.ui(ui));
         assert!(output.platform_output.ime.is_some());
+    }
+
+    #[test]
+    fn track_changes_from_the_keyboard_and_ribbon() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let before = first_text(&mut viewer);
+        frame(
+            &ctx,
+            &mut viewer,
+            key(Key::E, Modifiers::COMMAND | Modifiers::SHIFT),
+        );
+        assert!(viewer.ribbon_info().track_changes);
+        frame(&ctx, &mut viewer, events(vec![Event::Text("a".into())]));
+        assert_eq!(first_text(&mut viewer), format!("a{before}"));
+        assert!(viewer.ribbon_info().has_revisions);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::NextRevision(false)]);
+        assert_eq!(viewer.cursor(), Some(Position::new(0, 0)));
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::Edit(Command::RejectRevisions { all: true })],
+        );
+        assert_eq!(first_text(&mut viewer), before);
+        assert!(!viewer.ribbon_info().has_revisions);
+        // «Запись исправлений» в защите не даёт выключить запись.
+        viewer.protect_action(ProtectAction::Protect {
+            edit: letter_model::EditRestriction::TrackedChanges,
+            password: String::new(),
+        });
+        assert!(viewer.ribbon_info().track_changes_forced);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ToggleTrackChanges]);
+        assert!(viewer.ribbon_info().track_changes);
     }
 
     #[test]

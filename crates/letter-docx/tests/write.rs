@@ -64,6 +64,76 @@ fn round_trip(doc: &Document) -> Document {
 }
 
 #[test]
+fn revisions_survive_round_trip() {
+    use letter_model::{Revision, RevisionKind};
+    let revision = |kind, author: &str| RunProps {
+        revision: Some(Revision {
+            kind,
+            author: author.into(),
+            date: Some("2024-05-01T10:00:00Z".into()),
+        }),
+        ..RunProps::default()
+    };
+    let mut doc = Document::new();
+    doc.settings.track_revisions = true;
+    let mut link = Run::text("ссылка").with_props(revision(RevisionKind::Insert, "A"));
+    link.props.link = Some(Hyperlink::to("https://example.com"));
+    doc.sections[0].blocks = vec![
+        Paragraph::from_runs([
+            Run::text("было "),
+            Run::text("новое ").with_props(revision(RevisionKind::Insert, "A")),
+            Run::text("ещё ").with_props(revision(RevisionKind::Insert, "A")),
+            Run::text(" старое").with_props(revision(RevisionKind::Delete, "B & C")),
+            link,
+        ])
+        .into(),
+    ];
+    let bytes = write_bytes(&doc).unwrap();
+    let xml = String::from_utf8(zip_parts(&bytes)["word/document.xml"].clone()).unwrap();
+    assert!(
+        xml.contains("<w:delText xml:space=\"preserve\"> старое</w:delText>"),
+        "{xml}"
+    );
+    assert!(xml.contains("<w:hyperlink"), "{xml}");
+    let back = read_bytes(&bytes).unwrap();
+    assert!(back.settings.track_revisions);
+    let Some(Block::Paragraph(p)) = back.blocks().next() else {
+        panic!("нет абзаца");
+    };
+    let expect: Vec<_> = doc
+        .blocks()
+        .next()
+        .map(|b| match b {
+            Block::Paragraph(p) => p
+                .runs()
+                .map(|r| {
+                    (
+                        r.plain_text(),
+                        r.props.revision.clone(),
+                        r.props.link.is_some(),
+                    )
+                })
+                .collect(),
+            _ => Vec::new(),
+        })
+        .unwrap_or_default();
+    let got: Vec<_> = p
+        .runs()
+        .map(|r| {
+            (
+                r.plain_text(),
+                r.props.revision.clone(),
+                r.props.link.is_some(),
+            )
+        })
+        .collect();
+    // Соседние фрагменты с одним исправлением при чтении не сливаются,
+    // но идут в одном `w:ins`.
+    assert_eq!(got, expect);
+    assert_eq!(xml.matches("<w:ins ").count(), 2, "{xml}");
+}
+
+#[test]
 fn fixtures_survive_round_trip() {
     for name in FIXTURES {
         let original = read_bytes(&fixture_bytes(name)).unwrap();
@@ -205,6 +275,7 @@ fn everything() -> Document {
         position: Some(-6),
         kerning: Some(HalfPoints(24)),
         link: None,
+        revision: None,
         // Порядок как в схеме: при записи элементы всё равно встанут так.
         unknown: vec![
             RawXml::new(

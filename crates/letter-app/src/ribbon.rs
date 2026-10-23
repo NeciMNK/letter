@@ -213,6 +213,11 @@ pub enum RibbonCommand {
     UpdateToc,
     /// «Рецензирование → Ограничить редактирование».
     RestrictEditing,
+    /// «Рецензирование → Исправления»: включить или выключить запись
+    /// (Ctrl+Shift+E).
+    ToggleTrackChanges,
+    /// «Далее» (`true`) или «Назад»: к следующему исправлению.
+    NextRevision(bool),
     /// Вставить поле с этим кодом у курсора (с готовым результатом).
     InsertField(String),
     /// Окно «Ссылка» (Ctrl+K).
@@ -306,6 +311,12 @@ pub struct RibbonInfo {
     pub indent_left: i32,
     /// Отступ справа абзаца с курсором, твипы.
     pub indent_right: i32,
+    /// Включена запись исправлений.
+    pub track_changes: bool,
+    /// Запись исправлений нельзя выключить: так требует защита документа.
+    pub track_changes_forced: bool,
+    /// В документе есть исправления.
+    pub has_revisions: bool,
 }
 
 /// Состояние ленты.

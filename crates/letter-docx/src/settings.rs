@@ -78,6 +78,7 @@ pub(crate) fn updated_settings(
             && a.hyphenation_zone == b.hyphenation_zone
             && a.consecutive_hyphen_limit == b.consecutive_hyphen_limit
             && a.do_not_hyphenate_caps == b.do_not_hyphenate_caps
+            && a.track_revisions == b.track_revisions
             && a.protection == b.protection
             && a.write_protection == b.write_protection
     };
@@ -93,7 +94,11 @@ pub(crate) fn updated_settings(
         None => format!("<{prefix}{name}/>"),
     };
     // Наши элементы: имя и новое содержимое (`None` — убрать).
-    let ours: [(&str, Option<String>); 7] = [
+    let ours: [(&str, Option<String>); 8] = [
+        (
+            "trackRevisions",
+            settings.track_revisions.then(|| w("trackRevisions", None)),
+        ),
         (
             "writeProtection",
             settings
@@ -299,6 +304,7 @@ pub(crate) fn read_settings(root: &Element) -> Settings {
                 settings.even_and_odd_headers = toggle(child).unwrap_or(false);
             }
             "autoHyphenation" => settings.auto_hyphenation = toggle(child).unwrap_or(false),
+            "trackRevisions" => settings.track_revisions = toggle(child).unwrap_or(false),
             "doNotHyphenateCaps" => {
                 settings.do_not_hyphenate_caps = toggle(child).unwrap_or(false);
             }
@@ -474,6 +480,13 @@ mod tests {
                 None
             );
         }
+        let tracked = Settings {
+            track_revisions: true,
+            ..Settings::default()
+        };
+        let xml = updated_settings(Some(source.as_bytes()), &tracked, false).unwrap_or_default();
+        assert!(xml.contains("<w:trackRevisions/>"), "{xml}");
+        assert!(read_settings(&xml::parse(xml.as_bytes()).unwrap()).track_revisions);
         // Снятая защита убирает элемент.
         let xml = updated_settings(Some(source.as_bytes()), &s, false).unwrap_or_default();
         let off =
