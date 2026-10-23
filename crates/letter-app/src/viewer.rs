@@ -1044,6 +1044,10 @@ impl Viewer {
         let Some(mut path) = dialog.save_file() else {
             return false;
         };
+        if files::is_pdf(&path) || (extension == "pdf" && path.extension().is_none()) {
+            path.set_extension("pdf");
+            return self.save_pdf(&path);
+        }
         if files::FileFormat::from_path(&path).is_none() {
             path.set_extension(extension);
         }
@@ -1071,6 +1075,23 @@ impl Viewer {
         self.recent.add(path);
         self.title_changed = true;
         true
+    }
+
+    /// Сохраняет копию документа в PDF `path`. Ошибку показывает
+    /// пользователю. `true`, если сохранён.
+    pub fn save_pdf(&mut self, path: &Path) -> bool {
+        let Some(document) = &mut self.document else {
+            return false;
+        };
+        // В PDF — сам документ, а не открытый колонтитул.
+        document.end_story(&mut self.shaper, &self.library);
+        match files::write_pdf(&document.doc, &document.layout, &self.library, path) {
+            Ok(()) => true,
+            Err(e) => {
+                self.report(tr("error-save"), e);
+                false
+            }
+        }
     }
 
     /// Открывает документ, оставшийся после сбоя: он считается

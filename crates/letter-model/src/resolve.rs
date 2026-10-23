@@ -123,6 +123,9 @@ pub struct ResolvedRunProps {
     pub position: i32,
     /// Кернинг от этого размера; ноль — выключен.
     pub kerning: HalfPoints,
+    /// Гиперссылка, частью которой является фрагмент (только прямое
+    /// оформление: у стилей ссылок нет).
+    pub link: Option<crate::Hyperlink>,
 }
 
 impl ResolvedRunProps {
@@ -326,6 +329,7 @@ impl Document {
             scale: acc.scale.unwrap_or(100),
             position: acc.position.unwrap_or(0),
             kerning: acc.kerning.unwrap_or_default(),
+            link: run.link.clone(),
         }
     }
 }

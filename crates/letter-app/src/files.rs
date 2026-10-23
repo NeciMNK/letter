@@ -64,7 +64,42 @@ pub const SAVE_FILTERS: &[(&str, &[&str])] = &[
     ("filter-txt", &["txt"]),
     ("filter-html", &["html"]),
     ("filter-md", &["md"]),
+    ("filter-pdf", &["pdf"]),
 ];
+
+/// Сохранение в PDF — не сохранение документа, а его копия для
+/// чтения и печати: путь документа после него не меняется.
+pub fn is_pdf(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+}
+
+/// Записывает свёрстанный документ в PDF `path`: страницы со
+/// встроенными шрифтами, оглавление из заголовков, ссылки.
+pub fn write_pdf(
+    doc: &Document,
+    layout: &letter_layout::DocumentLayout,
+    library: &letter_layout::FontLibrary,
+    path: &Path,
+) -> Result<(), String> {
+    let info = letter_render::PdfInfo {
+        title: doc.properties.core.title.clone(),
+        author: doc.properties.core.creator.clone(),
+        outline: letter_editor::document_outline(doc, layout)
+            .into_iter()
+            .map(|entry| letter_render::OutlineItem {
+                level: entry.level,
+                title: entry.title,
+                page: entry.page,
+                top: entry.top,
+            })
+            .collect(),
+        anchors: letter_editor::bookmark_places(doc, layout),
+    };
+    let bytes = letter_render::write_pdf(&layout.pages, library, &info);
+    fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
+}
 
 /// Новый пустой документ: стили как у пустого документа Word.
 pub fn blank() -> Document {
@@ -342,6 +377,22 @@ pub mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn pdf_copy_is_written() {
+        let dir = temp_dir("pdf");
+        let path = dir.join("Отчёт.PDF");
+        assert!(is_pdf(&path) && !is_pdf(&dir.join("a.docx")));
+        let doc = sample();
+        let library = letter_layout::FontLibrary::embedded_only();
+        let layout =
+            letter_layout::layout_document(&doc, &mut letter_layout::Shaper::new(), &library);
+        write_pdf(&doc, &layout, &library, &path).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert!(bytes.starts_with(b"%PDF-"));
+        assert!(SAVE_FILTERS.iter().any(|(_, e)| e.contains(&"pdf")));
+        let _ = fs::remove_dir_all(dir);
     }
 
     fn sample() -> Document {

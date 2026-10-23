@@ -152,14 +152,14 @@ fn has_switch(code: &str, switch: &str) -> bool {
 }
 
 /// Заголовок для оглавления: номер абзаца, уровень и текст.
-struct Heading {
-    paragraph: usize,
-    level: u8,
-    text: String,
+pub(crate) struct Heading {
+    pub(crate) paragraph: usize,
+    pub(crate) level: u8,
+    pub(crate) text: String,
 }
 
 /// Заголовки документа уровней `levels`, кроме абзацев `skip`.
-fn headings(
+pub(crate) fn headings(
     doc: &Document,
     levels: (u8, u8),
     skip: &std::ops::RangeInclusive<usize>,
