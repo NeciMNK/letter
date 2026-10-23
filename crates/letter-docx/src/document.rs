@@ -143,6 +143,8 @@ fn read_paragraph(p: &Element, allow_section: bool) -> (Paragraph, Option<Sectio
             paragraph.content.extend(items);
         } else if let Some(mark) = read_bookmark(child) {
             paragraph.content.push(mark);
+        } else if let Some(mark) = read_comment_mark(child) {
+            paragraph.content.push(mark);
         } else {
             paragraph.content.push(Inline::Unknown(child.raw()));
         }
@@ -163,6 +165,21 @@ fn read_bookmark(element: &Element) -> Option<Inline> {
         }))
     } else if element.is_w("bookmarkEnd") && element.only_attrs(&["id"]) {
         Some(Inline::BookmarkEnd(element.w_attr("id")?.to_string()))
+    } else {
+        None
+    }
+}
+
+/// Начало или конец текста примечания; с другими атрибутами — `None`.
+fn read_comment_mark(element: &Element) -> Option<Inline> {
+    if element.elements().next().is_some() || !element.only_attrs(&["id"]) {
+        return None;
+    }
+    let id = element.w_attr("id")?.to_string();
+    if element.is_w("commentRangeStart") {
+        Some(Inline::CommentStart(id))
+    } else if element.is_w("commentRangeEnd") {
+        Some(Inline::CommentEnd(id))
     } else {
         None
     }
@@ -210,7 +227,7 @@ fn read_hyperlink(element: &Element) -> Option<Vec<Inline>> {
         } else if let Some(runs) = simple_field(child) {
             items.extend(runs.into_iter().map(with_link));
         } else {
-            items.push(read_bookmark(child)?);
+            items.push(read_bookmark(child).or_else(|| read_comment_mark(child))?);
         }
     }
     Some(items)
@@ -434,6 +451,14 @@ fn read_run(r: &Element) -> Run {
                 {
                     match read_note_reference(child) {
                         Some(r) => RunContent::NoteReference(r),
+                        None => RunContent::Unknown(child.raw()),
+                    }
+                }
+                "commentReference"
+                    if child.only_attrs(&["id"]) && child.elements().next().is_none() =>
+                {
+                    match child.w_attr("id") {
+                        Some(id) => RunContent::CommentReference(id.to_string()),
                         None => RunContent::Unknown(child.raw()),
                     }
                 }
