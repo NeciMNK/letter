@@ -30,6 +30,7 @@ mod navigation;
 mod outlining;
 mod page_number_dialog;
 mod paragraph_dialog;
+mod password_dialog;
 mod picture;
 mod print;
 mod references;

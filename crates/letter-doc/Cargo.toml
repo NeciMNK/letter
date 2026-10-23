@@ -10,3 +10,12 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+letter-model.workspace = true
+cfb = "0.15"
+encoding_rs = "0.8"
+thiserror = "2"
+
+[dev-dependencies]
+letter-docx.workspace = true
