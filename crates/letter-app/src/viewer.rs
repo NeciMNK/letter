@@ -893,9 +893,13 @@ impl Viewer {
 
     /// Открывает документ (.docx, .rtf, .odt, .txt, .html, .md) и
     /// верстает его. При ошибке прежний документ остаётся на экране.
+    ///
+    /// Шаблон (.dotx, .dotm) открывается, как в Word, новым документом без
+    /// имени: «Сохранить» спросит, куда его записать.
     pub fn open(&mut self, path: &Path) -> Result<(), String> {
         let doc = files::read(path)?;
-        self.show(Some(path.to_owned()), doc);
+        let name = (!files::is_template(path)).then(|| path.to_owned());
+        self.show(name, doc);
         self.recent.add(path);
         Ok(())
     }
@@ -3230,6 +3234,24 @@ mod tests {
                 .as_ref()
                 .is_some_and(|v| v.size.0 > 0)
         );
+    }
+
+    #[test]
+    fn template_opens_as_a_new_document() {
+        let dir = crate::files::tests::temp_dir("template");
+        let template = dir.join("бланк.dotx");
+        let doc = letter_docx::read_file(fixture("plain-text.docx")).unwrap();
+        files::write(&doc, &template).unwrap();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&template).unwrap();
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(document.path, None);
+        assert_eq!(document.doc.plain_text(), doc.plain_text());
+        let docx = dir.join("бланк.docx");
+        viewer.open(&docx).unwrap_err();
+        files::write(&doc, &docx).unwrap();
+        viewer.open(&docx).unwrap();
+        assert_eq!(viewer.document.as_ref().unwrap().path, Some(docx));
     }
 
     fn fixture(name: &str) -> PathBuf {

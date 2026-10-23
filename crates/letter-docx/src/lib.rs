@@ -17,6 +17,7 @@
 
 mod document;
 mod error;
+mod kind;
 mod names;
 mod numbering;
 mod package;
@@ -42,6 +43,7 @@ use letter_model::{
 };
 
 pub use error::{ReadError, WriteError};
+pub use kind::{FileKind, has_macros, kind_of};
 
 use package::CONTENT_TYPES_PART;
 
@@ -374,20 +376,50 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<Document, ReadError> {
 ///
 /// Части исходного файла, которые программа не понимает (картинки,
 /// колонтитулы, сноски и т. д.), записываются без изменений.
+///
+/// Разновидность файла (.docx, .docm, .dotx, .dotm) остаётся той, из
+/// которой документ был прочитан; чтобы её сменить, есть [`write_as`].
 pub fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), WriteError> {
-    write::write(doc, writer)
+    write::write(doc, None, writer)
+}
+
+/// Записывает документ файлом разновидности `kind`: например, документ
+/// .docm как шаблон .dotx. В файл без макросов (.docx, .dotx) макросы
+/// не попадают — как при таком сохранении в Word.
+pub fn write_as<W: Write + Seek>(
+    doc: &Document,
+    kind: FileKind,
+    writer: W,
+) -> Result<(), WriteError> {
+    write::write(doc, Some(kind), writer)
 }
 
 /// Записывает документ .docx в байты в памяти.
 pub fn write_bytes(doc: &Document) -> Result<Vec<u8>, WriteError> {
     let mut buffer = Cursor::new(Vec::new());
-    write::write(doc, &mut buffer)?;
+    write::write(doc, None, &mut buffer)?;
+    Ok(buffer.into_inner())
+}
+
+/// Записывает документ в байты в памяти файлом разновидности `kind`
+/// (см. [`write_as`]).
+pub fn write_bytes_as(doc: &Document, kind: FileKind) -> Result<Vec<u8>, WriteError> {
+    let mut buffer = Cursor::new(Vec::new());
+    write::write(doc, Some(kind), &mut buffer)?;
     Ok(buffer.into_inner())
 }
 
 /// Записывает документ .docx на диск. Файл сначала целиком собирается
 /// в памяти, поэтому ошибка упаковки не испортит старый файл.
+///
+/// Разновидность файла берётся из расширения пути (.docx, .docm, .dotx,
+/// .dotm); при другом расширении она остаётся прежней.
 pub fn write_file(doc: &Document, path: impl AsRef<Path>) -> Result<(), WriteError> {
-    std::fs::write(path, write_bytes(doc)?)?;
+    let path = path.as_ref();
+    let bytes = match FileKind::from_path(path) {
+        Some(kind) => write_bytes_as(doc, kind)?,
+        None => write_bytes(doc)?,
+    };
+    std::fs::write(path, bytes)?;
     Ok(())
 }

@@ -59,6 +59,9 @@ pub const OPEN_FILTERS: &[(&str, &[&str])] = &[
 /// Фильтры окна «Сохранить как». Первый — формат по умолчанию.
 pub const SAVE_FILTERS: &[(&str, &[&str])] = &[
     ("filter-docx", &["docx"]),
+    ("filter-docm", &["docm"]),
+    ("filter-dotx", &["dotx"]),
+    ("filter-dotm", &["dotm"]),
     ("filter-rtf", &["rtf"]),
     ("filter-odt", &["odt"]),
     ("filter-txt", &["txt"]),
@@ -106,6 +109,12 @@ pub fn blank() -> Document {
     letter_text::read_txt(&[])
 }
 
+/// Шаблон ли это Word (.dotx, .dotm). Как в Word, шаблон открывается
+/// новым документом на его основе, а сам файл шаблона не меняется.
+pub fn is_template(path: &Path) -> bool {
+    letter_docx::FileKind::from_path(path).is_some_and(letter_docx::FileKind::is_template)
+}
+
 /// Читает документ; формат — по расширению.
 pub fn read(path: &Path) -> Result<Document, String> {
     let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
@@ -128,7 +137,13 @@ pub fn write(doc: &Document, path: &Path) -> Result<(), String> {
     let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let format = FileFormat::from_path(path).ok_or_else(|| fail(&tr("error-unknown-format")))?;
     let data = match format {
-        FileFormat::Docx => letter_docx::write_bytes(doc).map_err(|e| fail(&e))?,
+        // Разновидность (.docx, .docm, .dotx, .dotm) — по расширению: Word
+        // не откроет файл, у которого они не совпадают.
+        FileFormat::Docx => match letter_docx::FileKind::from_path(path) {
+            Some(kind) => letter_docx::write_bytes_as(doc, kind),
+            None => letter_docx::write_bytes(doc),
+        }
+        .map_err(|e| fail(&e))?,
         FileFormat::Rtf => letter_rtf::write(doc).into_bytes(),
         FileFormat::Odt => letter_odt::write(doc).map_err(|e| fail(&e))?,
         FileFormat::Text(letter_text::Format::Text) => letter_text::write_txt(doc),
@@ -426,6 +441,18 @@ pub mod tests {
     }
 
     #[test]
+    fn word_file_kind_follows_the_extension() {
+        let dir = temp_dir("kinds");
+        for kind in letter_docx::FileKind::ALL {
+            let path = dir.join(format!("doc.{}", kind.extension()));
+            write(&sample(), &path).unwrap();
+            assert_eq!(letter_docx::kind_of(&read(&path).unwrap()), kind);
+            assert_eq!(is_template(&path), kind.is_template());
+        }
+        assert!(!is_template(Path::new("a.rtf")));
+    }
+
+    #[test]
     fn blank_document_has_one_empty_paragraph_and_styles() {
         let doc = blank();
         assert_eq!(doc.plain_text(), "");
@@ -436,7 +463,9 @@ pub mod tests {
     #[test]
     fn every_format_round_trips_its_text() {
         let dir = temp_dir("formats");
-        for ext in ["docx", "rtf", "odt", "txt", "html", "md"] {
+        for ext in [
+            "docx", "docm", "dotx", "dotm", "rtf", "odt", "txt", "html", "md",
+        ] {
             let path = dir.join(format!("doc.{ext}"));
             write(&sample(), &path).unwrap();
             let back = read(&path).unwrap();
