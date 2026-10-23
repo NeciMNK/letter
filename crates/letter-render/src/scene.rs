@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use letter_model::{Color, ImageData, ResolvedRunProps, Underline};
 
+use crate::drawing::{DrawingFrame, draw_shapes};
 use crate::glyphs::{GlyphCache, GlyphKey, SUBPIXEL_STEPS};
 
 /// Цвет RGBA без предумножения.
@@ -58,6 +59,18 @@ pub enum DrawItem {
         height: f32,
         /// Картинка; `None` — нарисовать заглушку.
         image: Option<Arc<ImageData>>,
+    },
+    /// Контур фигуры (SmartArt): многоугольник с заливкой и линией
+    /// или ломаная.
+    Path {
+        /// Точки.
+        points: Vec<(f32, f32)>,
+        /// Замкнутый: от последней точки линия идёт к первой.
+        closed: bool,
+        /// Заливка (только у замкнутого контура).
+        fill: Option<Rgba>,
+        /// Линия: цвет и толщина.
+        stroke: Option<(Rgba, f32)>,
     },
 }
 
@@ -135,13 +148,28 @@ pub fn page_scene(
                 }
                 // Знак привязки плавающего рисунка места не занимает.
                 LineItem::Object(object) if object.width == 0.0 && object.height == 0.0 => {}
-                LineItem::Object(object) => pictures.push(DrawItem::Picture {
-                    x: (line.x + object.x) * scale,
-                    y: (line.baseline - object.height) * scale,
-                    width: object.width * scale,
-                    height: object.height * scale,
-                    image: object.image.clone(),
-                }),
+                LineItem::Object(object) => {
+                    let (x, y) = (line.x + object.x, line.baseline - object.height);
+                    let (width, height) = (object.width, object.height);
+                    match &object.drawing {
+                        Some(drawing) => {
+                            let frame = DrawingFrame {
+                                x,
+                                y,
+                                width,
+                                height,
+                            };
+                            draw_shapes(&mut pictures, drawing, frame, scale, library, cache);
+                        }
+                        None => pictures.push(DrawItem::Picture {
+                            x: x * scale,
+                            y: y * scale,
+                            width: width * scale,
+                            height: height * scale,
+                            image: object.image.clone(),
+                        }),
+                    }
+                }
             }
         }
         // Номер или маркер пункта списка.
@@ -163,19 +191,34 @@ pub fn page_scene(
             }
         }
     }
-    let float = |f: &Float| DrawItem::Picture {
-        x: f.x * scale,
-        y: f.y * scale,
-        width: f.width * scale,
-        height: f.height * scale,
-        image: f.image.clone(),
+    let mut float = |out: &mut Vec<DrawItem>, f: &Float| match &f.drawing {
+        Some(drawing) => {
+            let frame = DrawingFrame {
+                x: f.x,
+                y: f.y,
+                width: f.width,
+                height: f.height,
+            };
+            draw_shapes(out, drawing, frame, scale, library, cache);
+        }
+        None => out.push(DrawItem::Picture {
+            x: f.x * scale,
+            y: f.y * scale,
+            width: f.width * scale,
+            height: f.height * scale,
+            image: f.image.clone(),
+        }),
     };
     let floats = || stories.iter().flat_map(|s| &s.floats).chain(&page.floats);
-    backgrounds.extend(floats().filter(|f| f.behind).map(float));
+    for f in floats().filter(|f| f.behind) {
+        float(&mut backgrounds, f);
+    }
     backgrounds.extend(pictures);
     backgrounds.extend(glyphs);
     backgrounds.extend(lines);
-    backgrounds.extend(floats().filter(|f| !f.behind).map(float));
+    for f in floats().filter(|f| !f.behind) {
+        float(&mut backgrounds, f);
+    }
     backgrounds
 }
 

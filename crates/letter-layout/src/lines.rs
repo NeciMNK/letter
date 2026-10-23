@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
-use letter_model::{ImageData, OBJECT_CHAR};
+use letter_model::{Drawing, ImageData, OBJECT_CHAR};
 
 use unicode_bidi::{BidiInfo, Level};
 use unicode_linebreak::{BreakOpportunity, linebreaks};
@@ -94,6 +94,8 @@ pub struct InlineObject {
     pub height: f32,
     /// Картинка рисунка (`None` — рисовать заглушку).
     pub image: Option<Arc<ImageData>>,
+    /// Рисунок из фигур (SmartArt) — рисуется вместо картинки.
+    pub drawing: Option<Arc<Drawing>>,
     /// Плавающий объект: в строке от него только знак привязки без
     /// ширины и высоты, сам объект ставит раскладка по страницам.
     pub floating: bool,
@@ -332,6 +334,8 @@ pub struct ObjectItem {
     pub span: usize,
     /// Картинка.
     pub image: Option<Arc<ImageData>>,
+    /// Рисунок из фигур (SmartArt).
+    pub drawing: Option<Arc<Drawing>>,
 }
 
 /// Одна строка абзаца.
@@ -1091,7 +1095,8 @@ impl<'a> Builder<'a> {
                         width: cluster.width,
                         height: object.as_ref().map_or(0.0, |o| o.height),
                         span: cluster.span,
-                        image: object.and_then(|o| o.image),
+                        image: object.as_ref().and_then(|o| o.image.clone()),
+                        drawing: object.and_then(|o| o.drawing),
                     }));
                 }
                 Kind::Break(_) => {}
@@ -1762,6 +1767,7 @@ mod tests {
                     width,
                     height: 50.0,
                     image: None,
+                    drawing: None,
                     floating: false,
                 },
                 mono(),

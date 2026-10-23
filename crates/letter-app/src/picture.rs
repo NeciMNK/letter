@@ -54,6 +54,7 @@ pub fn picture_from_bytes(bytes: Vec<u8>, extension: &str) -> Result<Picture, St
     let (width, height) = letter_render::picture::pixel_size(&data)
         .ok_or_else(|| tr("picture-unsupported").to_owned())?;
     Ok(Picture {
+        drawing: None,
         width: i64::from(width) * EMU_PER_PIXEL,
         height: i64::from(height) * EMU_PER_PIXEL,
         image: Some(Arc::new(data)),

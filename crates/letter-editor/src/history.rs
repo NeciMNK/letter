@@ -916,6 +916,7 @@ mod tests {
         let mut d = doc(&["ab"]);
         let mut h = History::new();
         let picture = Picture {
+            drawing: None,
             width: 127_000,
             height: 254_000,
             image: None,

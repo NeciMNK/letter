@@ -46,10 +46,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use letter_model::{
-    Alignment, Anchor, AnchorAlign, Block, Border, Document, EMU_PER_POINT, FirstLineIndent,
-    HeaderFooter, HeaderFooterKind, HorizontalFrom, ImageData, LevelSuffix, LineSpacing,
-    ListCounters, ListLabel, NoteKind, Numbering, PageBorderDisplay, PageBorders, PageSize,
-    Paragraph, ParagraphBorders, Placement, ResolvedFonts, ResolvedParagraphProps,
+    Alignment, Anchor, AnchorAlign, Block, Border, Document, Drawing, EMU_PER_POINT,
+    FirstLineIndent, HeaderFooter, HeaderFooterKind, HorizontalFrom, ImageData, LevelSuffix,
+    LineSpacing, ListCounters, ListLabel, NoteKind, Numbering, PageBorderDisplay, PageBorders,
+    PageSize, Paragraph, ParagraphBorders, Placement, ResolvedFonts, ResolvedParagraphProps,
     ResolvedRunProps, RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart,
     Settings, Styles, TabStopKind, Theme, Twips, VerticalAlign, VerticalFrom, Watermark, Wrap,
     find_watermark,
@@ -258,6 +258,8 @@ pub struct Float {
     pub height: f32,
     /// Картинка (`None` — заглушка).
     pub image: Option<Arc<ImageData>>,
+    /// Рисунок из фигур (SmartArt) — рисуется вместо картинки.
+    pub drawing: Option<Arc<Drawing>>,
     /// Обтекание текстом.
     pub wrap: Wrap,
     /// За текстом (рисуется под ним).
@@ -1121,6 +1123,7 @@ fn place_float(
         width: spec.width,
         height: spec.height,
         image: spec.image.clone(),
+        drawing: spec.drawing.clone(),
         wrap: anchor.wrap,
         behind: anchor.wrap == Wrap::None && anchor.behind_text,
         distance: Margins {
@@ -1393,6 +1396,7 @@ struct FloatSpec {
     width: f32,
     height: f32,
     image: Option<Arc<ImageData>>,
+    drawing: Option<Arc<Drawing>>,
     anchor: Anchor,
 }
 
@@ -1457,6 +1461,7 @@ fn prepare(
                             width: picture.width_points(),
                             height: picture.height_points(),
                             image: picture.image.clone(),
+                            drawing: picture.drawing.clone(),
                             anchor: (**anchor).clone(),
                         });
                     }
@@ -1464,6 +1469,7 @@ fn prepare(
                         width: picture.width_points(),
                         height: picture.height_points(),
                         image: picture.image.clone(),
+                        drawing: picture.drawing.clone(),
                         floating: picture.anchor.is_some(),
                     };
                     let style = text_style(&resolved, &resolved.fonts.h_ansi);
@@ -3105,6 +3111,7 @@ mod tests {
         behind_text: bool,
     ) -> RunContent {
         RunContent::Picture(letter_model::Picture {
+            drawing: None,
             width: 20 * EMU_PER_POINT,
             height: 10 * EMU_PER_POINT,
             image: None,
@@ -3125,6 +3132,7 @@ mod tests {
     fn wrapped(wrap: Wrap, x: i64, y: i64, width: i64, height: i64) -> RunContent {
         let at = |pt: i64| Placement::Offset(pt * EMU_PER_POINT);
         RunContent::Picture(letter_model::Picture {
+            drawing: None,
             width: width * EMU_PER_POINT,
             height: height * EMU_PER_POINT,
             image: None,

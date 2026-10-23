@@ -452,3 +452,46 @@ fn new_document_with_a_list_gets_a_numbering_part() {
         Some((1, 0))
     );
 }
+
+#[test]
+fn smart_art_is_read_with_its_drawing() {
+    let doc = fixture("smartart.docx");
+    let picture = paragraphs(&doc)
+        .iter()
+        .flat_map(|p| p.runs())
+        .flat_map(|r| &r.content)
+        .find_map(|c| match c {
+            RunContent::Picture(picture) => Some(picture),
+            _ => None,
+        })
+        .expect("smart art");
+    assert_eq!((picture.width, picture.height), (5_486_400, 1_600_200));
+    // Картинки нет: рисуется готовый вид.
+    assert!(picture.image.is_none() && picture.relationship.is_none());
+    assert!(picture.raw.as_ref().unwrap().as_str().contains("relIds"));
+    let drawing = picture.drawing.as_ref().expect("drawing");
+    assert_eq!((drawing.width, drawing.height), (5_486_400, 1_600_200));
+    assert_eq!(drawing.shapes.len(), 5);
+    let first = &drawing.shapes[0];
+    // accent1 темы Office — 4F81BD.
+    assert_eq!(first.fill, Some([0x4F, 0x81, 0xBD, 255]));
+    let line = first.line.expect("line");
+    assert_eq!((line.color, line.width), ([255, 255, 255, 255], 12_700));
+    let text = first.text.as_ref().expect("text");
+    assert_eq!(text.paragraphs[0].runs[0].text, "Идея");
+    assert_eq!(text.paragraphs[0].runs[0].size, 2_000);
+    // Цвет текста — из ссылки на шрифт стиля (lt1, белый).
+    assert_eq!(text.paragraphs[0].runs[0].color, [255, 255, 255, 255]);
+    // Область текста — рамка без внутренних полей (76200 EMU).
+    assert_eq!((text.x, text.width), (76_200, 1_371_600 - 2 * 76_200));
+    // Стрелка светлее блока (tint 60 %), без текста.
+    let arrow = &drawing.shapes[1];
+    let fill = arrow.fill.unwrap();
+    assert!(
+        fill[0] > 0x4F && fill[1] > 0x81 && fill[2] > 0xBD,
+        "{fill:?}"
+    );
+    assert!(arrow.text.is_none());
+    // Скруглённый прямоугольник — много точек на дугах углов.
+    assert!(first.contours[0].points.len() > 8);
+}

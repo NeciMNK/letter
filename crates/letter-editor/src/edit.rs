@@ -636,6 +636,7 @@ mod tests {
     #[test]
     fn picture_is_one_letter() {
         let picture = letter_model::Picture {
+            drawing: None,
             width: 12_700,
             height: 12_700,
             image: None,
