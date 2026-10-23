@@ -544,6 +544,110 @@ def watermark() -> Document:
     return doc
 
 
+C_NS = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
+def chart_series(index: int, name: str, categories: list[str], values: list[float], color: str | None) -> str:
+    """Ряд `c:ser` с кешем имени, подписей и значений (как пишет Word)."""
+    cats = "".join(f'<c:pt idx="{i}"><c:v>{c}</c:v></c:pt>' for i, c in enumerate(categories))
+    vals = "".join(f'<c:pt idx="{i}"><c:v>{v}</c:v></c:pt>' for i, v in enumerate(values))
+    column = "BCDEFG"[index]
+    fill = (
+        f'<c:spPr><a:solidFill><a:schemeClr val="{color}"/></a:solidFill></c:spPr>'
+        if color
+        else ""
+    )
+    return (
+        f'<c:ser><c:idx val="{index}"/><c:order val="{index}"/>'
+        f'<c:tx><c:strRef><c:f>Лист1!${column}$1</c:f><c:strCache><c:ptCount val="1"/>'
+        f'<c:pt idx="0"><c:v>{name}</c:v></c:pt></c:strCache></c:strRef></c:tx>{fill}'
+        f'<c:cat><c:strRef><c:f>Лист1!$A$2:$A${len(categories) + 1}</c:f><c:strCache>'
+        f'<c:ptCount val="{len(categories)}"/>{cats}</c:strCache></c:strRef></c:cat>'
+        f'<c:val><c:numRef><c:f>Лист1!${column}$2:${column}${len(values) + 1}</c:f><c:numCache>'
+        f'<c:formatCode>General</c:formatCode><c:ptCount val="{len(values)}"/>{vals}'
+        "</c:numCache></c:numRef></c:val></c:ser>"
+    )
+
+
+def add_chart(doc, paragraph, number: int, plot: str, title: str | None, legend: str | None) -> None:
+    """Часть диаграммы `word/charts/chartN.xml` (только кеш, без таблицы
+    с данными) и рисунок-диаграмма в строке абзаца."""
+    from docx.opc.constants import RELATIONSHIP_TYPE
+    from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
+
+    title_xml = (
+        f'<c:title><c:tx><c:rich><a:bodyPr/><a:p><a:r><a:t>{title}</a:t></a:r></a:p>'
+        '</c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/>'
+        if title
+        else '<c:autoTitleDeleted val="1"/>'
+    )
+    legend_xml = (
+        f'<c:legend><c:legendPos val="{legend}"/><c:overlay val="0"/></c:legend>' if legend else ""
+    )
+    xml = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<c:chartSpace xmlns:c="{C_NS}" xmlns:a="{A_NS}" xmlns:r="{R_NS}">'
+        f'<c:roundedCorners val="0"/><c:chart>{title_xml}<c:plotArea><c:layout/>{plot}</c:plotArea>'
+        f'{legend_xml}<c:plotVisOnly val="1"/></c:chart></c:chartSpace>'
+    )
+    part = Part(
+        PackURI(f"/word/charts/chart{number}.xml"),
+        "application/vnd.openxmlformats-officedocument.drawingml.chart+xml",
+        xml.encode(),
+        doc.part.package,
+    )
+    rid = doc.part.relate_to(part, RELATIONSHIP_TYPE.CHART)
+    cx, cy = Inches(5).emu, Inches(3).emu
+    drawing = (
+        f'<w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<wp:inline distT="0" distB="0" distL="0" distR="0" '
+        'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
+        f'<wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>'
+        f'<wp:docPr id="{number}" name="Диаграмма {number}"/><wp:cNvGraphicFramePr/>'
+        f'<a:graphic xmlns:a="{A_NS}"><a:graphicData uri="{C_NS}">'
+        f'<c:chart xmlns:c="{C_NS}" xmlns:r="{R_NS}" r:id="{rid}"/>'
+        "</a:graphicData></a:graphic></wp:inline></w:drawing>"
+    )
+    run = paragraph.add_run()
+    run._r.append(etree.fromstring(drawing))
+
+
+def charts() -> Document:
+    doc = new_document("Диаграммы")
+    months = ["Январь", "Февраль", "Март", "Апрель"]
+    doc.add_paragraph("Гистограмма с группировкой, два ряда:")
+    columns = (
+        '<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:varyColors val="0"/>'
+        + chart_series(0, "Москва", months, [4.3, 2.5, 3.5, 4.5], "accent1")
+        + chart_series(1, "Казань", months, [2.4, 4.4, 1.8, 2.8], "accent2")
+        + '<c:gapWidth val="219"/><c:overlap val="-27"/><c:axId val="1"/><c:axId val="2"/></c:barChart>'
+        '<c:catAx><c:axId val="1"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx>'
+        '<c:valAx><c:axId val="2"/><c:majorGridlines/><c:axPos val="l"/><c:crossAx val="1"/></c:valAx>'
+    )
+    add_chart(doc, doc.add_paragraph(), 1, columns, "Продажи", "b")
+    doc.add_paragraph("Круговая диаграмма:")
+    pie = (
+        '<c:pieChart><c:varyColors val="1"/>'
+        + chart_series(0, "Доля", ["Чай", "Кофе", "Сок"], [50, 30, 20], None)
+        + '<c:firstSliceAng val="0"/></c:pieChart>'
+    )
+    add_chart(doc, doc.add_paragraph(), 2, pie, None, "r")
+    doc.add_paragraph("График:")
+    line = (
+        '<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>'
+        + chart_series(0, "Температура", months, [-8, -6, 1, 9], None)
+        + '<c:marker val="1"/><c:axId val="3"/><c:axId val="4"/></c:lineChart>'
+        '<c:catAx><c:axId val="3"/><c:axPos val="b"/><c:crossAx val="4"/></c:catAx>'
+        '<c:valAx><c:axId val="4"/><c:majorGridlines/><c:axPos val="l"/><c:crossAx val="3"/></c:valAx>'
+    )
+    add_chart(doc, doc.add_paragraph(), 3, line, None, None)
+    doc.add_paragraph("Текст после диаграмм.")
+    return doc
+
+
 FIXTURES = {
     "empty.docx": empty,
     "plain-text.docx": plain_text,
@@ -562,6 +666,7 @@ FIXTURES = {
     "notes.docx": notes,
     "borders.docx": borders,
     "watermark.docx": watermark,
+    "charts.docx": charts,
 }
 
 

@@ -411,9 +411,16 @@ fn dump_run(out: &mut String, depth: usize, run: &Run) {
                 let _ = write!(content, "<{}>", raw.name());
             }
             RunContent::Picture(picture) => {
+                let chart = picture.image.as_ref().and_then(|i| i.chart.as_ref());
+                let what = match chart {
+                    Some(chart) => {
+                        format!("диаграмма {:?}, рядов {},", chart.kind, chart.series.len())
+                    }
+                    None => "рисунок".to_string(),
+                };
                 let _ = write!(
                     content,
-                    "<рисунок {:.1}×{:.1} пт>",
+                    "<{what} {:.1}×{:.1} пт>",
                     picture.width_points(),
                     picture.height_points()
                 );

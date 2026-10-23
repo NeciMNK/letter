@@ -147,6 +147,14 @@ impl PagePainter {
                     let r = Rect::from_min_max(to_screen(x, y), to_screen(x + width, y + height));
                     painter.rect_filled(r, 0.0, color32(color));
                 }
+                DrawItem::Polygon { points, color } => {
+                    let points = points.iter().map(|&(x, y)| to_screen(x, y)).collect();
+                    painter.add(egui::Shape::convex_polygon(
+                        points,
+                        color32(color),
+                        egui::Stroke::NONE,
+                    ));
+                }
                 DrawItem::Glyph { key, x, y, color } => {
                     let Some((slot, glyph)) = self.slot(&ctx, library, key) else {
                         continue;

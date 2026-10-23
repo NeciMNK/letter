@@ -15,6 +15,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod chart;
 mod document;
 mod error;
 mod names;
@@ -74,8 +75,11 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
         numbering_part = Some(name);
         numbering_root_attributes = root.root_attributes();
     }
+    // Цвета темы нужны диаграммам.
+    let mut palette = Vec::new();
     if let Some((_, root)) = read_related_xml(&mut package, &main, "theme") {
         doc.theme = theme::read_theme(&root);
+        palette = chart::theme_palette(&root);
     }
     if let Some((_, root)) = read_related_xml(&mut package, &main, "settings") {
         doc.settings = settings::read_settings(&root);
@@ -125,7 +129,7 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
     rebuilt.extend(stories.iter().map(|(name, _)| Some(name.clone())));
     rebuilt.extend(note_parts.iter().map(|(_, name, _)| Some(name.clone())));
     let mut source = read_source(&mut package, &rebuilt)?;
-    attach_images(|f| doc.for_each_picture_mut(f), &images, &source);
+    attach_images(|f| doc.for_each_picture_mut(f), &images, &source, &palette);
     let addresses = package.external_links(&main);
     for section in &mut doc.sections {
         attach_links(&mut section.blocks, &addresses);
@@ -151,6 +155,7 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
                             |f| for_each_picture_in(&mut story.blocks, f),
                             &relationships,
                             &source,
+                            &palette,
                         );
                     }
                 }
@@ -171,6 +176,7 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
                 |f| for_each_picture_in(&mut note.blocks, f),
                 &relationships,
                 &source,
+                &palette,
             );
         }
         let entry = Some((name, attributes));
@@ -315,10 +321,12 @@ fn attach_links(blocks: &mut [Block], addresses: &[(String, String)]) {
     }
 }
 
+/// Находит картинки рисунков (и данные диаграмм) по их связям.
 fn attach_images(
     visit: impl FnOnce(&mut dyn FnMut(&mut Picture)),
     relationships: &[package::Relationship],
     source: &SourcePackage,
+    palette: &[(u8, u8, u8)],
 ) {
     let mut loaded: Vec<(&str, Option<Arc<ImageData>>)> = Vec::new();
     visit(&mut |picture: &mut Picture| {
@@ -329,16 +337,32 @@ fn attach_images(
             picture.image = image.clone();
             return;
         }
-        let image = relationships
-            .iter()
-            .find(|r| r.id == id && r.kind.ends_with("/image"))
-            .and_then(|r| source.part(&r.target))
-            .map(|part| {
+        let relationship = relationships.iter().find(|r| r.id == id);
+        let part = relationship.and_then(|r| source.part(&r.target));
+        let image = match relationship {
+            Some(r) if r.kind.ends_with("/image") => part.map(|part| {
                 Arc::new(ImageData {
                     name: part.name.clone(),
                     bytes: part.data.clone(),
+                    chart: None,
                 })
-            });
+            }),
+            // Диаграмма рисуется по своим данным; непонятая — заглушкой.
+            Some(r) if r.kind.ends_with("/chart") => part
+                .and_then(|part| {
+                    let root = xml::parse(&part.data).ok()?;
+                    let chart = chart::read_chart(&root, palette)?;
+                    Some((part, chart))
+                })
+                .map(|(part, chart)| {
+                    Arc::new(ImageData {
+                        name: part.name.clone(),
+                        bytes: Vec::new(),
+                        chart: Some(Arc::new(chart)),
+                    })
+                }),
+            _ => None,
+        };
         picture.image = image.clone();
         if let Some(r) = relationships.iter().find(|r| r.id == id) {
             loaded.push((r.id.as_str(), image));
