@@ -14,7 +14,8 @@
 //! - [`table`] — таблицы: вставка, ячейки, строки и столбцы;
 //! - [`protection`] — пароли защиты документа;
 //! - [`revisions`] — исправления: запись, принять и отклонить;
-//! - [`compare`] — сравнение двух документов.
+//! - [`compare`] — сравнение двух документов;
+//! - [`spelling`] — проверка орфографии.
 
 pub mod caret;
 pub mod clipboard;
@@ -36,6 +37,7 @@ pub mod revisions;
 pub mod search;
 pub mod section;
 pub mod selection;
+pub mod spelling;
 pub mod table;
 pub mod toc;
 pub mod watermark;
@@ -46,7 +48,7 @@ pub use compare::compare_documents;
 pub use cover::{CoverLayout, CoverPage, insert_cover_page};
 pub use edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, paragraph_count,
-    paragraph_mut, split_paragraph,
+    paragraph_mut, paragraph_ref, split_paragraph,
 };
 pub use fields::{DateTime, FieldContext, format_date, update_fields};
 pub use format::{

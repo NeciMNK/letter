@@ -96,11 +96,79 @@ pub fn context_menu(
     }
 }
 
+/// Пункты орфографии в начале меню над словом с ошибкой: замены,
+/// «Пропустить все», «Добавить в словарь».
+pub fn spelling_items(
+    ui: &mut Ui,
+    word: &str,
+    suggestions: &[String],
+    start: letter_editor::Position,
+    end: letter_editor::Position,
+    out: &mut Vec<RibbonCommand>,
+) {
+    if suggestions.is_empty() {
+        ui.label(tr("spelling-no-suggestions"));
+    }
+    for text in suggestions {
+        if ui
+            .button(eframe::egui::RichText::new(text).strong())
+            .clicked()
+        {
+            out.push(RibbonCommand::SpellReplace {
+                start,
+                end,
+                text: text.clone(),
+            });
+            ui.close();
+        }
+    }
+    if ui.button(tr("spelling-ignore")).clicked() {
+        out.push(RibbonCommand::SpellIgnore(word.to_string()));
+        ui.close();
+    }
+    if ui.button(tr("spelling-add")).clicked() {
+        out.push(RibbonCommand::SpellAdd(word.to_string()));
+        ui.close();
+    }
+    ui.separator();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn spelling_items_give_commands() {
+        use letter_editor::Position;
+        let (a, b) = (Position::new(0, 0), Position::new(0, 4));
+        let mut h = Harness::new_ui_state(
+            move |ui, out: &mut Vec<RibbonCommand>| {
+                spelling_items(ui, "helo", &["hello".to_string()], a, b, out);
+            },
+            Vec::new(),
+        );
+        h.run();
+        h.get_by_label("hello").click();
+        h.run();
+        h.get_by_label("Пропустить все").click();
+        h.run();
+        h.get_by_label("Добавить в словарь").click();
+        h.run();
+        assert_eq!(
+            h.state(),
+            &[
+                RibbonCommand::SpellReplace {
+                    start: a,
+                    end: b,
+                    text: "hello".into()
+                },
+                RibbonCommand::SpellIgnore("helo".into()),
+                RibbonCommand::SpellAdd("helo".into()),
+            ]
+        );
+    }
 
     #[test]
     fn items_give_commands() {

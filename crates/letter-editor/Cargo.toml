@@ -16,5 +16,7 @@ letter-layout.workspace = true
 letter-model.workspace = true
 getrandom = "0.4"
 sha2 = "0.11"
+spellbook = "0.4"
+encoding_rs = "0.8"
 unicode-segmentation = "1"
 

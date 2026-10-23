@@ -717,6 +717,8 @@ pub struct Viewer {
     bookmark_dialog: BookmarkDialog,
     /// Окно «Ограничить редактирование».
     protect_dialog: ProtectDialog,
+    /// Проверка орфографии.
+    spelling: crate::spelling::Spelling,
     /// Окно «Символ».
     symbol_dialog: SymbolDialog,
     /// Окно «Шрифт».
@@ -933,6 +935,7 @@ impl Viewer {
             link_dialog: LinkDialog::default(),
             bookmark_dialog: BookmarkDialog::default(),
             protect_dialog: ProtectDialog::default(),
+            spelling: crate::spelling::Spelling::start(dir.clone()),
             symbol_dialog: SymbolDialog::default(),
             font_dialog: FontDialog::default(),
             applied_theme: None,
@@ -2179,6 +2182,7 @@ impl Viewer {
                 p.enforced && p.edit == letter_model::EditRestriction::TrackedChanges
             });
             info.has_revisions = letter_editor::revisions::has_revisions(document.body(), None);
+            info.spelling = self.spelling.enabled;
             if let Some(story) = &document.story
                 && let Some(header) = story.header()
             {
@@ -2338,6 +2342,41 @@ impl Viewer {
                     }
                 }
                 RibbonCommand::CompareDocuments => self.request(Intent::Compare),
+                RibbonCommand::SpellReplace { start, end, text } => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &mut self.document {
+                        document.set_selection(Selection::new(start, end));
+                        document.history.seal();
+                    }
+                    actions.push(Action::Edit(Command::Type(text)));
+                }
+                RibbonCommand::SpellIgnore(word) => self.spelling.ignore(&word),
+                RibbonCommand::SpellAdd(word) => self.spelling.add_word(&word),
+                RibbonCommand::ToggleSpelling => {
+                    let on = !self.spelling.enabled;
+                    self.spelling.set_enabled(on);
+                }
+                RibbonCommand::NextSpellingError => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &mut self.document
+                        && document.story.is_none()
+                    {
+                        let errors = self
+                            .spelling
+                            .errors(&document.doc, document.history.state());
+                        let key = |p: Position| (p.paragraph, p.offset);
+                        let here = key(document.selection().end());
+                        let next = errors
+                            .iter()
+                            .find(|(a, _)| key(*a) >= here)
+                            .or_else(|| errors.first());
+                        if let Some(&(a, b)) = next {
+                            document.set_selection(Selection::new(a, b));
+                            document.history.seal();
+                            self.reveal_cursor = true;
+                        }
+                    }
+                }
                 RibbonCommand::RestrictEditing => {
                     if let Some(document) = &self.document {
                         let settings = &document.body().settings;
@@ -2736,12 +2775,17 @@ impl Viewer {
         }
 
         let zoom = self.zoom();
+        let spelling_errors = match &self.document {
+            Some(d) if d.story.is_none() => self.spelling.errors(&d.doc, d.history.state()),
+            _ => Vec::new(),
+        };
         let Viewer {
             library,
             painter,
             document,
             show_marks,
             picture_drag,
+            spelling,
             ..
         } = self;
         let Some(document) = document else {
@@ -3047,7 +3091,20 @@ impl Viewer {
             let paragraph = document.cursor.paragraph;
             let numbered = (list_kind(&document.doc, paragraph) == Some(ListKind::Numbered))
                 .then(|| can_continue_numbering(&document.doc, paragraph));
+            let key = |p: Position| (p.paragraph, p.offset);
+            let misspelled = spelling_errors
+                .iter()
+                .find(|(a, b)| key(*a) <= key(document.cursor) && key(document.cursor) <= key(*b))
+                .copied();
             response.context_menu(|ui| {
+                if let Some((a, b)) = misspelled
+                    && let Some(word) = letter_editor::paragraph_ref(&document.doc, a.paragraph)
+                        .map(|p| p.plain_text())
+                        .and_then(|t| t.get(a.offset..b.offset).map(str::to_string))
+                {
+                    let suggestions = spelling.suggestions(&word);
+                    crate::context_menu::spelling_items(ui, &word, &suggestions, a, b, &mut menu);
+                }
                 crate::context_menu::context_menu(ui, has_selection, numbered, on_link, &mut menu);
             });
 
@@ -3061,6 +3118,22 @@ impl Viewer {
                     }
                     if let Some(header) = document.story.as_ref().and_then(|s| s.header()) {
                         paint_story_frame(ui, page, screen_rect(i), 1.0 / points, header);
+                    }
+                }
+            }
+
+            // Слова с ошибкой — красная волна.
+            for &(a, b) in &spelling_errors {
+                for r in selection_rects(&document.layout, Selection::new(a, b)) {
+                    if r.page < placement.rects.len() && placement.rects[r.page].intersects(visible)
+                    {
+                        let page = screen_rect(r.page);
+                        let scale = 1.0 / points;
+                        let rect = Rect::from_min_max(
+                            page.min + Vec2::new(r.left, r.top) * scale,
+                            page.min + Vec2::new(r.right, r.bottom) * scale,
+                        );
+                        crate::spelling::paint_wave(ui.painter(), rect, scale);
                     }
                 }
             }
@@ -3942,6 +4015,42 @@ mod tests {
         assert!(viewer.ribbon_info().track_changes_forced);
         viewer.run_ribbon(&ctx, vec![RibbonCommand::ToggleTrackChanges]);
         assert!(viewer.ribbon_info().track_changes);
+    }
+
+    #[test]
+    fn spelling_errors_are_found_and_replaced() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.spelling =
+            crate::spelling::Spelling::with_speller(crate::spelling::tests::speller());
+        viewer.new_document();
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![Event::Text("hello wrld".into())]),
+        );
+        frame(&ctx, &mut viewer, key(Key::Home, Modifiers::NONE));
+        frame(&ctx, &mut viewer, key(Key::F7, Modifiers::NONE));
+        let selection = viewer.selection().unwrap();
+        assert_eq!(
+            (selection.start(), selection.end()),
+            (Position::new(0, 6), Position::new(0, 10))
+        );
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::SpellReplace {
+                start: Position::new(0, 6),
+                end: Position::new(0, 10),
+                text: "world".into(),
+            }],
+        );
+        assert_eq!(first_text(&mut viewer), "hello world");
+        let document = viewer.document.as_ref().unwrap();
+        let state = document.history.state();
+        let doc = document.doc.clone();
+        assert!(viewer.spelling.errors(&doc, state).is_empty());
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ToggleSpelling]);
+        assert!(!viewer.ribbon_info().spelling);
     }
 
     #[test]

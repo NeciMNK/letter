@@ -216,6 +216,23 @@ pub enum RibbonCommand {
     /// «Рецензирование → Исправления»: включить или выключить запись
     /// (Ctrl+Shift+E).
     ToggleTrackChanges,
+    /// Заменить слово с ошибкой (от `start` до `end`) на `text`.
+    SpellReplace {
+        /// Начало слова.
+        start: letter_editor::Position,
+        /// Конец слова.
+        end: letter_editor::Position,
+        /// Замена.
+        text: String,
+    },
+    /// «Пропустить все»: не подчёркивать это слово.
+    SpellIgnore(String),
+    /// «Добавить в словарь».
+    SpellAdd(String),
+    /// «Рецензирование → Проверять орфографию»: включить или выключить.
+    ToggleSpelling,
+    /// F7: выделить следующее слово с ошибкой.
+    NextSpellingError,
     /// «Рецензирование → Сравнить»: сравнить два документа.
     CompareDocuments,
     /// «Далее» (`true`) или «Назад»: к следующему исправлению.
@@ -319,6 +336,8 @@ pub struct RibbonInfo {
     pub track_changes_forced: bool,
     /// В документе есть исправления.
     pub has_revisions: bool,
+    /// Проверка орфографии включена.
+    pub spelling: bool,
 }
 
 /// Состояние ленты.
