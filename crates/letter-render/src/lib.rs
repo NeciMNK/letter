@@ -15,6 +15,7 @@
 pub mod glyphs;
 pub mod image;
 pub mod marks;
+pub mod pdf;
 pub mod picture;
 pub mod scene;
 pub mod screen;
@@ -22,6 +23,7 @@ pub mod screen;
 pub use glyphs::{GlyphCache, GlyphImage, GlyphKey, GlyphPixels};
 pub use image::{RgbaImage, render_page};
 pub use marks::{Mark, MarkKind, formatting_marks};
+pub use pdf::{OutlineItem, PdfInfo, write_pdf};
 pub use scene::{DrawItem, Rgba, page_scene};
 pub use screen::{DESK_COLOR, PagePainter};
 

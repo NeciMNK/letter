@@ -16,7 +16,11 @@ egui.workspace = true
 image.workspace = true
 letter-layout.workspace = true
 letter-model.workspace = true
+miniz_oxide = "0.8"
+pdf-writer = "0.15"
+subsetter = { version = "0.2.6", default-features = false }
 swash = "0.2"
+ttf-parser = "0.25"
 
 [dev-dependencies]
 letter-docx.workspace = true

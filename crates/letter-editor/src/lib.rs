@@ -24,6 +24,7 @@ pub mod links;
 pub mod lists;
 pub mod navigation;
 pub mod notes;
+pub mod outline;
 pub mod picture;
 pub mod position;
 pub mod search;
@@ -55,6 +56,7 @@ pub use lists::{
 };
 pub use navigation::{Motion, Moved, move_cursor};
 pub use notes::{insert_note, note_styles, notes, notes_mut};
+pub use outline::{OutlineEntry, bookmark_places, document_outline};
 pub use picture::{
     MIN_PICTURE_SIZE, PictureBox, PictureWrap, anchor_with_wrap, insert_picture, is_picture,
     moved_anchor, picture_at_point, picture_ref, pictures_on_page, resize_picture,

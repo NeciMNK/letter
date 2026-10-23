@@ -8,6 +8,8 @@
 //!   документ по страницам и печатает строки каждой страницы;
 //! - `letter-cli render [--embedded-fonts] файл.docx папка` — рисует
 //!   страницы в картинки PNG (96 точек на дюйм, как Word при 100 %);
+//! - `letter-cli pdf [--embedded-fonts] файл.docx выход.pdf` — сохраняет
+//!   документ в PDF (как «Сохранить как PDF» в программе);
 //! - `letter-cli compare [--embedded-fonts] [--tolerance пт] файл.docx
 //!   эталон.pdf` — сверяет нашу вёрстку с PDF, сохранённым из Word;
 //! - `letter-cli pdf-lines файл.pdf` — печатает строки текста PDF так, как
@@ -20,7 +22,9 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use letter_layout::{FontLibrary, PageLine, Shaper, layout_document};
-use letter_render::{GlyphCache, RgbaImage, SCREEN_PIXELS_PER_POINT, render_page};
+use letter_render::{
+    GlyphCache, OutlineItem, PdfInfo, RgbaImage, SCREEN_PIXELS_PER_POINT, render_page, write_pdf,
+};
 
 use letter_model::{
     Alignment, Block, BreakKind, Document, FieldCharKind, FirstLineIndent, Inline, LineSpacing,
@@ -34,6 +38,7 @@ pub const USAGE: &str = "\
   letter-cli roundtrip вход.docx выход.docx  открыть → сохранить → открыть и сравнить
   letter-cli pages [--embedded-fonts] файл.docx  разложить по страницам и напечатать строки
   letter-cli render [--embedded-fonts] файл.docx папка  нарисовать страницы в PNG
+  letter-cli pdf [--embedded-fonts] файл.docx выход.pdf  сохранить в PDF
   letter-cli compare [--embedded-fonts] [--tolerance пт] файл.docx эталон.pdf
                                                сверить вёрстку с PDF из Word
   letter-cli pdf-lines файл.pdf               напечатать строки текста PDF";
@@ -54,6 +59,12 @@ pub fn run(args: &[String]) -> Result<String, String> {
         ["render", "--embedded-fonts", path, dir] => {
             render(&open(path)?, &FontLibrary::embedded_only(), Path::new(dir))
         }
+        ["pdf", path, output] => save_pdf(&open(path)?, &FontLibrary::new(), Path::new(output)),
+        ["pdf", "--embedded-fonts", path, output] => save_pdf(
+            &open(path)?,
+            &FontLibrary::embedded_only(),
+            Path::new(output),
+        ),
         ["compare", rest @ ..] => compare_command(rest),
         ["pdf-lines", path] => pdf_lines(Path::new(path)),
         _ => Err(USAGE.to_string()),
@@ -145,6 +156,38 @@ pub fn render(doc: &Document, library: &FontLibrary, dir: &Path) -> Result<Strin
         let _ = writeln!(out, "{} ({}×{})", path.display(), image.width, image.height);
     }
     Ok(out)
+}
+
+/// Сохраняет документ в PDF `output`.
+pub fn save_pdf(doc: &Document, library: &FontLibrary, output: &Path) -> Result<String, String> {
+    let bytes = export_pdf(doc, library);
+    std::fs::write(output, &bytes).map_err(|e| format!("{}: {e}", output.display()))?;
+    Ok(format!(
+        "Сохранено в {} ({} байт).\n",
+        output.display(),
+        bytes.len()
+    ))
+}
+
+/// PDF документа: страницы, оглавление из заголовков, переходы по
+/// ссылкам на закладки, название и автор.
+pub fn export_pdf(doc: &Document, library: &FontLibrary) -> Vec<u8> {
+    let layout = layout_document(doc, &mut Shaper::new(), library);
+    let info = PdfInfo {
+        title: doc.properties.core.title.clone(),
+        author: doc.properties.core.creator.clone(),
+        outline: letter_editor::document_outline(doc, &layout)
+            .into_iter()
+            .map(|entry| OutlineItem {
+                level: entry.level,
+                title: entry.title,
+                page: entry.page,
+                top: entry.top,
+            })
+            .collect(),
+        anchors: letter_editor::bookmark_places(doc, &layout),
+    };
+    write_pdf(&layout.pages, library, &info)
 }
 
 fn write_png(image: &RgbaImage, path: &Path) -> Result<(), Box<dyn std::error::Error>> {

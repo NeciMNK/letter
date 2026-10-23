@@ -84,7 +84,8 @@ pub struct Backstage {
 
 /// Форматы для «Экспорт → Изменить тип файла»: расширение, название
 /// и пояснение.
-pub const EXPORT_FORMATS: [(&str, &str, &str); 6] = [
+pub const EXPORT_FORMATS: [(&str, &str, &str); 7] = [
+    ("pdf", "format-pdf", "format-pdf-about"),
     ("docx", "format-docx", "format-docx-about"),
     ("rtf", "format-rtf", "format-rtf-about"),
     ("odt", "format-odt", "format-odt-about"),
@@ -333,8 +334,6 @@ fn export_page(ui: &mut Ui, out: &mut Vec<RibbonCommand>) {
             out.push(RibbonCommand::SaveAsFormat(extension));
         }
     }
-    ui.add_space(6.0);
-    ui.label(RichText::new(tr("backstage-pdf-soon")).color(Color32::GRAY));
 }
 
 /// «Параметры».
