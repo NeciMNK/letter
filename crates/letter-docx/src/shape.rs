@@ -8,6 +8,7 @@
 use letter_model::{
     Block, ColorBase, ColorMod, DEFAULT_LINE_WIDTH, DEFAULT_TEXT_INSETS, Frame, Geometry, Group,
     GroupChild, LineDash, LineEnd, PathCommand, Shape, ShapeColor, ShapeLine, ShapePath,
+    TextAnchor,
 };
 
 use crate::xml::Element;
@@ -76,7 +77,15 @@ fn read_wsp(wsp: &Element) -> Shape {
     let style = child(wsp, "style");
     shape.fill = read_shape_fill(props, style);
     shape.line = read_shape_line(props, style);
+    shape.text_color = style
+        .and_then(|s| child(s, "fontRef"))
+        .and_then(|f| f.elements().find_map(read_color));
     if let Some(body) = child(wsp, "bodyPr") {
+        shape.text_anchor = match attr(body, "anchor") {
+            Some("ctr") => TextAnchor::Center,
+            Some("b") => TextAnchor::Bottom,
+            _ => TextAnchor::Top,
+        };
         for (i, name) in ["lIns", "tIns", "rIns", "bIns"].into_iter().enumerate() {
             if let Some(v) = number(body, name).filter(|v| *v >= 0) {
                 shape.text_insets[i] = v;
@@ -431,6 +440,9 @@ mod tests {
         assert_eq!(line.width, 12_700);
         assert_eq!(line.color.mods, vec![ColorMod::Shade(15_000)]);
         assert_eq!(shape.text_insets, [0, 45_720, 91_440, 45_720]);
+        assert_eq!(shape.text_anchor, TextAnchor::Center);
+        let text = shape.text_color.unwrap();
+        assert_eq!(text.base, ColorBase::Scheme("lt1".into()));
     }
 
     #[test]

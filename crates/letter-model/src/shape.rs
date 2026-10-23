@@ -27,6 +27,23 @@ pub struct Shape {
     pub text: Vec<Block>,
     /// Поля текста надписи слева, сверху, справа и снизу, EMU.
     pub text_insets: [i64; 4],
+    /// Где текст надписи по высоте фигуры.
+    pub text_anchor: TextAnchor,
+    /// Цвет текста надписи, если у текста нет своего (`a:fontRef` стиля
+    /// фигуры: у фигур Word по умолчанию — белый).
+    pub text_color: Option<ShapeColor>,
+}
+
+/// Где текст надписи по высоте фигуры (`anchor` у `wps:bodyPr`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextAnchor {
+    /// Сверху.
+    #[default]
+    Top,
+    /// Посередине.
+    Center,
+    /// Снизу.
+    Bottom,
 }
 
 /// Поля текста надписи по умолчанию: 0,25 см слева и справа,

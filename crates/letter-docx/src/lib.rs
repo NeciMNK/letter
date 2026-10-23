@@ -391,6 +391,9 @@ fn resolve_shape_colors(shape: &mut Shape, scheme: &ColorScheme) {
     if let Some(line) = &mut shape.line {
         line.color = line.color.resolved(scheme);
     }
+    if let Some(color) = &mut shape.text_color {
+        *color = color.resolved(scheme);
+    }
     if let Geometry::Group(group) = &mut shape.geometry {
         for child in &mut group.children {
             resolve_shape_colors(&mut child.shape, scheme);

@@ -27,6 +27,7 @@ use unicode_bidi::{BidiInfo, Level};
 use unicode_linebreak::{BreakOpportunity, linebreaks};
 
 use crate::fonts::{FontLibrary, FontMatch};
+use crate::pages::PageStory;
 use crate::shaping::{ShapedGlyph, ShapedRun, Shaper, TextStyle};
 
 /// Допуск при сравнении ширин, пт: строка «влезает», если вылезает
@@ -96,6 +97,9 @@ pub struct InlineObject {
     pub image: Option<Arc<ImageData>>,
     /// Фигура вместо картинки.
     pub shape: Option<Arc<Shape>>,
+    /// Текст надписей фигуры, свёрстанный от левого верхнего угла
+    /// объекта.
+    pub text: Option<Arc<PageStory>>,
     /// Плавающий объект: в строке от него только знак привязки без
     /// ширины и высоты, сам объект ставит раскладка по страницам.
     pub floating: bool,
@@ -336,6 +340,8 @@ pub struct ObjectItem {
     pub image: Option<Arc<ImageData>>,
     /// Фигура вместо картинки.
     pub shape: Option<Arc<Shape>>,
+    /// Текст надписей фигуры от левого верхнего угла объекта.
+    pub text: Option<Arc<PageStory>>,
 }
 
 /// Одна строка абзаца.
@@ -1096,7 +1102,8 @@ impl<'a> Builder<'a> {
                         height: object.as_ref().map_or(0.0, |o| o.height),
                         span: cluster.span,
                         image: object.as_ref().and_then(|o| o.image.clone()),
-                        shape: object.and_then(|o| o.shape),
+                        shape: object.as_ref().and_then(|o| o.shape.clone()),
+                        text: object.and_then(|o| o.text),
                     }));
                 }
                 Kind::Break(_) => {}
@@ -1768,6 +1775,7 @@ mod tests {
                     height: 50.0,
                     image: None,
                     shape: None,
+                    text: None,
                     floating: false,
                 },
                 mono(),

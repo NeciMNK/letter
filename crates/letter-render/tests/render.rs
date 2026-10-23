@@ -357,6 +357,19 @@ fn shapes_are_drawn_on_screen_image_and_pdf() {
         shapes.remove(i).1
     };
     let (arrow, oval) = (find("rightArrow"), find("ellipse"));
+    // Надпись: белые буквы внутри синего прямоугольника.
+    let (rx, ry, rw, rh) = find("rect");
+    let glyphs = page_scene(page, scale, &library, &mut cache)
+        .into_iter()
+        .filter(|i| match *i {
+            DrawItem::Glyph { x, y, color, .. } => {
+                let (x, y) = (x as f32, y as f32);
+                color == [255, 255, 255, 255] && x > rx && x < rx + rw && y > ry && y < ry + rh
+            }
+            _ => false,
+        })
+        .count();
+    assert_eq!(glyphs, "Надпись в прямоугольнике".chars().count());
     let image = render_page(page, scale, &library, &mut cache);
     let at = |x: f32, y: f32| image.pixel(x as u32, y as u32).unwrap();
     // Жёлтая стрелка (FFC000): середина залита, правый верхний угол

@@ -69,6 +69,7 @@ pub use section::{
 pub use shape::{
     ColorBase, ColorMod, ColorScheme, DEFAULT_LINE_WIDTH, DEFAULT_TEXT_INSETS, Frame, Geometry,
     Group, GroupChild, LineDash, LineEnd, PathCommand, Shape, ShapeColor, ShapeLine, ShapePath,
+    TextAnchor,
 };
 pub use style::{DocDefaults, Style, StyleKind, Styles};
 pub use symbol::{Symbol, is_symbol_font, symbol_char};
