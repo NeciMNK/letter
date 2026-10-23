@@ -163,20 +163,31 @@ pub fn hit_test(layout: &DocumentLayout, page: usize, x: f32, y: f32) -> Option<
         .iter()
         .find(|l| y < l.top + l.height)
         .or_else(|| lines.last())?;
+    position_in_line(line, x)
+}
+
+/// Ближайшая к координате `x` (пт от левого края листа) позиция
+/// в строке. `None`, если в строке нет мест курсора.
+pub fn position_in_line(line: &PageLine, x: f32) -> Option<Position> {
     let stop = line_stops(line)
         .into_iter()
         .min_by(|a, b| (a.x - x).abs().total_cmp(&(b.x - x).abs()))?;
-    let range = &line.line.range;
-    let affinity = if stop.offset == range.end && line.line.end == LineEnd::Wrap {
-        Affinity::Upstream
-    } else {
-        Affinity::Downstream
-    };
     Some(Position {
         paragraph: line.paragraph,
         offset: stop.offset,
-        affinity,
+        affinity: affinity_at(line, stop.offset),
     })
+}
+
+/// Привязка позиции `offset` в строке: конец строки на месте переноса —
+/// к этой строке, остальное — к тексту после.
+pub(crate) fn affinity_at(line: &PageLine, offset: usize) -> Affinity {
+    let range = &line.line.range;
+    if offset == range.end && range.end > range.start && line.line.end == LineEnd::Wrap {
+        Affinity::Upstream
+    } else {
+        Affinity::Downstream
+    }
 }
 
 /// Где нарисовать курсор для позиции `position`. `None`, если такой
