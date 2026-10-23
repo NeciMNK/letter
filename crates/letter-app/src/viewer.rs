@@ -630,6 +630,8 @@ pub struct Viewer {
     pending_offset: Option<Vec2>,
     /// Лист в середине окна, с нуля.
     current_page: usize,
+    /// Принтеры для страницы «Печать» (ищутся при первом её открытии).
+    printers: Option<crate::print::PrinterList>,
     /// Надо обновить заголовок окна.
     title_changed: bool,
     /// Пользователь попросил окно выбора файла.
@@ -857,6 +859,7 @@ impl Viewer {
             view_origin: Pos2::ZERO,
             pending_offset: None,
             current_page: 0,
+            printers: None,
             title_changed: false,
             open_requested: false,
             picture_requested: false,
@@ -948,6 +951,14 @@ impl Viewer {
                     path: document.path.clone(),
                     modified: document.modified(),
                     pages: document.layout.pages.len(),
+                    current_page: letter_editor::caret(&document.layout, document.cursor)
+                        .map_or(self.current_page, |c| c.page),
+                    page_sizes: document
+                        .layout
+                        .pages
+                        .iter()
+                        .map(|p| (p.width, p.height))
+                        .collect(),
                     words: stats.words,
                     characters: stats.characters,
                     characters_with_spaces: stats.characters_with_spaces,
@@ -961,6 +972,7 @@ impl Viewer {
             }),
             recent: self.recent.items().to_vec(),
             settings: self.settings,
+            printers: self.printers.as_ref().and_then(|p| p.get()),
         }
     }
 
@@ -1094,6 +1106,45 @@ impl Viewer {
         }
     }
 
+    /// Печатает страницы задания `job`: записывает их во временный PDF и
+    /// отдаёт системе. Ошибку показывает пользователю. `true`, если
+    /// задание отправлено.
+    pub fn print(&mut self, job: &crate::print::PrintJob) -> bool {
+        let Some(document) = &mut self.document else {
+            return false;
+        };
+        document.end_story(&mut self.shaper, &self.library);
+        let pages: Vec<_> = job
+            .pages
+            .iter()
+            .filter_map(|&i| document.layout.pages.get(i).cloned())
+            .collect();
+        if pages.is_empty() {
+            return false;
+        }
+        let info = letter_render::PdfInfo {
+            title: Some(document.name()),
+            ..letter_render::PdfInfo::default()
+        };
+        let path = crate::print::temp_pdf();
+        let bytes = letter_render::write_pdf(&pages, &self.library, &info);
+        let sent = std::fs::write(&path, bytes)
+            .map_err(|e| format!("{}: {e}", path.display()))
+            .and_then(|()| crate::print::send(&path, job.printer.as_deref()));
+        // `lp` уже передал файл службе печати; на Windows его ещё читает
+        // программа просмотра PDF, там файл остаётся во временной папке.
+        if !cfg!(windows) {
+            let _ = std::fs::remove_file(&path);
+        }
+        match sent {
+            Ok(()) => true,
+            Err(e) => {
+                self.report(tr("error-print"), e);
+                false
+            }
+        }
+    }
+
     /// Открывает документ, оставшийся после сбоя: он считается
     /// изменённым, сохранять его — туда, откуда он был открыт.
     fn recover(&mut self, index: usize) {
@@ -1190,9 +1241,27 @@ impl Viewer {
 
         if self.backstage.open {
             // «Файл» занимает всё окно вместо ленты и документа.
+            if self.backstage.page == Page::Print {
+                // Колонтитул закрывается: печатается и виден весь документ.
+                if let Some(document) = &mut self.document {
+                    document.end_story(&mut self.shaper, &self.library);
+                }
+                if self.printers.is_none() {
+                    self.printers = Some(crate::print::PrinterList::start());
+                }
+                if self.printers.as_ref().is_some_and(|p| p.get().is_none()) {
+                    ctx.request_repaint_after(Duration::from_millis(200));
+                }
+            }
             let info = self.backstage_info();
+            let (library, painter, document) = (&self.library, &mut self.painter, &self.document);
+            let mut preview = |p: &egui::Painter, index: usize, rect: egui::Rect| {
+                if let Some(page) = document.as_ref().and_then(|d| d.layout.pages.get(index)) {
+                    painter.paint_page(p, library, page, rect);
+                }
+            };
             let commands = egui::CentralPanel::no_frame()
-                .show(ui, |ui| self.backstage.ui(ui, &info))
+                .show(ui, |ui| self.backstage.ui(ui, &info, &mut preview))
                 .inner;
             self.run_ribbon(&ctx, commands);
         } else {
@@ -1819,6 +1888,14 @@ impl Viewer {
                         Page::Open
                     };
                     self.backstage.show(page);
+                }
+                RibbonCommand::PrintPreview => {
+                    if self.document.is_some() {
+                        self.backstage.show(Page::Print);
+                    }
+                }
+                RibbonCommand::Print(job) => {
+                    self.print(&job);
                 }
                 RibbonCommand::CloseDocument => self.request(Intent::CloseDocument),
                 RibbonCommand::SaveAsFormat(extension) => {

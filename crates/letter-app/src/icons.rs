@@ -135,6 +135,12 @@ pub enum Icon {
     CoverPage,
     /// Пустая страница: лист с плюсом.
     BlankPage,
+    /// Печать: принтер.
+    Printer,
+    /// Предыдущая страница: стрелка влево.
+    ChevronLeft,
+    /// Следующая страница: стрелка вправо.
+    ChevronRight,
     /// Границы страниц: уголки рамки.
     PageBorders,
     /// Удалить строки, столбцы или таблицу.
@@ -248,6 +254,9 @@ impl Icon {
             Icon::Hyphenation => ("arrow-right-to-line", '\u{E459}'),
             Icon::CoverPage => ("book-text", '\u{E54B}'),
             Icon::BlankPage => ("file-plus", '\u{E0C9}'),
+            Icon::Printer => ("printer", '\u{E141}'),
+            Icon::ChevronLeft => ("chevron-left", '\u{E06E}'),
+            Icon::ChevronRight => ("chevron-right", '\u{E06F}'),
             Icon::PageBorders => ("scan", '\u{E257}'),
             Icon::DeleteTable => ("grid-2x2-x", '\u{E5E5}'),
             Icon::InsertAbove => ("between-horizontal-start", '\u{E592}'),
@@ -432,7 +441,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 62] = [
+    const ALL: [Icon; 65] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -495,6 +504,9 @@ mod tests {
         Icon::Hyphenation,
         Icon::CoverPage,
         Icon::BlankPage,
+        Icon::Printer,
+        Icon::ChevronLeft,
+        Icon::ChevronRight,
     ];
 
     #[test]

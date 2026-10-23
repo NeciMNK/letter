@@ -51,6 +51,8 @@ pub fn table() -> Vec<Shortcut> {
         global(CTRL, Key::O, C::Open),
         global(CTRL, Key::S, C::Save),
         global(Modifiers::NONE, Key::F12, C::SaveAs),
+        global(CTRL, Key::P, C::PrintPreview),
+        global(CTRL, Key::F2, C::PrintPreview),
         global(CTRL, Key::W, C::CloseDocument),
         global(CTRL, Key::F4, C::CloseDocument),
         global(Modifiers::ALT, Key::F4, C::Exit),
