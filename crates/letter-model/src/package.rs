@@ -15,6 +15,11 @@ pub struct SourcePackage {
     /// Имя части стилей, если стили были прочитаны из неё. Если часть
     /// стилей есть, но испорчена, её байты лежат в [`SourcePackage::parts`].
     pub styles_part: Option<String>,
+    /// Имя части списков (`word/numbering.xml`), если списки были
+    /// прочитаны из неё.
+    pub numbering_part: Option<String>,
+    /// Атрибуты корневого элемента части списков.
+    pub numbering_root_attributes: Vec<(String, String)>,
     /// Имя части основных свойств (`docProps/core.xml`), если они были
     /// прочитаны из неё.
     pub core_part: Option<String>,
@@ -26,6 +31,14 @@ pub struct SourcePackage {
     pub main_root_attributes: Vec<(String, String)>,
     /// То же для корневого элемента части стилей.
     pub styles_root_attributes: Vec<(String, String)>,
+    /// Части колонтитулов, прочитанные в модель (при сохранении строятся
+    /// заново), и атрибуты их корневых элементов.
+    pub header_footer_parts: Vec<(String, Vec<(String, String)>)>,
+    /// Часть сносок, прочитанная в модель (при сохранении строится
+    /// заново), и атрибуты её корня.
+    pub footnotes_part: Option<(String, Vec<(String, String)>)>,
+    /// То же для концевых сносок.
+    pub endnotes_part: Option<(String, Vec<(String, String)>)>,
     /// Типы содержимого по расширению имени (`Default` в `[Content_Types].xml`):
     /// пары «расширение — тип».
     pub default_content_types: Vec<(String, String)>,

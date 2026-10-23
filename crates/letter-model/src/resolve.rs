@@ -14,9 +14,9 @@
 //! значение окончательно.
 
 use crate::{
-    Alignment, Color, Document, FirstLineIndent, HalfPoints, Highlight, LineSpacing,
-    ParagraphProps, RunFonts, RunProps, Style, StyleKind, Styles, TabStop, TabStopKind, ThemeFont,
-    Twips, Underline, VerticalAlign,
+    Alignment, Borders, Color, Document, FirstLineIndent, HalfPoints, Highlight, LineSpacing,
+    NumberingRef, ParagraphBorders, ParagraphProps, RunFonts, RunProps, Shading, Style, StyleKind,
+    Styles, TabStop, TabStopKind, TableProps, ThemeFont, Twips, Underline, VerticalAlign,
 };
 
 /// Шрифт, который используется, если ни один слой его не задал.
@@ -59,6 +59,14 @@ pub struct ResolvedParagraphProps {
     /// Позиции табуляции из всех слоёв по возрастанию, без
     /// [`TabStopKind::Clear`].
     pub tabs: Vec<TabStop>,
+    /// Список и уровень (`numId`, `ilvl`), если абзац в списке.
+    pub numbering: Option<(u32, u8)>,
+    /// Границы абзаца из всех слоёв по сторонам.
+    pub borders: ParagraphBorders,
+    /// Заливка абзаца.
+    pub shading: Option<Shading>,
+    /// Автоматический перенос слов в абзаце запрещён.
+    pub suppress_auto_hyphens: bool,
 }
 
 /// Итоговые шрифты фрагмента: ссылки на тему заменены именами.
@@ -99,6 +107,32 @@ pub struct ResolvedRunProps {
     pub highlight: Highlight,
     /// Над/подстрочный знак.
     pub vertical_align: VerticalAlign,
+    /// Все прописные.
+    pub caps: bool,
+    /// Малые прописные.
+    pub small_caps: bool,
+    /// Скрытый текст.
+    pub hidden: bool,
+    /// Цвет подчёркивания; `None` — цвет текста.
+    pub underline_color: Option<Color>,
+    /// Интервал между буквами (может быть меньше нуля).
+    pub spacing: Twips,
+    /// Масштаб по ширине, проценты.
+    pub scale: u16,
+    /// Смещение вверх (вниз — меньше нуля), полупункты.
+    pub position: i32,
+    /// Кернинг от этого размера; ноль — выключен.
+    pub kerning: HalfPoints,
+    /// Гиперссылка, частью которой является фрагмент (только прямое
+    /// оформление: у стилей ссылок нет).
+    pub link: Option<crate::Hyperlink>,
+}
+
+impl ResolvedRunProps {
+    /// Включён ли кернинг для этого размера шрифта.
+    pub fn kerned(&self) -> bool {
+        self.kerning.0 > 0 && self.size >= self.kerning
+    }
 }
 
 impl Styles {
@@ -131,16 +165,52 @@ impl Styles {
 impl Document {
     /// Итоговое оформление абзаца с учётом стилей.
     pub fn resolve_paragraph(&self, direct: &ParagraphProps) -> ResolvedParagraphProps {
+        self.resolve_paragraph_in(direct, None)
+    }
+
+    /// Итоговое оформление абзаца в ячейке таблицы со стилем `table`:
+    /// оформление абзаца из стиля таблицы ложится сразу после значений
+    /// по умолчанию, под стилем абзаца. `None` — абзац вне таблицы.
+    pub fn resolve_paragraph_in(
+        &self,
+        direct: &ParagraphProps,
+        table: Option<&str>,
+    ) -> ResolvedParagraphProps {
+        let table_chain = self.table_chain(table);
         let chain = self
             .styles
             .chain(direct.style.as_deref(), StyleKind::Paragraph);
-        let layers = std::iter::once(&self.styles.defaults.paragraph)
+        // Список: номер и уровень могут прийти из разных слоёв.
+        let mut list = NumberingRef::default();
+        for layer in std::iter::once(&self.styles.defaults.paragraph)
             .chain(chain.iter().map(|s| &s.paragraph))
+            .chain(std::iter::once(direct))
+        {
+            if let Some(numbering) = layer.numbering {
+                overlay(&mut list.id, &numbering.id);
+                overlay(&mut list.level, &numbering.level);
+            }
+        }
+        let numbering = match list.id {
+            Some(id) if id != 0 => Some((id, list.level.unwrap_or(0).min(8))),
+            _ => None,
+        };
+        // Оформление уровня списка (отступы) — после стиля, но до
+        // оформления самого абзаца, как в Word.
+        let level = numbering.and_then(|(id, level)| self.numbering.level(id, level));
+        let layers = std::iter::once(&self.styles.defaults.paragraph)
+            .chain(table_chain.iter().map(|s| &s.paragraph))
+            .chain(chain.iter().map(|s| &s.paragraph))
+            .chain(level.as_ref().map(|l| &l.paragraph))
             .chain(std::iter::once(direct));
 
         let mut acc = ParagraphProps::default();
         let mut tabs: Vec<TabStop> = Vec::new();
+        let mut borders = ParagraphBorders::default();
         for layer in layers {
+            if let Some(layer) = &layer.borders {
+                borders.overlay(layer);
+            }
             for stop in &layer.tabs {
                 tabs.retain(|t| t.position != stop.position);
                 if stop.kind != TabStopKind::Clear {
@@ -162,6 +232,8 @@ impl Document {
             overlay(&mut acc.keep_lines, &layer.keep_lines);
             overlay(&mut acc.page_break_before, &layer.page_break_before);
             overlay(&mut acc.widow_control, &layer.widow_control);
+            overlay(&mut acc.shading, &layer.shading);
+            overlay(&mut acc.suppress_auto_hyphens, &layer.suppress_auto_hyphens);
         }
         tabs.sort_by_key(|t| t.position);
         ResolvedParagraphProps {
@@ -179,11 +251,27 @@ impl Document {
             page_break_before: acc.page_break_before.unwrap_or(false),
             widow_control: acc.widow_control.unwrap_or(true),
             tabs,
+            numbering,
+            borders,
+            shading: acc.shading,
+            suppress_auto_hyphens: acc.suppress_auto_hyphens.unwrap_or(false),
         }
     }
 
     /// Итоговое оформление фрагмента `run` в абзаце с оформлением `paragraph`.
     pub fn resolve_run(&self, paragraph: &ParagraphProps, run: &RunProps) -> ResolvedRunProps {
+        self.resolve_run_in(paragraph, run, None)
+    }
+
+    /// Итоговое оформление фрагмента в ячейке таблицы со стилем `table`
+    /// (см. [`Document::resolve_paragraph_in`]).
+    pub fn resolve_run_in(
+        &self,
+        paragraph: &ParagraphProps,
+        run: &RunProps,
+        table: Option<&str>,
+    ) -> ResolvedRunProps {
+        let table_chain = self.table_chain(table);
         let defaults = &self.styles.defaults.run;
         let para_chain = self
             .styles
@@ -191,7 +279,11 @@ impl Document {
         let char_chain = self
             .styles
             .chain(run.style.as_deref(), StyleKind::Character);
-        let para_layers: Vec<&RunProps> = para_chain.iter().map(|s| &s.run).collect();
+        let para_layers: Vec<&RunProps> = table_chain
+            .iter()
+            .chain(para_chain.iter())
+            .map(|s| &s.run)
+            .collect();
         let char_layers: Vec<&RunProps> = char_chain.iter().map(|s| &s.run).collect();
         let layers: Vec<&RunProps> = std::iter::once(defaults)
             .chain(para_layers.iter().copied())
@@ -208,6 +300,11 @@ impl Document {
             overlay(&mut acc.color, &layer.color);
             overlay(&mut acc.highlight, &layer.highlight);
             overlay(&mut acc.vertical_align, &layer.vertical_align);
+            overlay(&mut acc.underline_color, &layer.underline_color);
+            overlay(&mut acc.spacing, &layer.spacing);
+            overlay(&mut acc.scale, &layer.scale);
+            overlay(&mut acc.position, &layer.position);
+            overlay(&mut acc.kerning, &layer.kerning);
         }
 
         let toggle = |get: fn(&RunProps) -> Option<bool>| {
@@ -224,7 +321,101 @@ impl Document {
             color: acc.color.unwrap_or(Color::Auto),
             highlight: acc.highlight.unwrap_or(Highlight::None),
             vertical_align: acc.vertical_align.unwrap_or(VerticalAlign::Baseline),
+            caps: toggle(|p| p.caps),
+            small_caps: toggle(|p| p.small_caps),
+            hidden: toggle(|p| p.hidden),
+            underline_color: acc.underline_color,
+            spacing: acc.spacing.unwrap_or_default(),
+            scale: acc.scale.unwrap_or(100),
+            position: acc.position.unwrap_or(0),
+            kerning: acc.kerning.unwrap_or_default(),
+            link: run.link.clone(),
         }
+    }
+}
+
+impl Document {
+    /// Стиль таблицы и его родители; `None` — не в таблице. Если стиль
+    /// таблицы не задан или не найден — стиль таблиц по умолчанию.
+    fn table_chain(&self, table: Option<&str>) -> Vec<&Style> {
+        match table {
+            Some(id) => self.styles.chain(Some(id), StyleKind::Table),
+            None => Vec::new(),
+        }
+    }
+
+    /// Итоговые свойства таблицы: стиль таблицы (или стиль таблиц по
+    /// умолчанию) с родителями, поверх — прямое оформление. Границы
+    /// и поля ячеек перекрываются по сторонам. В `style` — стиль, который
+    /// на самом деле применён.
+    pub fn resolve_table(&self, direct: &TableProps) -> TableProps {
+        let chain = self.table_chain(Some(direct.style.as_deref().unwrap_or("")));
+        let mut acc = TableProps::default();
+        for layer in chain
+            .iter()
+            .map(|s| &s.table)
+            .chain(std::iter::once(direct))
+        {
+            overlay(&mut acc.width, &layer.width);
+            overlay(&mut acc.alignment, &layer.alignment);
+            overlay(&mut acc.indent, &layer.indent);
+            overlay(&mut acc.shading, &layer.shading);
+            overlay(&mut acc.layout, &layer.layout);
+            if let Some(borders) = &layer.borders {
+                acc.borders = Some(overlay_borders(acc.borders.take(), borders));
+            }
+            if let Some(margins) = &layer.cell_margins {
+                let mut m = acc.cell_margins.unwrap_or_default();
+                overlay(&mut m.top, &margins.top);
+                overlay(&mut m.left, &margins.left);
+                overlay(&mut m.bottom, &margins.bottom);
+                overlay(&mut m.right, &margins.right);
+                acc.cell_margins = Some(m);
+            }
+        }
+        acc.style = chain.last().map(|s| s.id.clone());
+        acc
+    }
+}
+
+/// Границы `layer` поверх `acc` по сторонам.
+pub fn overlay_borders(acc: Option<Borders>, layer: &Borders) -> Borders {
+    let mut acc = acc.unwrap_or_default();
+    overlay(&mut acc.top, &layer.top);
+    overlay(&mut acc.left, &layer.left);
+    overlay(&mut acc.bottom, &layer.bottom);
+    overlay(&mut acc.right, &layer.right);
+    overlay(&mut acc.inside_h, &layer.inside_h);
+    overlay(&mut acc.inside_v, &layer.inside_v);
+    acc
+}
+
+impl Document {
+    /// Язык текста фрагмента `run` в абзаце с оформлением `paragraph`
+    /// (`w:lang w:val`, например `"ru-RU"`): из самого фрагмента, его
+    /// стиля, стиля абзаца или оформления по умолчанию. `None`, если язык
+    /// нигде не указан.
+    pub fn run_language(&self, paragraph: &ParagraphProps, run: &RunProps) -> Option<String> {
+        let language = |props: &RunProps| {
+            props
+                .unknown
+                .iter()
+                .filter(|raw| raw.local_name() == "lang")
+                .find_map(|raw| raw.attribute("val"))
+                .filter(|val| !val.is_empty())
+                .map(str::to_owned)
+        };
+        let para_chain = self
+            .styles
+            .chain(paragraph.style.as_deref(), StyleKind::Paragraph);
+        let char_chain = self
+            .styles
+            .chain(run.style.as_deref(), StyleKind::Character);
+        // Цепочки идут от родителей к стилю: ближний слой — последний.
+        language(run)
+            .or_else(|| char_chain.iter().rev().find_map(|s| language(&s.run)))
+            .or_else(|| para_chain.iter().rev().find_map(|s| language(&s.run)))
+            .or_else(|| language(&self.styles.defaults.run))
     }
 }
 
@@ -523,5 +714,36 @@ mod tests {
         let p = doc.resolve_paragraph(&ParagraphProps::default());
         assert_eq!(p.line_spacing, LineSpacing::SINGLE);
         assert_eq!(p.style, None);
+    }
+
+    #[test]
+    fn language_from_the_nearest_layer() {
+        let lang = |code: &str| vec![crate::RawXml::new(format!(r#"<w:lang w:val="{code}"/>"#))];
+        let mut doc = sample();
+        let paragraph = ParagraphProps {
+            style: Some("Title".into()),
+            ..ParagraphProps::default()
+        };
+        let plain = RunProps::default();
+        assert_eq!(doc.run_language(&paragraph, &plain), None);
+        doc.styles.defaults.run.unknown = lang("ru-RU");
+        assert_eq!(
+            doc.run_language(&paragraph, &plain).as_deref(),
+            Some("ru-RU")
+        );
+        doc.styles.styles[0].run.unknown = lang("de-DE");
+        doc.styles.styles[1].run.unknown = lang("fr-FR");
+        assert_eq!(
+            doc.run_language(&paragraph, &plain).as_deref(),
+            Some("fr-FR")
+        );
+        let english = RunProps {
+            unknown: lang("en-US"),
+            ..RunProps::default()
+        };
+        assert_eq!(
+            doc.run_language(&paragraph, &english).as_deref(),
+            Some("en-US")
+        );
     }
 }

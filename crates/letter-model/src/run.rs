@@ -1,6 +1,6 @@
 //! Фрагменты текста ([`Run`]) и оформление символов ([`RunProps`]).
 
-use crate::RawXml;
+use crate::{Picture, RawXml};
 
 /// Фрагмент абзаца: кусок содержимого с одинаковым оформлением символов.
 ///
@@ -30,7 +30,8 @@ impl Run {
     }
 
     /// Текст фрагмента без оформления: табуляция становится `\t`,
-    /// разрыв строки — `\n`, разрыв страницы или колонки — `\u{c}`.
+    /// разрыв строки — `\n`, разрыв страницы или колонки — `\u{c}`,
+    /// рисунок — [`OBJECT_CHAR`].
     pub fn plain_text(&self) -> String {
         let mut out = String::new();
         for item in &self.content {
@@ -49,20 +50,100 @@ pub enum RunContent {
     Tab,
     /// Принудительный разрыв.
     Break(BreakKind),
+    /// Рисунок в строке. В тексте абзаца — знак [`OBJECT_CHAR`].
+    Picture(Picture),
+    /// Знак поля (`w:fldChar`): начало, разделитель кода и результата
+    /// или конец. Места в тексте не занимает. Поле — это начало, код
+    /// ([`RunContent::FieldCode`]), разделитель, результат (обычный текст)
+    /// и конец, по порядку в фрагментах абзаца; см. [`crate::fields`].
+    FieldChar(FieldChar),
+    /// Кусок кода поля (`w:instrText`), например « PAGE \* MERGEFORMAT ».
+    /// Места в тексте не занимает.
+    FieldCode(String),
+    /// Ссылка на сноску: показывается номером сноски. В тексте абзаца —
+    /// знак [`OBJECT_CHAR`] (со своим знаком сноски — ничего).
+    NoteReference(crate::NoteReference),
+    /// Номер сноски в начале её текста (`w:footnoteRef`, `w:endnoteRef`).
+    /// В тексте абзаца — знак [`OBJECT_CHAR`].
+    NoteMark(crate::NoteKind),
+    /// Знак из шрифта (`w:sym`). В тексте абзаца — знак [`OBJECT_CHAR`].
+    Symbol(crate::Symbol),
     /// Непонятый элемент (рисунок, поле, символ и т. п.), сохранённый как есть.
     Unknown(RawXml),
 }
 
+/// Знак, которым рисунок и другие объекты в строке стоят в тексте абзаца
+/// (U+FFFC «замещающий объект»).
+pub const OBJECT_CHAR: char = '\u{fffc}';
+
 impl RunContent {
+    /// Длина элемента в тексте абзаца, байты UTF-8: у текста — длина
+    /// текста, у табуляции и разрыва — 1, у рисунка — 3 (знак
+    /// [`OBJECT_CHAR`]), у непонятого элемента — 0.
+    pub fn text_len(&self) -> usize {
+        match self {
+            RunContent::Text(text) => text.len(),
+            RunContent::Tab | RunContent::Break(_) => 1,
+            RunContent::Picture(_) | RunContent::NoteMark(_) | RunContent::Symbol(_) => {
+                OBJECT_CHAR.len_utf8()
+            }
+            RunContent::NoteReference(r) if !r.custom_mark => OBJECT_CHAR.len_utf8(),
+            RunContent::NoteReference(_)
+            | RunContent::Unknown(_)
+            | RunContent::FieldChar(_)
+            | RunContent::FieldCode(_) => 0,
+        }
+    }
+
     fn push_plain_text(&self, out: &mut String) {
         match self {
             RunContent::Text(text) => out.push_str(text),
             RunContent::Tab => out.push('\t'),
             RunContent::Break(BreakKind::Line) => out.push('\n'),
             RunContent::Break(BreakKind::Page | BreakKind::Column) => out.push('\u{c}'),
-            RunContent::Unknown(_) => {}
+            RunContent::Picture(_) | RunContent::NoteMark(_) | RunContent::Symbol(_) => {
+                out.push(OBJECT_CHAR)
+            }
+            RunContent::NoteReference(r) if !r.custom_mark => out.push(OBJECT_CHAR),
+            RunContent::NoteReference(_)
+            | RunContent::Unknown(_)
+            | RunContent::FieldChar(_)
+            | RunContent::FieldCode(_) => {}
         }
     }
+}
+
+/// Знак поля.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FieldChar {
+    /// Начало, разделитель или конец.
+    pub kind: FieldCharKind,
+    /// Поле нужно обновить (`w:dirty`), например оглавление после правки.
+    pub dirty: bool,
+    /// Поле не обновляется (`w:fldLock`).
+    pub locked: bool,
+}
+
+impl FieldChar {
+    /// Знак поля вида `kind` без отметок.
+    pub fn new(kind: FieldCharKind) -> FieldChar {
+        FieldChar {
+            kind,
+            dirty: false,
+            locked: false,
+        }
+    }
+}
+
+/// Вид знака поля.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FieldCharKind {
+    /// Начало поля.
+    Begin,
+    /// Разделитель кода и результата.
+    Separate,
+    /// Конец поля.
+    End,
 }
 
 /// Вид принудительного разрыва.
@@ -107,8 +188,80 @@ pub struct RunProps {
     pub highlight: Option<Highlight>,
     /// Надстрочный или подстрочный знак.
     pub vertical_align: Option<VerticalAlign>,
+    /// «Все прописные» (`w:caps`): строчные показываются прописными.
+    pub caps: Option<bool>,
+    /// «Малые прописные» (`w:smallCaps`): строчные — уменьшенными
+    /// прописными.
+    pub small_caps: Option<bool>,
+    /// «Скрытый» текст (`w:vanish`).
+    pub hidden: Option<bool>,
+    /// Цвет подчёркивания (`w:u w:color`); `None` — цвет текста.
+    pub underline_color: Option<Color>,
+    /// Интервал между буквами (`w:spacing`): больше нуля — разреженный,
+    /// меньше — уплотнённый.
+    pub spacing: Option<crate::Twips>,
+    /// Масштаб по ширине, проценты (`w:w`, 1–600).
+    pub scale: Option<u16>,
+    /// Смещение вверх (вниз, если меньше нуля), полупункты
+    /// (`w:position`).
+    pub position: Option<i32>,
+    /// Кернинг для шрифтов от этого размера и больше (`w:kern`); ноль —
+    /// выключен.
+    pub kerning: Option<crate::HalfPoints>,
+    /// Гиперссылка, частью которой является фрагмент. В .docx соседние
+    /// фрагменты с одной ссылкой записываются внутри одного
+    /// `w:hyperlink`; в `w:rPr` ссылка не пишется.
+    pub link: Option<Hyperlink>,
     /// Свойства, которые программа пока не понимает, в порядке из файла.
     pub unknown: Vec<RawXml>,
+}
+
+/// Гиперссылка: адрес в интернете (или файл) либо закладка в документе.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Hyperlink {
+    /// Адрес: `https://…`, `mailto:…`, путь к файлу. `None` — ссылка
+    /// только на закладку.
+    pub target: Option<String>,
+    /// Закладка (`w:anchor`): в документе по адресу или в этом документе.
+    pub anchor: Option<String>,
+    /// Всплывающая подсказка (`w:tooltip`).
+    pub tooltip: Option<String>,
+    /// Окно, где открыть (`w:tgtFrame`, например `_blank`).
+    pub frame: Option<String>,
+    /// Добавлять ли в журнал посещённых (`w:history`).
+    pub history: bool,
+    /// Связь (`r:id`) из исходного файла, по которой записан адрес.
+    pub relationship: Option<String>,
+}
+
+impl Hyperlink {
+    /// Ссылка на адрес `target`.
+    pub fn to(target: impl Into<String>) -> Hyperlink {
+        Hyperlink {
+            target: Some(target.into()),
+            history: true,
+            ..Hyperlink::default()
+        }
+    }
+
+    /// Ссылка на закладку `name` в этом документе.
+    pub fn to_bookmark(name: impl Into<String>) -> Hyperlink {
+        Hyperlink {
+            anchor: Some(name.into()),
+            history: true,
+            ..Hyperlink::default()
+        }
+    }
+
+    /// Что показать пользователю: адрес, адрес с закладкой или «#закладка».
+    pub fn address(&self) -> String {
+        match (&self.target, &self.anchor) {
+            (Some(target), Some(anchor)) => format!("{target}#{anchor}"),
+            (Some(target), None) => target.clone(),
+            (None, Some(anchor)) => format!("#{anchor}"),
+            (None, None) => String::new(),
+        }
+    }
 }
 
 /// Шрифты фрагмента. Word выбирает шрифт по виду символа: латиница и

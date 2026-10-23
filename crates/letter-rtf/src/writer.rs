@@ -297,6 +297,7 @@ impl Writer {
         }
         let explicit = ParagraphProps {
             style: None,
+            numbering: None,
             alignment: Some(resolved.alignment),
             indentation: letter_model::Indentation {
                 left: Some(resolved.indent_left),
@@ -314,6 +315,9 @@ impl Writer {
             page_break_before: Some(resolved.page_break_before),
             widow_control: Some(resolved.widow_control),
             tabs: resolved.tabs.clone(),
+            borders: None,
+            shading: None,
+            suppress_auto_hyphens: None,
             unknown: Vec::new(),
         };
         out.push_str(&paragraph_props_text(&explicit));
@@ -338,7 +342,7 @@ impl Writer {
                 theme_color: None,
                 highlight: Some(resolved.highlight),
                 vertical_align: Some(resolved.vertical_align),
-                unknown: Vec::new(),
+                ..RunProps::default()
             };
             out.push_str("{\\plain");
             if let Some(n) = explicit
@@ -354,11 +358,18 @@ impl Writer {
             for item in &run.content {
                 match item {
                     RunContent::Text(t) => escape(out, t),
+                    RunContent::Symbol(s) => escape(out, &s.unicode().to_string()),
                     RunContent::Tab => out.push_str("\\tab "),
                     RunContent::Break(BreakKind::Line) => out.push_str("\\line "),
                     RunContent::Break(BreakKind::Page) => out.push_str("\\page "),
                     RunContent::Break(BreakKind::Column) => out.push_str("\\column "),
-                    RunContent::Unknown(_) => {}
+                    // Рисунки в RTF пока не записываются.
+                    RunContent::Picture(_)
+                    | RunContent::FieldChar(_)
+                    | RunContent::FieldCode(_)
+                    | RunContent::NoteReference(_)
+                    | RunContent::NoteMark(_)
+                    | RunContent::Unknown(_) => {}
                 }
             }
             out.push('}');

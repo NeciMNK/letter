@@ -1,6 +1,7 @@
 //! Абзацы ([`Paragraph`]) и оформление абзаца ([`ParagraphProps`]).
 
-use crate::{RawXml, Run, Twips};
+use crate::NumberingRef;
+use crate::{ParagraphBorders, RawXml, Run, Shading, Twips};
 
 /// Абзац: последовательность фрагментов текста с общим оформлением абзаца.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -18,9 +19,24 @@ pub struct Paragraph {
 pub enum Inline {
     /// Фрагмент текста.
     Run(Run),
+    /// Начало закладки (`w:bookmarkStart`).
+    BookmarkStart(Bookmark),
+    /// Конец закладки (`w:bookmarkEnd`) с номером закладки.
+    BookmarkEnd(String),
     /// Непонятый элемент (гиперссылка, закладка, исправление и т. п.),
     /// сохранённый как есть.
     Unknown(RawXml),
+}
+
+/// Закладка: именованное место или кусок документа. Начало и конец
+/// лежат в содержимом абзацев (могут быть в разных абзацах) и связаны
+/// номером.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bookmark {
+    /// Номер (`w:id`), общий у начала и конца.
+    pub id: String,
+    /// Имя (`w:name`). Имена на `_` — скрытые (оглавление, ссылки).
+    pub name: String,
 }
 
 impl From<Run> for Inline {
@@ -47,7 +63,7 @@ impl Paragraph {
     pub fn runs(&self) -> impl Iterator<Item = &Run> {
         self.content.iter().filter_map(|item| match item {
             Inline::Run(run) => Some(run),
-            Inline::Unknown(_) => None,
+            _ => None,
         })
     }
 
@@ -68,6 +84,8 @@ impl Paragraph {
 pub struct ParagraphProps {
     /// Идентификатор стиля абзаца (например, `"Heading1"`).
     pub style: Option<String>,
+    /// Список, к которому относится абзац.
+    pub numbering: Option<NumberingRef>,
     /// Выравнивание.
     pub alignment: Option<Alignment>,
     /// Отступы слева, справа и первой строки.
@@ -89,6 +107,12 @@ pub struct ParagraphProps {
     /// Позиции табуляции. Пусто — в этом слое не заданы. Позиция вида
     /// [`TabStopKind::Clear`] убирает унаследованную от стиля.
     pub tabs: Vec<TabStop>,
+    /// Границы абзаца.
+    pub borders: Option<ParagraphBorders>,
+    /// Заливка абзаца.
+    pub shading: Option<Shading>,
+    /// «Запретить автоматический перенос слов» (`w:suppressAutoHyphens`).
+    pub suppress_auto_hyphens: Option<bool>,
     /// Свойства, которые программа пока не понимает, в порядке из файла.
     pub unknown: Vec<RawXml>,
 }

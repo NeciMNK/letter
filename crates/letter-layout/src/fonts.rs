@@ -21,6 +21,14 @@ macro_rules! embedded {
     };
 }
 
+/// Встроенный шрифт по имени файла (`LiberationSans-Regular.ttf`).
+pub fn embedded_font(file: &str) -> Option<&'static [u8]> {
+    EMBEDDED_FONTS
+        .iter()
+        .find(|(name, _)| *name == file)
+        .map(|(_, data)| *data)
+}
+
 /// Открытые шрифты, встроенные в программу (см. `fonts/README.md`).
 const EMBEDDED_FONTS: &[EmbeddedFont] = embedded!(
     "Carlito-Regular.ttf",
@@ -227,6 +235,19 @@ impl FontLibrary {
         })
     }
 
+    /// Имена всех семейств шрифтов по алфавиту, без повторов (для списка
+    /// «Шрифт» на ленте).
+    pub fn families(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .faces()
+            .map(|(_, name)| name)
+            .filter(|name| !name.is_empty())
+            .collect();
+        names.sort_by_key(|name| name.to_lowercase());
+        names.dedup();
+        names
+    }
+
     /// Вызывает `f` с байтами файла шрифта и номером начертания внутри
     /// файла (в коллекциях `.ttc` их несколько). `None`, если файл
     /// не удалось прочитать.
@@ -294,6 +315,17 @@ mod tests {
         ] {
             assert!(lib.has_family(family), "{family}");
         }
+    }
+
+    #[test]
+    fn families_are_sorted_without_repeats() {
+        let names = library().families();
+        assert!(names.contains(&"Liberation Serif".to_string()));
+        assert!(
+            names
+                .windows(2)
+                .all(|w| w[0].to_lowercase() < w[1].to_lowercase())
+        );
     }
 
     #[test]

@@ -871,7 +871,7 @@ impl Reader {
             theme_color: None,
             highlight: Some(highlight(self.color(chars.highlight), chars.highlight)),
             vertical_align: Some(chars.vertical_align),
-            unknown: Vec::new(),
+            ..RunProps::default()
         }
     }
 
@@ -881,6 +881,7 @@ impl Reader {
         ParagraphProps {
             // Абзац без `\s` — в стиле 0 («Обычный»).
             style: self.style_id(para.style.unwrap_or(0), StyleKind::Paragraph),
+            numbering: None,
             alignment: Some(para.alignment),
             indentation: Indentation {
                 left: Some(Twips(para.left)),
@@ -898,6 +899,9 @@ impl Reader {
             page_break_before: Some(para.page_break_before),
             widow_control: Some(para.widow_control),
             tabs: para.tabs.clone(),
+            borders: None,
+            shading: None,
+            suppress_auto_hyphens: None,
             unknown: Vec::new(),
         }
     }
@@ -931,6 +935,7 @@ impl Reader {
         let blocks = std::mem::take(&mut self.cell);
         self.row.push(TableCell {
             raw_props: Vec::new(),
+            props: Default::default(),
             blocks,
         });
     }
@@ -944,6 +949,7 @@ impl Reader {
             let blocks = std::mem::take(&mut self.cell);
             self.row.push(TableCell {
                 raw_props: Vec::new(),
+                props: Default::default(),
                 blocks,
             });
         }
@@ -953,6 +959,7 @@ impl Reader {
             .rows
             .push(TableRow {
                 raw_props: Vec::new(),
+                props: Default::default(),
                 cells,
             });
     }
@@ -1080,7 +1087,7 @@ impl Reader {
                 .map(|()| highlight(self.color(chars.highlight), chars.highlight)),
             vertical_align: some(chars.vertical_align != base.vertical_align)
                 .map(|()| chars.vertical_align),
-            unknown: Vec::new(),
+            ..RunProps::default()
         }
     }
 
@@ -1089,6 +1096,7 @@ impl Reader {
         let base = Para::default();
         ParagraphProps {
             style: None,
+            numbering: None,
             alignment: (para.alignment != base.alignment).then_some(para.alignment),
             indentation: Indentation {
                 left: (para.left != 0).then_some(Twips(para.left)),
@@ -1106,6 +1114,9 @@ impl Reader {
             page_break_before: para.page_break_before.then_some(true),
             widow_control: para.widow_control.then_some(true),
             tabs: para.tabs.clone(),
+            borders: None,
+            shading: None,
+            suppress_auto_hyphens: None,
             unknown: Vec::new(),
         }
     }
@@ -1255,6 +1266,6 @@ fn section_props(page: Page) -> SectionProps {
             footer: Twips(page.footer),
             gutter: Twips(page.gutter),
         }),
-        unknown: Vec::new(),
+        ..SectionProps::default()
     }
 }

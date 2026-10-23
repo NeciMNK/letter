@@ -5,16 +5,20 @@
 //! [`RawXml`], чтобы при записи вернуть его на место без потерь.
 
 use letter_model::{
-    Block, BreakKind, Color, Document, FirstLineIndent, HalfPoints, Indentation, Inline,
-    LineSpacing, Orientation, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run,
-    RunContent, RunFonts, RunProps, Section, SectionProps, Spacing, TabStop, Table, TableCell,
-    TableRow, ThemeColor, Twips, VerticalAlign,
+    Block, Bookmark, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind,
+    FirstLineIndent, HalfPoints, HeaderFooter, HeaderFooterKind, HeaderFooters, Hyperlink,
+    Indentation, Inline, LineSpacing, Note, NoteKind, NoteReference, NumberingRef, Orientation,
+    PageBorderDisplay, PageBorders, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run,
+    RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Spacing, Symbol, TabStop,
+    ThemeColor, Twips, Underline, VerticalAlign,
 };
 
 use crate::ReadError;
 use crate::names::{
     ALIGNMENTS, HIGHLIGHTS, TAB_KINDS, TAB_LEADERS, THEME_FONTS, UNDERLINES, lookup,
 };
+use crate::serialize::R_NS;
+use crate::table::{read_border, read_paragraph_borders, read_shading};
 use crate::xml::Element;
 
 /// Пространство имён WordprocessingML (обычный вариант OOXML).
@@ -65,6 +69,13 @@ pub(crate) fn read_document(root: &Element) -> Result<Document, ReadError> {
     for child in root.elements() {
         if child.is_w("body") {
             doc.sections = read_body(child);
+        } else if child.is_w("background")
+            && doc.background.is_none()
+            && child.only_attrs(&["color"])
+            && child.elements().next().is_none()
+            && let Some(color) = child.w_attr("color").and_then(parse_color)
+        {
+            doc.background = Some(color);
         } else {
             doc.unknown.push(child.raw());
         }
@@ -104,11 +115,11 @@ fn read_body(body: &Element) -> Vec<Section> {
 }
 
 /// Блок внутри ячейки таблицы или любой блок, кроме абзаца, в теле.
-fn read_block(element: &Element) -> Block {
+pub(crate) fn read_block(element: &Element) -> Block {
     if element.is_w("p") {
         read_paragraph(element, false).0.into()
     } else if element.is_w("tbl") {
-        read_table(element)
+        crate::table::read_table(element)
     } else {
         Block::Unknown(element.raw())
     }
@@ -126,11 +137,116 @@ fn read_paragraph(p: &Element, allow_section: bool) -> (Paragraph, Option<Sectio
             section = section_props;
         } else if child.is_w("r") {
             paragraph.content.push(Inline::Run(read_run(child)));
+        } else if let Some(runs) = simple_field(child) {
+            paragraph.content.extend(runs.into_iter().map(Inline::Run));
+        } else if let Some(items) = read_hyperlink(child) {
+            paragraph.content.extend(items);
+        } else if let Some(mark) = read_bookmark(child) {
+            paragraph.content.push(mark);
         } else {
             paragraph.content.push(Inline::Unknown(child.raw()));
         }
     }
     (paragraph, section)
+}
+
+/// Начало или конец закладки; с другими атрибутами (закладка столбцов
+/// таблицы и т. п.) — `None`.
+fn read_bookmark(element: &Element) -> Option<Inline> {
+    if element.elements().next().is_some() {
+        return None;
+    }
+    if element.is_w("bookmarkStart") && element.only_attrs(&["id", "name"]) {
+        Some(Inline::BookmarkStart(Bookmark {
+            id: element.w_attr("id")?.to_string(),
+            name: element.w_attr("name")?.to_string(),
+        }))
+    } else if element.is_w("bookmarkEnd") && element.only_attrs(&["id"]) {
+        Some(Inline::BookmarkEnd(element.w_attr("id")?.to_string()))
+    } else {
+        None
+    }
+}
+
+/// Гиперссылка `w:hyperlink`: её фрагменты получают ссылку в оформлении
+/// (адрес по связи `r:id` подставляется после чтения связей). Ссылка
+/// с чем-то, кроме фрагментов, простых полей и закладок, остаётся как есть.
+fn read_hyperlink(element: &Element) -> Option<Vec<Inline>> {
+    if !element.is_w("hyperlink") {
+        return None;
+    }
+    let mut link = Hyperlink::default();
+    for attribute in &element.attrs {
+        let value = Some(attribute.value.clone());
+        if attribute.ns.as_deref() == Some(crate::serialize::R_NS) && attribute.local == "id" {
+            link.relationship = value;
+            continue;
+        }
+        if attribute.ns.is_some() && !is_w_ns(attribute.ns.as_deref()) {
+            return None;
+        }
+        match attribute.local.as_str() {
+            "anchor" => link.anchor = value,
+            "tooltip" => link.tooltip = value,
+            "tgtFrame" => link.frame = value,
+            "history" => {
+                link.history = match attribute.value.as_str() {
+                    "1" | "true" | "on" => true,
+                    "0" | "false" | "off" => false,
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        }
+    }
+    let mut items = Vec::new();
+    let with_link = |mut run: Run| {
+        run.props.link = Some(link.clone());
+        Inline::Run(run)
+    };
+    for child in element.elements() {
+        if child.is_w("r") {
+            items.push(with_link(read_run(child)));
+        } else if let Some(runs) = simple_field(child) {
+            items.extend(runs.into_iter().map(with_link));
+        } else {
+            items.push(read_bookmark(child)?);
+        }
+    }
+    Some(items)
+}
+
+/// Простое поле `w:fldSimple` превращается в такое же поле из знаков
+/// поля (`w:fldChar`): начало, код, разделитель, результат, конец —
+/// так его результат виден и правится как обычный текст, а номер
+/// страницы подставляется при вёрстке. Поле с чем-то, кроме фрагментов
+/// текста, остаётся как есть.
+fn simple_field(element: &Element) -> Option<Vec<Run>> {
+    if !element.is_w("fldSimple") || !element.only_attrs(&["instr"]) {
+        return None;
+    }
+    let instruction = element.w_attr("instr")?;
+    let mut result = Vec::new();
+    for child in element.elements() {
+        if !child.is_w("r") {
+            return None;
+        }
+        result.push(read_run(child));
+    }
+    let props = result.first().map(|r| r.props.clone()).unwrap_or_default();
+    let marker = |item: RunContent| Run {
+        props: props.clone(),
+        content: vec![item],
+    };
+    let mark = |kind| marker(RunContent::FieldChar(FieldChar::new(kind)));
+    let mut runs = vec![
+        mark(FieldCharKind::Begin),
+        marker(RunContent::FieldCode(instruction.to_string())),
+        mark(FieldCharKind::Separate),
+    ];
+    runs.extend(result);
+    runs.push(mark(FieldCharKind::End));
+    Some(runs)
 }
 
 pub(crate) fn read_paragraph_props(
@@ -143,6 +259,7 @@ pub(crate) fn read_paragraph_props(
         let understood = is_w_ns(child.ns.as_deref())
             && match child.local.as_str() {
                 "pStyle" => set(&mut props.style, string_val(child)),
+                "numPr" => set(&mut props.numbering, read_numbering_ref(child)),
                 "jc" => set(&mut props.alignment, enum_val(child, ALIGNMENTS)),
                 "ind" => read_indentation(child)
                     .map(|i| props.indentation = i)
@@ -151,11 +268,14 @@ pub(crate) fn read_paragraph_props(
                 "contextualSpacing" => set(&mut props.contextual_spacing, toggle(child)),
                 "keepNext" => set(&mut props.keep_next, toggle(child)),
                 "keepLines" => set(&mut props.keep_lines, toggle(child)),
+                "suppressAutoHyphens" => set(&mut props.suppress_auto_hyphens, toggle(child)),
                 "pageBreakBefore" => set(&mut props.page_break_before, toggle(child)),
                 "widowControl" => set(&mut props.widow_control, toggle(child)),
                 "tabs" if props.tabs.is_empty() => {
                     read_tabs(child).map(|t| props.tabs = t).is_some()
                 }
+                "pBdr" => set(&mut props.borders, read_paragraph_borders(child)),
+                "shd" => set(&mut props.shading, read_shading(child)),
                 "sectPr" if allow_section => {
                     section = Some(read_section_props(child));
                     true
@@ -167,6 +287,32 @@ pub(crate) fn read_paragraph_props(
         }
     }
     (props, section)
+}
+
+/// `w:numPr`: номер списка и уровень. Если внутри есть что-то ещё
+/// (например, правка `w:ins`), элемент сохраняется как есть.
+fn read_numbering_ref(element: &Element) -> Option<NumberingRef> {
+    if !element.attrs.is_empty() {
+        return None;
+    }
+    let mut numbering = NumberingRef::default();
+    for child in element.elements() {
+        let number = || {
+            child
+                .only_attrs(&["val"])
+                .then(|| child.w_attr("val"))
+                .flatten()
+                .and_then(|v| v.trim().parse::<u32>().ok())
+        };
+        if child.is_w("numId") && numbering.id.is_none() {
+            numbering.id = Some(number()?);
+        } else if child.is_w("ilvl") && numbering.level.is_none() {
+            numbering.level = Some(u8::try_from(number()?).ok()?);
+        } else {
+            return None;
+        }
+    }
+    Some(numbering)
 }
 
 fn read_indentation(ind: &Element) -> Option<Indentation> {
@@ -260,19 +406,131 @@ fn read_run(r: &Element) -> Run {
                 }
                 "t" => RunContent::Text(child.text()),
                 "tab" if child.attrs.is_empty() => RunContent::Tab,
+                "noBreakHyphen" if child.attrs.is_empty() => RunContent::Text("\u{2011}".into()),
+                "softHyphen" if child.attrs.is_empty() => RunContent::Text("\u{ad}".into()),
+                "sym" => match read_symbol(child) {
+                    Some(s) => RunContent::Symbol(s),
+                    None => RunContent::Unknown(child.raw()),
+                },
                 "cr" if child.attrs.is_empty() => RunContent::Break(BreakKind::Line),
+                "drawing" => match crate::picture::read_picture(child) {
+                    Some(picture) => RunContent::Picture(picture),
+                    None => RunContent::Unknown(child.raw()),
+                },
                 "br" if child.only_attrs(&["type"]) => match child.w_attr("type") {
                     None | Some("textWrapping") => RunContent::Break(BreakKind::Line),
                     Some("page") => RunContent::Break(BreakKind::Page),
                     Some("column") => RunContent::Break(BreakKind::Column),
                     Some(_) => RunContent::Unknown(child.raw()),
                 },
+                "footnoteReference" | "endnoteReference"
+                    if child.only_attrs(&["id", "customMarkFollows"])
+                        && child.elements().next().is_none() =>
+                {
+                    match read_note_reference(child) {
+                        Some(r) => RunContent::NoteReference(r),
+                        None => RunContent::Unknown(child.raw()),
+                    }
+                }
+                "footnoteRef" if child.attrs.is_empty() => RunContent::NoteMark(NoteKind::Footnote),
+                "endnoteRef" if child.attrs.is_empty() => RunContent::NoteMark(NoteKind::Endnote),
+                "fldChar" => match read_field_char(child) {
+                    Some(c) => RunContent::FieldChar(c),
+                    None => RunContent::Unknown(child.raw()),
+                },
+                "instrText"
+                    if child.elements().next().is_none()
+                        && child.attrs.iter().all(|a| a.local == "space") =>
+                {
+                    RunContent::FieldCode(child.text())
+                }
                 _ => RunContent::Unknown(child.raw()),
             }
         };
         run.content.push(item);
     }
     run
+}
+
+/// Знак из шрифта `w:sym`, если у него понятные шрифт и номер и нет
+/// ничего лишнего.
+fn read_symbol(element: &Element) -> Option<Symbol> {
+    if !element.only_attrs(&["font", "char"]) || element.elements().next().is_some() {
+        return None;
+    }
+    let font = element.w_attr("font")?.to_string();
+    let code = u32::from_str_radix(element.w_attr("char")?, 16).ok()?;
+    char::from_u32(code)?;
+    Some(Symbol { font, code })
+}
+
+/// Ссылка на сноску или концевую сноску.
+fn read_note_reference(element: &Element) -> Option<NoteReference> {
+    let kind = if element.local == "footnoteReference" {
+        NoteKind::Footnote
+    } else {
+        NoteKind::Endnote
+    };
+    let custom_mark = match element.w_attr("customMarkFollows") {
+        None | Some("0" | "false" | "off") => false,
+        Some("1" | "true" | "on") => true,
+        Some(_) => return None,
+    };
+    Some(NoteReference {
+        kind,
+        id: element.w_attr("id")?.to_string(),
+        custom_mark,
+    })
+}
+
+/// Сноски из части `w:footnotes` или `w:endnotes`; `None`, если в части
+/// есть что-то непонятное (тогда часть сохраняется как есть).
+pub(crate) fn read_notes(root: &Element, kind: NoteKind) -> Option<Vec<Note>> {
+    let (part, item) = match kind {
+        NoteKind::Footnote => ("footnotes", "footnote"),
+        NoteKind::Endnote => ("endnotes", "endnote"),
+    };
+    if !root.is_w(part) {
+        return None;
+    }
+    let mut notes = Vec::new();
+    for child in root.elements() {
+        if !child.is_w(item) || !child.only_attrs(&["id", "type"]) {
+            return None;
+        }
+        notes.push(Note {
+            id: child.w_attr("id")?.to_string(),
+            special: child.w_attr("type").map(str::to_string),
+            blocks: child.elements().map(read_block).collect(),
+        });
+    }
+    Some(notes)
+}
+
+/// Знак поля `w:fldChar`; с данными поля формы (`w:ffData`) и другими
+/// детьми — `None`.
+fn read_field_char(element: &Element) -> Option<FieldChar> {
+    if !element.only_attrs(&["fldCharType", "dirty", "fldLock"])
+        || element.elements().next().is_some()
+    {
+        return None;
+    }
+    let kind = match element.w_attr("fldCharType")? {
+        "begin" => FieldCharKind::Begin,
+        "separate" => FieldCharKind::Separate,
+        "end" => FieldCharKind::End,
+        _ => return None,
+    };
+    let flag = |name: &str| match element.w_attr(name) {
+        None | Some("false" | "0" | "off") => Some(false),
+        Some("true" | "1" | "on") => Some(true),
+        Some(_) => None,
+    };
+    Some(FieldChar {
+        kind,
+        dirty: flag("dirty")?,
+        locked: flag("fldLock")?,
+    })
 }
 
 pub(crate) fn read_run_props(rpr: &Element) -> RunProps {
@@ -286,7 +544,35 @@ pub(crate) fn read_run_props(rpr: &Element) -> RunProps {
                 "i" => set(&mut props.italic, toggle(child)),
                 "strike" => set(&mut props.strike, toggle(child)),
                 "dstrike" => set(&mut props.double_strike, toggle(child)),
-                "u" => set(&mut props.underline, enum_val(child, UNDERLINES)),
+                "caps" => set(&mut props.caps, toggle(child)),
+                "smallCaps" => set(&mut props.small_caps, toggle(child)),
+                "vanish" => set(&mut props.hidden, toggle(child)),
+                "u" => read_underline(child)
+                    .map(|(underline, color)| {
+                        props.underline = Some(underline);
+                        props.underline_color = color;
+                    })
+                    .is_some(),
+                "spacing" => set(
+                    &mut props.spacing,
+                    single_val(child)
+                        .and_then(|v| v.parse::<i32>().ok())
+                        .map(Twips),
+                ),
+                "w" => set(
+                    &mut props.scale,
+                    single_val(child)
+                        .and_then(|v| v.trim_end_matches('%').parse::<u16>().ok())
+                        .filter(|w| (1..=600).contains(w)),
+                ),
+                "position" => set(
+                    &mut props.position,
+                    single_val(child).and_then(|v| v.parse::<i32>().ok()),
+                ),
+                "kern" => set(
+                    &mut props.kerning,
+                    single_val(child).and_then(parse_half_points),
+                ),
                 "color" => read_color(child)
                     .map(|(color, theme)| {
                         props.color = Some(color);
@@ -353,51 +639,6 @@ fn read_fonts(fonts: &Element) -> Option<RunFonts> {
     })
 }
 
-fn read_table(tbl: &Element) -> Block {
-    let mut table = Table::default();
-    for child in tbl.elements() {
-        if child.is_w("tblPr") || child.is_w("tblGrid") {
-            table.raw_props.push(child.raw());
-        } else if child.is_w("tr") {
-            match read_row(child) {
-                Some(row) => table.rows.push(row),
-                None => return Block::Unknown(tbl.raw()),
-            }
-        } else {
-            // Закладки, элементы управления и прочее между строками —
-            // пока сохраняем таблицу целиком (таблицы — задача F5.2).
-            return Block::Unknown(tbl.raw());
-        }
-    }
-    Block::Table(table)
-}
-
-fn read_row(tr: &Element) -> Option<TableRow> {
-    let mut row = TableRow::default();
-    for child in tr.elements() {
-        if child.is_w("trPr") || child.is_w("tblPrEx") {
-            row.raw_props.push(child.raw());
-        } else if child.is_w("tc") {
-            row.cells.push(read_cell(child));
-        } else {
-            return None;
-        }
-    }
-    Some(row)
-}
-
-fn read_cell(tc: &Element) -> TableCell {
-    let mut cell = TableCell::default();
-    for child in tc.elements() {
-        if child.is_w("tcPr") {
-            cell.raw_props.push(child.raw());
-        } else {
-            cell.blocks.push(read_block(child));
-        }
-    }
-    cell
-}
-
 fn read_section_props(sect: &Element) -> SectionProps {
     let mut props = SectionProps::default();
     for child in sect.elements() {
@@ -405,6 +646,12 @@ fn read_section_props(sect: &Element) -> SectionProps {
             && match child.local.as_str() {
                 "pgSz" => set(&mut props.page_size, read_page_size(child)),
                 "pgMar" => set(&mut props.margins, read_margins(child)),
+                "type" => set(&mut props.start, read_section_start(child)),
+                "cols" => set(&mut props.columns, read_columns(child)),
+                "headerReference" => read_reference(child, &mut props.headers),
+                "footerReference" => read_reference(child, &mut props.footers),
+                "titlePg" => toggle(child).map(|on| props.title_page = on).is_some(),
+                "pgBorders" => set(&mut props.page_borders, read_page_borders(child)),
                 _ => false,
             };
         if !understood {
@@ -412,6 +659,157 @@ fn read_section_props(sect: &Element) -> SectionProps {
         }
     }
     props
+}
+
+/// `w:pgBorders`: границы страниц. `None`, если внутри непонятное
+/// (например, рисунчатая граница) — тогда элемент сохраняется как есть.
+fn read_page_borders(element: &Element) -> Option<PageBorders> {
+    if !element.only_attrs(&["offsetFrom", "display", "zOrder"]) {
+        return None;
+    }
+    let mut borders = PageBorders {
+        from_page_edge: match element.w_attr("offsetFrom") {
+            None | Some("text") => false,
+            Some("page") => true,
+            Some(_) => return None,
+        },
+        display: match element.w_attr("display") {
+            None | Some("allPages") => PageBorderDisplay::AllPages,
+            Some("firstPage") => PageBorderDisplay::FirstPage,
+            Some("notFirstPage") => PageBorderDisplay::NotFirstPage,
+            Some(_) => return None,
+        },
+        behind_text: match element.w_attr("zOrder") {
+            None | Some("front") => false,
+            Some("back") => true,
+            Some(_) => return None,
+        },
+        ..PageBorders::default()
+    };
+    for child in element.elements() {
+        if !is_w_ns(child.ns.as_deref()) {
+            return None;
+        }
+        let slot = match child.local.as_str() {
+            "top" => &mut borders.top,
+            "left" => &mut borders.left,
+            "bottom" => &mut borders.bottom,
+            "right" => &mut borders.right,
+            _ => return None,
+        };
+        if slot.is_some() {
+            return None;
+        }
+        *slot = Some(read_border(child)?);
+    }
+    Some(borders)
+}
+
+/// Ссылка на колонтитул (`w:headerReference`, `w:footerReference`):
+/// запоминает связь, а содержимое читается потом из части колонтитула.
+/// `false`, если ссылка непонятна или такой колонтитул уже есть.
+fn read_reference(element: &Element, set: &mut HeaderFooters) -> bool {
+    let mut kind = Some(HeaderFooterKind::Default);
+    let mut id = None;
+    for a in &element.attrs {
+        match a.local.as_str() {
+            "type" if is_w_ns(a.ns.as_deref()) => {
+                kind = match a.value.as_str() {
+                    "default" => Some(HeaderFooterKind::Default),
+                    "first" => Some(HeaderFooterKind::First),
+                    "even" => Some(HeaderFooterKind::Even),
+                    _ => None,
+                }
+            }
+            "id" if a.ns.as_deref() == Some(R_NS) => id = Some(a.value.clone()),
+            _ => return false,
+        }
+    }
+    let (Some(kind), Some(id)) = (kind, id) else {
+        return false;
+    };
+    let slot = set.get_mut(kind);
+    if slot.is_some() {
+        return false;
+    }
+    *slot = Some(HeaderFooter {
+        blocks: Vec::new(),
+        relationship: Some(id),
+    });
+    true
+}
+
+/// Содержимое части колонтитула (`w:hdr` или `w:ftr`); `None`, если
+/// корень другой.
+pub(crate) fn read_header_footer(root: &Element) -> Option<Vec<Block>> {
+    if !root.is_w("hdr") && !root.is_w("ftr") {
+        return None;
+    }
+    Some(root.elements().map(read_block).collect())
+}
+
+/// Начало раздела `w:type`.
+fn read_section_start(element: &Element) -> Option<SectionStart> {
+    if !element.only_attrs(&["val"]) {
+        return None;
+    }
+    Some(match element.w_attr("val") {
+        None | Some("nextPage") => SectionStart::NextPage,
+        Some("continuous") => SectionStart::Continuous,
+        Some("evenPage") => SectionStart::EvenPage,
+        Some("oddPage") => SectionStart::OddPage,
+        Some("nextColumn") => SectionStart::NextColumn,
+        Some(_) => return None,
+    })
+}
+
+/// Колонки `w:cols`. Чего не понимаем — `None`, элемент остаётся как есть.
+fn read_columns(cols: &Element) -> Option<Columns> {
+    if !cols.only_attrs(&["num", "space", "sep", "equalWidth"]) {
+        return None;
+    }
+    let flag = |name: &str| match cols.w_attr(name) {
+        None => Some(None),
+        Some("true" | "1" | "on") => Some(Some(true)),
+        Some("false" | "0" | "off") => Some(Some(false)),
+        Some(_) => None,
+    };
+    let count = match cols.w_attr("num") {
+        Some(n) => n.parse::<u16>().ok()?.max(1),
+        None => 1,
+    };
+    let space = match cols.w_attr("space") {
+        Some(v) => parse_twips(v)?,
+        // Значение по умолчанию по стандарту — полдюйма.
+        None => Twips(720),
+    };
+    let separator = flag("sep")?.unwrap_or(false);
+    let equal = flag("equalWidth")?;
+    let mut widths = Vec::new();
+    for col in cols.elements() {
+        if !col.is_w("col") || !col.only_attrs(&["w", "space"]) {
+            return None;
+        }
+        let width = parse_twips(col.w_attr("w")?)?;
+        let after = match col.w_attr("space") {
+            Some(v) => parse_twips(v)?,
+            None => Twips::ZERO,
+        };
+        widths.push((width, after));
+    }
+    // Ширины колонок без `equalWidth="0"` Word не читает: сохраняем как есть.
+    if !widths.is_empty() && equal != Some(false) {
+        return None;
+    }
+    if equal == Some(false) && widths.is_empty() {
+        return None;
+    }
+    Some(Columns {
+        count,
+        space,
+        separator,
+        widths,
+    })
 }
 
 fn read_page_size(size: &Element) -> Option<PageSize> {
@@ -455,7 +853,7 @@ fn read_margins(margins: &Element) -> Option<PageMargins> {
 }
 
 /// Записывает значение, если оно понято. Возвращает, понято ли.
-fn set<T>(slot: &mut Option<T>, value: Option<T>) -> bool {
+pub(crate) fn set<T>(slot: &mut Option<T>, value: Option<T>) -> bool {
     match value {
         Some(v) => {
             *slot = Some(v);
@@ -466,7 +864,7 @@ fn set<T>(slot: &mut Option<T>, value: Option<T>) -> bool {
 }
 
 /// Значение `w:val` у элемента, у которого других атрибутов нет.
-fn single_val(element: &Element) -> Option<&str> {
+pub(crate) fn single_val(element: &Element) -> Option<&str> {
     if element.only_attrs(&["val"]) {
         element.w_attr("val")
     } else {
@@ -474,11 +872,11 @@ fn single_val(element: &Element) -> Option<&str> {
     }
 }
 
-fn string_val(element: &Element) -> Option<String> {
+pub(crate) fn string_val(element: &Element) -> Option<String> {
     single_val(element).map(str::to_string)
 }
 
-fn enum_val<T: Copy>(element: &Element, table: &[(&str, T)]) -> Option<T> {
+pub(crate) fn enum_val<T: Copy>(element: &Element, table: &[(&str, T)]) -> Option<T> {
     single_val(element).and_then(|v| lookup(table, v))
 }
 
@@ -492,6 +890,20 @@ pub(crate) fn toggle(element: &Element) -> Option<bool> {
         Some("false" | "0" | "off") => Some(false),
         Some(_) => None,
     }
+}
+
+/// Подчёркивание `w:u`: вид и цвет (`w:color`, без ссылок на тему —
+/// с ними элемент сохраняется как есть).
+fn read_underline(element: &Element) -> Option<(Underline, Option<Color>)> {
+    if !element.only_attrs(&["val", "color"]) {
+        return None;
+    }
+    let underline = lookup(UNDERLINES, element.w_attr("val")?)?;
+    let color = match element.w_attr("color") {
+        None => None,
+        Some(value) => Some(parse_color(value)?),
+    };
+    Some((underline, color))
 }
 
 /// Цвет `w:color`: значение и, возможно, ссылка на цвет темы.
@@ -520,7 +932,7 @@ fn read_color(element: &Element) -> Option<(Color, Option<ThemeColor>)> {
     Some((color, theme))
 }
 
-fn parse_color(value: &str) -> Option<Color> {
+pub(crate) fn parse_color(value: &str) -> Option<Color> {
     match value {
         "auto" => Some(Color::Auto),
         hex if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => {
@@ -685,7 +1097,7 @@ mod tests {
                 <w:ind w:left="720" w:right="360" w:hanging="360" w:firstLine="100"/>
                 <w:spacing w:before="240" w:after="120" w:line="276" w:lineRule="auto"/>
                 <w:contextualSpacing/><w:keepNext/><w:keepLines w:val="0"/>
-                <w:pageBreakBefore/><w:widowControl w:val="false"/>
+                <w:pageBreakBefore/><w:widowControl w:val="false"/><w:suppressAutoHyphens/>
                 <w:tabs><w:tab w:val="clear" w:pos="720"/><w:tab w:val="end" w:leader="dot" w:pos="9350"/></w:tabs>
                 <w:framePr/>
             </w:pPr></w:p>"#,
@@ -705,6 +1117,7 @@ mod tests {
         assert_eq!(p.contextual_spacing, Some(true));
         assert_eq!(p.keep_next, Some(true));
         assert_eq!(p.keep_lines, Some(false));
+        assert_eq!(p.suppress_auto_hyphens, Some(true));
         assert_eq!(p.page_break_before, Some(true));
         assert_eq!(p.widow_control, Some(false));
         assert_eq!(
@@ -763,12 +1176,12 @@ mod tests {
     #[test]
     fn unknown_inlines_and_blocks() {
         let doc = read_body_xml(
-            r#"<w:p w14:paraId="1"><w:bookmarkStart w:id="0" w:name="b"/><w:r><w:t>x</w:t></w:r><w:bookmarkEnd w:id="0"/></w:p>
+            r#"<w:p w14:paraId="1"><w:permStart w:id="0" w:edGrp="everyone"/><w:r><w:t>x</w:t></w:r><w:permEnd w:id="0"/></w:p>
                <w:sdt><w:sdtContent><w:p/></w:sdtContent></w:sdt>"#,
         );
         let p = first_paragraph(&doc);
         assert_eq!(p.content.len(), 3);
-        assert!(matches!(&p.content[0], Inline::Unknown(r) if r.local_name() == "bookmarkStart"));
+        assert!(matches!(&p.content[0], Inline::Unknown(r) if r.local_name() == "permStart"));
         let blocks: Vec<_> = doc.blocks().collect();
         assert!(matches!(blocks[1], Block::Unknown(r) if r.local_name() == "sdt"));
         // Фрагмент несёт объявление пространства имён и снова читается.
@@ -779,6 +1192,50 @@ mod tests {
     }
 
     #[test]
+    fn simple_field_becomes_field_characters() {
+        let doc = read_body_xml(
+            r#"<w:p><w:fldSimple w:instr=" PAGE "><w:r><w:rPr><w:b/></w:rPr><w:t>7</w:t></w:r></w:fldSimple></w:p>"#,
+        );
+        let p = first_paragraph(&doc);
+        assert_eq!(p.plain_text(), "7");
+        let names: Vec<_> = p
+            .runs()
+            .flat_map(|r| &r.content)
+            .map(|c| match c {
+                RunContent::FieldChar(c) => format!("{:?}", c.kind),
+                RunContent::FieldCode(code) => code.clone(),
+                RunContent::Text(t) => t.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(names, ["Begin", " PAGE ", "Separate", "7", "End"]);
+        // Оформление результата есть и у знаков поля.
+        assert!(p.runs().all(|r| r.props.bold == Some(true)));
+        // Записанное поле читается так же.
+        let xml = crate::serialize::document_xml(&doc);
+        let again = read_document(&xml::parse(xml.as_bytes()).unwrap()).unwrap();
+        assert_eq!(again.sections[0].blocks, doc.sections[0].blocks);
+    }
+
+    #[test]
+    fn complex_field_is_read() {
+        let doc = read_body_xml(
+            r#"<w:p><w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/></w:r><w:r><w:instrText xml:space="preserve"> DATE \@ "d.M.yyyy" </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1.2.2026</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>"#,
+        );
+        let p = first_paragraph(&doc);
+        let found = letter_model::fields(p);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name(), "DATE");
+        assert_eq!(found[0].switch("\\@").as_deref(), Some("d.M.yyyy"));
+        assert!(found[0].dirty);
+        assert_eq!(&p.plain_text()[found[0].result.clone()], "1.2.2026");
+        let xml = crate::serialize::document_xml(&doc);
+        assert!(xml.contains(r#"<w:fldChar w:fldCharType="begin" w:dirty="1"/>"#));
+        let again = read_document(&xml::parse(xml.as_bytes()).unwrap()).unwrap();
+        assert_eq!(again.sections[0].blocks, doc.sections[0].blocks);
+    }
+
+    #[test]
     fn sections() {
         let doc = read_body_xml(
             r#"<w:p><w:r><w:t>one</w:t></w:r></w:p>
@@ -786,6 +1243,9 @@ mod tests {
                <w:p><w:r><w:t>two</w:t></w:r></w:p>
                <w:sectPr>
                  <w:headerReference w:type="default" r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>
+                 <w:footerReference w:type="first" r:id="rId2" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>
+                 <w:footerReference w:type="odd" r:id="rId3" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>
+                 <w:titlePg/>
                  <w:pgSz w:w="11906" w:h="16838"/>
                  <w:pgMar w:top="1134" w:right="850" w:bottom="1134" w:left="1701" w:header="708" w:footer="708" w:gutter="0"/>
                  <w:cols w:space="708"/>
@@ -801,8 +1261,65 @@ mod tests {
         assert_eq!(last.page_size, Some(PageSize::A4));
         assert_eq!(last.margins, Some(PageMargins::default()));
         let names: Vec<_> = last.unknown.iter().map(RawXml::local_name).collect();
-        assert_eq!(names, ["headerReference", "cols"]);
+        // Непонятный вид колонтитула остаётся как есть.
+        assert_eq!(names, ["footerReference"]);
+        assert_eq!(
+            last.headers
+                .default
+                .as_ref()
+                .and_then(|h| h.relationship.as_deref()),
+            Some("rId1")
+        );
+        assert_eq!(
+            last.footers
+                .first
+                .as_ref()
+                .and_then(|h| h.relationship.as_deref()),
+            Some("rId2")
+        );
+        assert!(last.title_page);
+        assert_eq!(
+            last.columns,
+            Some(Columns {
+                space: Twips(708),
+                ..Columns::default()
+            })
+        );
         assert_eq!(doc.plain_text(), "one\n\ntwo");
+    }
+
+    #[test]
+    fn section_start_and_columns() {
+        let read = |sect: &str| {
+            read_body_xml(&format!("<w:sectPr>{sect}</w:sectPr>")).sections[0]
+                .props
+                .clone()
+        };
+        let props =
+            read(r#"<w:type w:val="continuous"/><w:cols w:num="3" w:space="400" w:sep="1"/>"#);
+        assert_eq!(props.start, Some(SectionStart::Continuous));
+        assert_eq!(
+            props.columns,
+            Some(Columns {
+                count: 3,
+                space: Twips(400),
+                separator: true,
+                widths: Vec::new(),
+            })
+        );
+        let uneven = read(
+            r#"<w:cols w:num="2" w:equalWidth="0"><w:col w:w="3000" w:space="500"/><w:col w:w="4000"/></w:cols>"#,
+        );
+        let columns = uneven.columns.unwrap();
+        assert_eq!(
+            columns.widths,
+            [(Twips(3000), Twips(500)), (Twips(4000), Twips::ZERO)]
+        );
+        assert_eq!(columns.space, Twips(720));
+        // Непонятное остаётся как есть.
+        let odd = read(r#"<w:type w:val="weird"/><w:cols w:num="2"><w:col w:w="1"/></w:cols>"#);
+        assert_eq!((odd.start, odd.columns), (None, None));
+        assert_eq!(odd.unknown.len(), 2);
     }
 
     #[test]
@@ -829,18 +1346,20 @@ mod tests {
         let Block::Table(table) = blocks[0] else {
             panic!("expected table");
         };
-        assert_eq!(table.raw_props.len(), 2);
-        assert_eq!(table.rows[0].raw_props.len(), 1);
-        assert_eq!(table.rows[0].cells[0].raw_props.len(), 1);
+        assert!(table.raw_props.is_empty() && table.grid.is_empty());
+        assert!(table.rows[0].raw_props.is_empty());
+        assert!(table.rows[0].cells[0].raw_props.is_empty());
         assert_eq!(blocks[0].plain_text(), "a\tb");
         assert!(matches!(blocks[1], Block::Unknown(_)));
     }
 
     #[test]
     fn document_level_unknowns_and_strict_namespace() {
-        let xml = r#"<w:document xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main"><w:background w:color="FFFF00"/><w:body><w:p><w:r><w:t>s</w:t></w:r></w:p></w:body></w:document>"#;
+        let xml = r#"<w:document xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main"><w:background w:color="FFFF00"/><w:background w:color="00FF00"/><w:body><w:p><w:r><w:t>s</w:t></w:r></w:p></w:body></w:document>"#;
         let doc = read_document(&xml::parse(xml.as_bytes()).unwrap()).unwrap();
         assert_eq!(doc.plain_text(), "s");
+        // Цвет страницы понят, повтор сохранён как есть.
+        assert_eq!(doc.background, Some(Color::Rgb(0xFF, 0xFF, 0)));
         assert_eq!(doc.unknown.len(), 1);
     }
 

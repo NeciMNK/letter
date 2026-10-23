@@ -1,9 +1,13 @@
 //! Отрисовка страницы в картинку в памяти (без видеокарты): для тестов,
 //! сверки с эталонами и сохранения в файл.
 
+use std::sync::Arc;
+
 use letter_layout::{FontLibrary, Page};
+use letter_model::ImageData;
 
 use crate::glyphs::{GlyphCache, GlyphPixels};
+use crate::picture::{decode, placeholder};
 use crate::scene::{DrawItem, Rgba, page_scene};
 
 /// Картинка RGBA, 8 бит на канал, без предумножения, строки сверху вниз.
@@ -57,6 +61,28 @@ impl RgbaImage {
         }
     }
 
+    /// Рисует картинку `source`, растянутую на прямоугольник (берётся
+    /// ближайшая точка картинки), с учётом прозрачности.
+    fn draw_image(&mut self, x: f32, y: f32, width: f32, height: f32, source: &RgbaImage) {
+        if width <= 0.0 || height <= 0.0 || source.width == 0 || source.height == 0 {
+            return;
+        }
+        let (sw, sh) = (source.width as f32, source.height as f32);
+        for py in y.round() as i64..(y + height).round() as i64 {
+            let sy = ((py as f32 + 0.5 - y) / height * sh)
+                .floor()
+                .clamp(0.0, sh - 1.0) as u32;
+            for px in x.round() as i64..(x + width).round() as i64 {
+                let sx = ((px as f32 + 0.5 - x) / width * sw)
+                    .floor()
+                    .clamp(0.0, sw - 1.0) as u32;
+                if let Some(p) = source.pixel(sx, sy) {
+                    self.blend(px, py, [p[0], p[1], p[2], 255], p[3]);
+                }
+            }
+        }
+    }
+
     fn fill_rect(&mut self, x: f32, y: f32, width: f32, height: f32, color: Rgba) {
         // Покрытие края пикселя учитывается, чтобы тонкие линии не
         // пропадали и не толстели.
@@ -86,6 +112,8 @@ pub fn render_page(
     let width = (page.width * scale).round().max(1.0) as u32;
     let height = (page.height * scale).round().max(1.0) as u32;
     let mut image = RgbaImage::filled(width, height, [255, 255, 255, 255]);
+    // Одна картинка может стоять на странице много раз.
+    let mut decoded: Vec<(Arc<ImageData>, Option<RgbaImage>)> = Vec::new();
     for item in page_scene(page, scale, library, cache) {
         match item {
             DrawItem::Rect {
@@ -95,6 +123,32 @@ pub fn render_page(
                 height,
                 color,
             } => image.fill_rect(x, y, width, height, color),
+            DrawItem::Picture {
+                x,
+                y,
+                width,
+                height,
+                image: data,
+            } => {
+                let source = data.and_then(|data| {
+                    let index = match decoded.iter().position(|(d, _)| Arc::ptr_eq(d, &data)) {
+                        Some(i) => i,
+                        None => {
+                            let pixels = decode(&data);
+                            decoded.push((data, pixels));
+                            decoded.len() - 1
+                        }
+                    };
+                    decoded[index].1.as_ref()
+                });
+                match source {
+                    Some(source) => image.draw_image(x, y, width, height, source),
+                    None => {
+                        let stub = placeholder(width.round() as u32, height.round() as u32);
+                        image.draw_image(x, y, width, height, &stub);
+                    }
+                }
+            }
             DrawItem::Glyph { key, x, y, color } => {
                 let Some(glyph) = cache.glyph(library, key) else {
                     continue;

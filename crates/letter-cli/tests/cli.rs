@@ -131,8 +131,13 @@ fn compare_reports_differences() {
     .unwrap();
     assert!(out.starts_with("Страниц: эталон 1, у нас 1\n"), "{out}");
     assert!(out.contains("допуск 0.50 пт"), "{out}");
-    // Таблицы мы пока раскладываем по абзацам подряд.
-    assert!(out.contains("«R1C1 R1C2 R1C3»: только в эталоне"), "{out}");
+    // Строки таблицы на своих местах; с допуском 0,5 пт расходится
+    // только первая строка.
+    assert!(!out.contains("только"), "{out}");
+    assert!(
+        out.contains("«A 3×3 table with a merged cell:»: сдвиг"),
+        "{out}"
+    );
 
     assert!(run(&args(&["compare", &fixture("table.docx")])).is_err());
     assert!(run(&args(&["compare", "--tolerance", "x", "a.docx", "b.pdf"])).is_err());

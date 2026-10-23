@@ -12,20 +12,28 @@
 //! - [`pages`] — документ целиком: перевод модели в типы вёрстки
 //!   и раскладка строк по страницам;
 //! - [`spacing`] — межстрочный и межабзацный интервалы: строки и абзацы
-//!   по вертикали.
+//!   по вертикали;
+//! - `table` — таблицы: столбцы, ячейки, границы и заливка.
 
+mod fields;
 pub mod fonts;
 pub mod lines;
+mod notes;
 pub mod pages;
 pub mod shaping;
 pub mod spacing;
+mod table;
 
 pub use fonts::{FontId, FontLibrary, FontMatch};
 pub use lines::{
-    Align, Line, LineEnd, LineItem, ParagraphFormat, ParagraphLines, TabItem, TabKind, TabLeader,
-    TabStop, TextItem, TextSpan, break_lines,
+    Align, Hyphenation, InlineObject, Line, LineEnd, LineItem, LineRoom, ObjectItem,
+    ParagraphFormat, ParagraphLines, TabItem, TabKind, TabLeader, TabStop, TextItem, TextSpan,
+    break_lines, break_lines_around,
 };
-pub use pages::{DocumentLayout, Margins, Page, PageLine, layout_document};
+pub use pages::{
+    CellArea, DocumentLayout, Float, LayoutCache, Margins, Page, PageLine, PageNote, PageStory,
+    PageWatermark, Shape, ShapeKind, baseline_rise, layout_document, layout_document_cached,
+};
 pub use shaping::{FontMetrics, ShapedGlyph, ShapedRun, Shaper, TextStyle};
 pub use spacing::{
     LineBox, LineRule, ParagraphBlock, ParagraphSpacing, PlacedParagraph, effective_spacing,

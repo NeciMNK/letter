@@ -84,3 +84,24 @@ fn line_text(line: &letter_layout::PageLine) -> String {
         .unwrap_or_default()
         .to_string()
 }
+
+#[test]
+fn footers_show_page_numbers() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/docx");
+    let doc = letter_docx::read_file(dir.join("headers.docx")).unwrap();
+    let library = FontLibrary::embedded_only();
+    let layout = layout_document(&doc, &mut Shaper::new(), &library);
+    let count = layout.pages.len();
+    let footer = |i: usize| {
+        let page: &letter_layout::Page = &layout.pages[i];
+        page.footer
+            .lines
+            .iter()
+            .map(|l| l.text[l.line.range.clone()].trim_end().to_string())
+            .collect::<Vec<_>>()
+    };
+    // Нечётные страницы первого раздела: номер этой страницы и число страниц.
+    assert_eq!(footer(2), [format!("Odd page footer, page 3 of {count}")]);
+    assert_eq!(footer(4), [format!("Odd page footer, page 5 of {count}")]);
+    assert_eq!(footer(1), ["Even page footer"]);
+}
