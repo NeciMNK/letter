@@ -1,0 +1,42 @@
+# Фаззинг читателей форматов (F10.4): раз в неделю каждая цель из fuzz/
+# ищет падающие файлы 5 минут. Если нашла — запуск красный, а файл лежит
+# в разделе Artifacts страницы запуска. Можно запустить вручную.
+name: Фаззинг
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: Фаззинг (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [docx, odt, rtf, text]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup toolchain install nightly --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - run: cargo install cargo-fuzz --locked
+      - name: Образцы для начала
+        run: |
+          mkdir -p fuzz/corpus/${{ matrix.target }}
+          case ${{ matrix.target }} in
+            docx) cp tests/fixtures/docx/*.docx fuzz/corpus/docx/ ;;
+            odt) cp tests/fixtures/odt/*.odt fuzz/corpus/odt/ ;;
+            rtf|text) cp tests/fixtures/rtf/*.rtf fuzz/corpus/${{ matrix.target }}/ ;;
+          esac
+      - run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=300 -rss_limit_mb=4096
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: fuzz/artifacts

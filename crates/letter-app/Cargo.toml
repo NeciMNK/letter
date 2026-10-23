@@ -39,3 +39,60 @@ unic-langid = "0.9"
 [dev-dependencies]
 # Тесты интерфейса: найти кнопку по надписи и нажать (от авторов egui).
 egui_kittest = { version = "0.37", default-features = false }
+
+# F10.1–F10.2: установщики собирает `cargo packager --release` (утилита
+# cargo-packager, её ставит CI в .github/workflows/release.yml). Здесь же
+# значок программы и ассоциация файлов: после установки .docx, .doc,
+# .rtf и .odt открываются в letter двойным щелчком.
+[package.metadata.packager]
+product-name = "letter"
+identifier = "io.github.bikhe.letter"
+description = "Текстовый редактор, совместимый с документами Word"
+long-description = "Открытый текстовый редактор: открывает, правит и сохраняет .docx, .rtf, .odt, .txt, .html и .md."
+homepage = "https://github.com/bikhe/letter"
+authors = ["Участники проекта letter"]
+publisher = "letter"
+license-file = "../../LICENSE"
+category = "Productivity"
+before-packaging-command = "cargo build --release -p letter-app"
+binaries = [{ path = "letter", main = true }]
+icons = [
+  "assets/icon/letter-32.png",
+  "assets/icon/letter-128.png",
+  "assets/icon/letter-256.png",
+  "assets/icon/letter-512.png",
+  "assets/icon/letter.ico",
+  "assets/icon/letter.icns",
+]
+
+[[package.metadata.packager.file-associations]]
+extensions = ["docx"]
+mime-type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+description = "Документ Word"
+name = "Word Document"
+role = "editor"
+
+[[package.metadata.packager.file-associations]]
+extensions = ["doc"]
+mime-type = "application/msword"
+description = "Документ Word 97–2003"
+name = "Word 97-2003 Document"
+role = "editor"
+
+[[package.metadata.packager.file-associations]]
+extensions = ["rtf"]
+mime-type = "application/rtf"
+description = "Документ RTF"
+name = "Rich Text Document"
+role = "editor"
+
+[[package.metadata.packager.file-associations]]
+extensions = ["odt"]
+mime-type = "application/vnd.oasis.opendocument.text"
+description = "Документ OpenDocument"
+name = "OpenDocument Text"
+role = "editor"
+
+[package.metadata.packager.deb]
+depends = ["libxkbcommon0", "libxkbcommon-x11-0", "libwayland-client0"]
+section = "editors"
