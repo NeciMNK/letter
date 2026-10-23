@@ -6,9 +6,10 @@
 use crate::i18n::{Language, tr};
 use std::path::PathBuf;
 
-use eframe::egui::{self, Align, Color32, Key, Layout, RichText, Ui, vec2};
+use eframe::egui::{self, Align, Color32, Key, Layout, Painter, Rect, RichText, Ui, vec2};
 
 use crate::icons::{self, Icon};
+use crate::print::{PageChoice, PrintJob, Printers, parse_pages, with_copies};
 use crate::ribbon::{ACCENT, RibbonCommand};
 use crate::settings::{AUTOSAVE_RANGE, Settings};
 use crate::theme::{Palette, ThemeChoice};
@@ -42,6 +43,11 @@ pub struct DocumentInfo {
     pub modified: bool,
     /// Страниц.
     pub pages: usize,
+    /// Страница с курсором, с нуля.
+    pub current_page: usize,
+    /// Размеры страниц, пт: ширина и высота (для предварительного
+    /// просмотра).
+    pub page_sizes: Vec<(f32, f32)>,
     /// Слов.
     pub words: u32,
     /// Знаков без пробелов.
@@ -71,6 +77,50 @@ pub struct BackstageInfo {
     pub recent: Vec<PathBuf>,
     /// Параметры программы.
     pub settings: Settings,
+    /// Принтеры; `None` — ещё ищутся.
+    pub printers: Option<Printers>,
+}
+
+/// Настройки на странице «Печать».
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrintSettings {
+    /// Копий.
+    pub copies: u32,
+    /// Разобрать по копиям (1 2 3, 1 2 3).
+    pub collate: bool,
+    /// Какие страницы.
+    pub pages: PageChoice,
+    /// Страницы для [`PageChoice::Custom`]: «1-3, 5».
+    pub custom: String,
+    /// Выбранный принтер; `None` — по умолчанию.
+    pub printer: Option<String>,
+    /// Страница в предварительном просмотре, с нуля.
+    pub preview: usize,
+}
+
+impl Default for PrintSettings {
+    fn default() -> PrintSettings {
+        PrintSettings {
+            copies: 1,
+            collate: true,
+            pages: PageChoice::All,
+            custom: String::new(),
+            printer: None,
+            preview: 0,
+        }
+    }
+}
+
+impl PrintSettings {
+    /// Страницы для печати (с нуля, без копий); `None` — номера страниц
+    /// введены с ошибкой.
+    pub fn chosen_pages(&self, total: usize, current: usize) -> Option<Vec<usize>> {
+        match self.pages {
+            PageChoice::All => Some((0..total).collect()),
+            PageChoice::Current => Some(vec![current.min(total.saturating_sub(1))]),
+            PageChoice::Custom => parse_pages(&self.custom, total),
+        }
+    }
 }
 
 /// Состояние представления.
@@ -80,6 +130,8 @@ pub struct Backstage {
     pub open: bool,
     /// Выбранная страница.
     pub page: Page,
+    /// Настройки печати (живут, пока открыта программа).
+    pub print: PrintSettings,
 }
 
 /// Форматы для «Экспорт → Изменить тип файла»: расширение, название
@@ -118,7 +170,14 @@ impl Backstage {
     }
 
     /// Рисует представление на всё окно и возвращает выбранные команды.
-    pub fn ui(&mut self, ui: &mut Ui, info: &BackstageInfo) -> Vec<RibbonCommand> {
+    /// `preview` рисует страницу документа (номер с нуля) в прямоугольник
+    /// — для предварительного просмотра на странице «Печать».
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        info: &BackstageInfo,
+        preview: &mut dyn FnMut(&Painter, usize, Rect),
+    ) -> Vec<RibbonCommand> {
         let mut out = Vec::new();
         if ui.input(|i| i.key_pressed(Key::Escape)) {
             self.open = false;
@@ -186,11 +245,16 @@ impl Backstage {
                     Page::Info | Page::Print | Page::Export if !has_document => Page::Open,
                     page => page,
                 };
+                if page == Page::Print
+                    && let Some(document) = &info.document
+                {
+                    print_page(ui, &mut self.print, document, info, preview, &mut out);
+                    return;
+                }
                 egui::ScrollArea::vertical().show(ui, |ui| match page {
                     Page::Info => info_page(ui, info),
                     Page::New => new_page(ui, &mut out),
-                    Page::Open => open_page(ui, info, &mut out),
-                    Page::Print => print_page(ui),
+                    Page::Open | Page::Print => open_page(ui, info, &mut out),
                     Page::Export => export_page(ui, &mut out),
                     Page::Options => options_page(ui, info.settings, &mut out),
                 });
@@ -315,11 +379,212 @@ fn open_page(ui: &mut Ui, info: &BackstageInfo, out: &mut Vec<RibbonCommand>) {
     }
 }
 
-/// «Печать». Сама печать — задача фазы 6.
-fn print_page(ui: &mut Ui) {
-    heading(ui, tr("backstage-print"));
-    ui.label(tr("backstage-print-soon"));
-    ui.label(tr("backstage-print-workaround"));
+/// «Печать»: слева настройки и кнопка, справа предварительный просмотр
+/// страницы с листанием.
+fn print_page(
+    ui: &mut Ui,
+    settings: &mut PrintSettings,
+    document: &DocumentInfo,
+    info: &BackstageInfo,
+    preview: &mut dyn FnMut(&Painter, usize, Rect),
+    out: &mut Vec<RibbonCommand>,
+) {
+    let total = document.pages.max(1);
+    let chosen = settings.chosen_pages(document.pages, document.current_page);
+    egui::Panel::left("print-settings")
+        .exact_size(320.0)
+        .resizable(false)
+        .frame(egui::Frame::new().inner_margin(egui::Margin {
+            right: 16,
+            ..egui::Margin::ZERO
+        }))
+        .show(ui, |ui| {
+            heading(ui, tr("backstage-print"));
+            ui.horizontal(|ui| {
+                let button = egui::Button::new((
+                    icons::text(ui, Icon::Printer, 24.0),
+                    RichText::new(tr("print-button")).size(16.0),
+                ))
+                .min_size(vec2(110.0, 56.0));
+                let button = ui.add_enabled(chosen.is_some() && document.pages > 0, button);
+                if button.clicked()
+                    && let Some(pages) = &chosen
+                {
+                    out.push(RibbonCommand::Print(PrintJob {
+                        pages: with_copies(pages, settings.copies, settings.collate),
+                        printer: settings.printer.clone(),
+                    }));
+                }
+                let label = ui.label(tr("print-copies"));
+                ui.add(egui::DragValue::new(&mut settings.copies).range(1..=999))
+                    .labelled_by(label.id);
+            });
+            ui.add_space(12.0);
+            printer_choice(ui, settings, info.printers.as_ref());
+            ui.add_space(12.0);
+            let settings_label = ui.label(RichText::new(tr("print-settings")).size(16.0));
+            let label = ui.label(tr("print-pages"));
+            let name = |choice: PageChoice| match choice {
+                PageChoice::All => tr("print-pages-all"),
+                PageChoice::Current => tr("print-pages-current"),
+                PageChoice::Custom => tr("print-pages-custom"),
+            };
+            egui::ComboBox::from_id_salt("print-pages")
+                .width(290.0)
+                .selected_text(name(settings.pages))
+                .show_ui(ui, |ui| {
+                    for choice in [PageChoice::All, PageChoice::Current, PageChoice::Custom] {
+                        ui.selectable_value(&mut settings.pages, choice, name(choice));
+                    }
+                })
+                .response
+                .labelled_by(label.id);
+            let field = egui::TextEdit::singleline(&mut settings.custom)
+                .hint_text(tr("print-pages-hint"))
+                .desired_width(290.0);
+            let response = ui.add(field).labelled_by(label.id);
+            if response.changed() && !settings.custom.trim().is_empty() {
+                settings.pages = PageChoice::Custom;
+            }
+            if chosen.is_none() {
+                ui.label(
+                    RichText::new(tr("print-pages-invalid")).color(Color32::from_rgb(190, 40, 30)),
+                );
+            }
+            ui.add_space(6.0);
+            let collate = if settings.collate {
+                tr("print-collated")
+            } else {
+                tr("print-uncollated")
+            };
+            egui::ComboBox::from_id_salt("print-collate")
+                .width(290.0)
+                .selected_text(collate)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut settings.collate, true, tr("print-collated"));
+                    ui.selectable_value(&mut settings.collate, false, tr("print-uncollated"));
+                })
+                .response
+                .labelled_by(settings_label.id);
+        });
+
+    // Просмотр: страница целиком по центру, внизу — листание.
+    settings.preview = settings.preview.min(total - 1);
+    let bar = 32.0;
+    let area = ui.available_rect_before_wrap();
+    let sheet_area =
+        Rect::from_min_max(area.min, egui::pos2(area.max.x, area.max.y - bar)).shrink(12.0);
+    let (width, height) = document
+        .page_sizes
+        .get(settings.preview)
+        .copied()
+        .unwrap_or((612.0, 792.0));
+    if width > 0.0 && height > 0.0 && sheet_area.width() > 0.0 && sheet_area.height() > 0.0 {
+        let scale = (sheet_area.width() / width).min(sheet_area.height() / height);
+        let sheet = Rect::from_center_size(sheet_area.center(), vec2(width, height) * scale);
+        preview(ui.painter(), settings.preview, sheet);
+    }
+    let bar_rect = Rect::from_min_max(egui::pos2(area.min.x, area.max.y - bar), area.max);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
+        ui.horizontal_centered(|ui| {
+            ui.add_space((bar_rect.width() / 2.0 - 90.0).max(0.0));
+            let name = tr("print-previous-page");
+            let size = vec2(26.0, 26.0);
+            if icons::icon_button(
+                ui,
+                Icon::ChevronLeft,
+                name,
+                size,
+                settings.preview > 0,
+                false,
+            )
+            .on_hover_text(name)
+            .clicked()
+            {
+                settings.preview -= 1;
+            }
+            ui.label(crate::i18n::tr_args(
+                "print-page-of",
+                &[
+                    ("page", (settings.preview + 1).into()),
+                    ("total", total.into()),
+                ],
+            ));
+            let name = tr("print-next-page");
+            let enabled = settings.preview + 1 < total;
+            if icons::icon_button(ui, Icon::ChevronRight, name, size, enabled, false)
+                .on_hover_text(name)
+                .clicked()
+            {
+                settings.preview += 1;
+            }
+        });
+    });
+    // Листание колесом и клавишами, как в Word.
+    let (scroll, page_up, page_down) = ui.input(|i| {
+        (
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::MouseWheel { delta, .. } => Some(delta.y),
+                    _ => None,
+                })
+                .sum::<f32>(),
+            i.key_pressed(Key::PageUp),
+            i.key_pressed(Key::PageDown),
+        )
+    });
+    if (ui.rect_contains_pointer(area) && scroll != 0.0) || page_up || page_down {
+        if (scroll > 0.0 || page_up) && settings.preview > 0 {
+            settings.preview -= 1;
+        } else if (scroll < 0.0 || page_down) && settings.preview + 1 < total {
+            settings.preview += 1;
+        }
+    }
+}
+
+/// Выбор принтера.
+fn printer_choice(ui: &mut Ui, settings: &mut PrintSettings, printers: Option<&Printers>) {
+    let label = ui.label(RichText::new(tr("print-printer")).size(16.0));
+    let Some(printers) = printers else {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(tr("print-searching"));
+        });
+        return;
+    };
+    if printers.names.is_empty() {
+        ui.label(tr("print-no-printers"));
+        settings.printer = None;
+        return;
+    }
+    if settings
+        .printer
+        .as_ref()
+        .is_none_or(|p| !printers.names.contains(p))
+    {
+        settings.printer = printers
+            .default
+            .clone()
+            .filter(|d| printers.names.contains(d))
+            .or_else(|| printers.names.first().cloned());
+    }
+    let selected = settings.printer.clone().unwrap_or_default();
+    egui::ComboBox::from_id_salt("print-printer")
+        .width(290.0)
+        .selected_text(&selected)
+        .show_ui(ui, |ui| {
+            for name in &printers.names {
+                let text = if printers.default.as_ref() == Some(name) {
+                    format!("{name} ({})", tr("print-default"))
+                } else {
+                    name.clone()
+                };
+                ui.selectable_value(&mut settings.printer, Some(name.clone()), text);
+            }
+        })
+        .response
+        .labelled_by(label.id);
 }
 
 /// «Экспорт → Изменить тип файла».
@@ -409,7 +674,7 @@ mod tests {
             .build_ui_state(
                 |ui, state: &mut State| {
                     if state.backstage.open {
-                        let out = state.backstage.ui(ui, &state.info);
+                        let out = state.backstage.ui(ui, &state.info, &mut |_, _, _| {});
                         state.out.extend(out);
                     }
                 },
@@ -432,6 +697,7 @@ mod tests {
             }),
             recent: vec![PathBuf::from("/tmp/a.docx")],
             settings: Settings::default(),
+            printers: None,
         };
         let mut h = harness(info);
         h.run();
@@ -456,5 +722,90 @@ mod tests {
         h.key_press(Key::Escape);
         h.run();
         assert!(!h.state().backstage.open);
+    }
+
+    #[test]
+    fn print_page_previews_and_prints() {
+        struct PrintState {
+            backstage: Backstage,
+            info: BackstageInfo,
+            out: Vec<RibbonCommand>,
+            previewed: Vec<usize>,
+        }
+        let info = BackstageInfo {
+            document: Some(DocumentInfo {
+                name: "Отчёт.docx".into(),
+                pages: 3,
+                current_page: 1,
+                page_sizes: vec![(612.0, 792.0); 3],
+                ..DocumentInfo::default()
+            }),
+            recent: Vec::new(),
+            settings: Settings::default(),
+            printers: Some(Printers {
+                names: vec!["Office".into(), "Home".into()],
+                default: Some("Home".into()),
+            }),
+        };
+        let mut backstage = Backstage::default();
+        backstage.show(Page::Print);
+        let mut h = Harness::builder()
+            .with_size(vec2(1100.0, 750.0))
+            .build_ui_state(
+                |ui, state: &mut PrintState| {
+                    if state.backstage.open {
+                        let previewed = &mut state.previewed;
+                        let out = state.backstage.ui(ui, &state.info, &mut |_, page, _| {
+                            previewed.push(page);
+                        });
+                        state.out.extend(out);
+                    }
+                },
+                PrintState {
+                    backstage,
+                    info,
+                    out: Vec::new(),
+                    previewed: Vec::new(),
+                },
+            );
+        h.run();
+        assert_eq!(h.state().previewed.last(), Some(&0));
+        // Принтер по умолчанию выбран сам.
+        assert_eq!(h.state().backstage.print.printer.as_deref(), Some("Home"));
+        h.get_by_label("Следующая страница").click();
+        h.run();
+        assert_eq!(h.state().previewed.last(), Some(&1));
+        assert!(h.query_by_label("2 из 3").is_some());
+
+        // Ошибка в номерах — печатать нельзя.
+        h.state_mut().backstage.print.pages = PageChoice::Custom;
+        h.state_mut().backstage.print.custom = "5".into();
+        h.run();
+        assert!(h.query_by_label("Неверные номера страниц").is_some());
+
+        h.state_mut().backstage.print.custom = "2-3".into();
+        h.state_mut().backstage.print.copies = 2;
+        h.state_mut().backstage.print.collate = false;
+        h.run();
+        // Надпись кнопки — значок принтера и «Печать».
+        h.get_by_label("\u{e141} Печать").click();
+        h.run();
+        assert_eq!(
+            h.state().out,
+            vec![RibbonCommand::Print(PrintJob {
+                pages: vec![1, 1, 2, 2],
+                printer: Some("Home".into()),
+            })]
+        );
+        assert!(!h.state().backstage.open);
+    }
+
+    #[test]
+    fn current_page_choice() {
+        let mut settings = PrintSettings::default();
+        assert_eq!(settings.chosen_pages(3, 1), Some(vec![0, 1, 2]));
+        settings.pages = PageChoice::Current;
+        assert_eq!(settings.chosen_pages(3, 1), Some(vec![1]));
+        assert_eq!(settings.chosen_pages(3, 7), Some(vec![2]));
     }
 }
