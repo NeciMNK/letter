@@ -8,8 +8,9 @@
 //! Набор текста объединяется в один шаг по словам, как в Word.
 
 use letter_model::{
-    Alignment, Anchor, Block, BreakKind, Color, Document, HeaderFooter, HeaderFooterKind,
-    Hyperlink, Note, NoteKind, Picture, Section, SectionStart, Settings,
+    Alignment, Anchor, Block, BreakKind, Color, Document, DocumentProtection, HeaderFooter,
+    HeaderFooterKind, Hyperlink, Note, NoteKind, Picture, Section, SectionStart, Settings,
+    WriteProtection,
 };
 
 use crate::clipboard::{insert_fragment, insert_plain_text};
@@ -176,6 +177,13 @@ pub enum Command {
     PageColor(Option<Color>),
     /// «Расстановка переносов»: автоматическая (`true`) или нет.
     AutoHyphenation(bool),
+    /// «Ограничить редактирование»: новая защита документа; `None` —
+    /// снять защиту (пароль проверяет вызывающий, см.
+    /// [`crate::protection`]).
+    Protection(Option<DocumentProtection>),
+    /// Пароль на изменение файла и «рекомендовать только чтение»;
+    /// `None` — убрать.
+    WriteProtection(Option<WriteProtection>),
     /// «Титульная страница»: вставить в начало документа.
     InsertCoverPage(Box<crate::cover::CoverPage>),
     /// «Пустая страница»: два разрыва страницы у курсора.
@@ -360,12 +368,15 @@ impl History {
                 return selection;
             }
             Command::AutoHyphenation(on) => {
-                if doc.settings.auto_hyphenation != on {
-                    let before = Box::new(doc.settings.clone());
-                    doc.settings.auto_hyphenation = on;
-                    let after = Box::new(doc.settings.clone());
-                    self.push(Patch::Settings { before, after }, selection);
-                }
+                self.change_settings(doc, selection, |s| s.auto_hyphenation = on);
+                return selection;
+            }
+            Command::Protection(protection) => {
+                self.change_settings(doc, selection, |s| s.protection = protection);
+                return selection;
+            }
+            Command::WriteProtection(protection) => {
+                self.change_settings(doc, selection, |s| s.write_protection = protection);
                 return selection;
             }
             Command::Watermark(text) => {
@@ -695,6 +706,8 @@ impl History {
             | Command::SetNote { .. }
             | Command::PageColor(_)
             | Command::AutoHyphenation(_)
+            | Command::Protection(_)
+            | Command::WriteProtection(_)
             | Command::Watermark(_) => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
@@ -771,6 +784,22 @@ impl History {
             self.undo.remove(0);
         }
         after
+    }
+
+    /// Меняет настройки документа через `change` и запоминает шаг, если
+    /// они правда изменились.
+    fn change_settings(
+        &mut self,
+        doc: &mut Document,
+        selection: Selection,
+        change: impl FnOnce(&mut Settings),
+    ) {
+        let before = Box::new(doc.settings.clone());
+        change(&mut doc.settings);
+        if doc.settings != *before {
+            let after = Box::new(doc.settings.clone());
+            self.push(Patch::Settings { before, after }, selection);
+        }
     }
 
     /// Запоминает шаг, после которого выделение не изменилось.
@@ -1180,6 +1209,24 @@ mod tests {
         assert_eq!(d, original);
         h.redo(&mut d);
         assert_eq!(d.sections.len(), 2);
+    }
+
+    #[test]
+    fn protection_can_be_undone() {
+        let mut d = doc(&["a"]);
+        let mut h = History::new();
+        let p = crate::protection::protect(letter_model::EditRestriction::ReadOnly, "");
+        h.run(&mut d, caret(0, 0), Command::Protection(Some(p.clone())));
+        assert_eq!(d.settings.protection, Some(p));
+        h.run(
+            &mut d,
+            caret(0, 0),
+            Command::WriteProtection(Some(Default::default())),
+        );
+        assert!(d.settings.write_protection.is_some());
+        h.undo(&mut d);
+        h.undo(&mut d);
+        assert_eq!(d.settings, Settings::default());
     }
 
     #[test]

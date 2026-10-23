@@ -754,3 +754,27 @@ nav-results-count = Найдено: { $n }
 nav-search-help = Введите текст в строку поиска: здесь появится всё найденное.
 nav-search-hint = Поиск в документе
 nav-title = Область навигации
+
+# Рецензирование: защита документа.
+group-protect = Защитить
+restrict-editing = Ограничить редактирование
+restrict-editing-hint = Запретить правку документа или разрешить только некоторые изменения
+keytip-review-restrict = ОР
+protect-title = Ограничить редактирование
+protect-restriction = Разрешить только указанный способ редактирования документа:
+protect-read-only = Только чтение
+protect-comments = Примечания
+protect-tracked-changes = Запись исправлений
+protect-forms = Ввод данных в поля форм
+protect-password = Пароль (необязательно):
+protect-confirm = Подтверждение пароля:
+protect-mismatch = Пароли не совпадают.
+protect-start = Да, включить защиту
+protect-modify-password = Пароль для изменения файла:
+protect-recommended = Рекомендовать доступ только для чтения
+protect-modify-apply = Применить пароль для изменения
+protect-stop = Отключить защиту
+protect-allow-editing = Разрешить правку
+protect-wrong = Неверный пароль.
+protect-bar-locked = Документ защищён: изменения запрещены.
+protect-bar-read-only = Документ открыт только для чтения.

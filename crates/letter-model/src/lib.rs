@@ -26,6 +26,7 @@ mod package;
 mod paragraph;
 mod picture;
 mod properties;
+mod protection;
 mod raw;
 mod resolve;
 mod run;
@@ -55,6 +56,7 @@ pub use picture::{
     Picture, Placement, VerticalFrom, Wrap,
 };
 pub use properties::{AppProperties, CoreProperties, Properties, Statistics};
+pub use protection::{DocumentProtection, EditRestriction, PasswordHash, WriteProtection};
 pub use raw::RawXml;
 pub use resolve::{ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps, overlay_borders};
 pub use run::{

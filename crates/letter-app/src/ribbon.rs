@@ -211,6 +211,8 @@ pub enum RibbonCommand {
     InsertToc,
     /// Перестроить оглавления документа.
     UpdateToc,
+    /// «Рецензирование → Ограничить редактирование».
+    RestrictEditing,
     /// Вставить поле с этим кодом у курсора (с готовым результатом).
     InsertField(String),
     /// Окно «Ссылка» (Ctrl+K).
@@ -377,14 +379,12 @@ impl Ribbon {
                         Tab::Insert => crate::insert::insert(ui, info, &mut out),
                         Tab::Design => crate::design::design(ui, info, &mut out),
                         Tab::References => crate::references::references(ui, info, &mut out),
+                        Tab::Review => crate::review::review(ui, info, &mut out),
                         Tab::Layout => crate::layout::layout(ui, info, &mut out),
                         Tab::TableDesign => crate::insert::table_design(ui, info, &mut out),
                         Tab::TableLayout => crate::insert::table_layout(ui, info, &mut out),
                         Tab::PictureFormat => crate::insert::picture_format(ui, info, &mut out),
                         Tab::HeaderFooter => crate::headers::header_footer(ui, info, &mut out),
-                        _ => {
-                            ui.label(RichText::new(tr("tab-coming-soon")).color(Color32::GRAY));
-                        }
                     });
                 });
         }

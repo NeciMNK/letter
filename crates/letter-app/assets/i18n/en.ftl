@@ -762,3 +762,27 @@ nav-results-count = Found: { $n }
 nav-search-help = Type text in the search box to see everything found here.
 nav-search-hint = Search document
 nav-title = Navigation pane
+
+# Review: document protection.
+group-protect = Protect
+restrict-editing = Restrict Editing
+restrict-editing-hint = Prevent changes to the document or allow only some kinds of edits
+keytip-review-restrict = PE
+protect-title = Restrict Editing
+protect-restriction = Allow only this type of editing in the document:
+protect-read-only = No changes (Read only)
+protect-comments = Comments
+protect-tracked-changes = Tracked changes
+protect-forms = Filling in forms
+protect-password = Password (optional):
+protect-confirm = Reenter password to confirm:
+protect-mismatch = The passwords don't match.
+protect-start = Yes, Start Enforcing Protection
+protect-modify-password = Password to modify:
+protect-recommended = Read-only recommended
+protect-modify-apply = Apply password to modify
+protect-stop = Stop Protection
+protect-allow-editing = Allow editing
+protect-wrong = The password is incorrect.
+protect-bar-locked = This document is protected: changes are not allowed.
+protect-bar-read-only = This document is open as read-only.

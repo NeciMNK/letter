@@ -1,8 +1,8 @@
 //! Документ целиком.
 
 use crate::{
-    Block, Color, Inline, Note, Numbering, Paragraph, Picture, Properties, RawXml, RunContent,
-    Section, SourcePackage, Styles, Theme, Twips,
+    Block, Color, DocumentProtection, Inline, Note, Numbering, Paragraph, Picture, Properties,
+    RawXml, RunContent, Section, SourcePackage, Styles, Theme, Twips, WriteProtection,
 };
 
 /// Документ: разделы с содержимым, стили, нумерация списков и настройки.
@@ -146,6 +146,10 @@ pub struct Settings {
     /// «Переносы в словах из прописных букв» выключены
     /// (`w:doNotHyphenateCaps`).
     pub do_not_hyphenate_caps: bool,
+    /// Ограничение правки (`w:documentProtection`); `None` — нет.
+    pub protection: Option<DocumentProtection>,
+    /// Пароль на изменение файла (`w:writeProtection`); `None` — нет.
+    pub write_protection: Option<WriteProtection>,
 }
 
 impl Default for Settings {
@@ -160,6 +164,8 @@ impl Default for Settings {
             hyphenation_zone: Twips(360),
             consecutive_hyphen_limit: 0,
             do_not_hyphenate_caps: false,
+            protection: None,
+            write_protection: None,
         }
     }
 }

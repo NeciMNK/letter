@@ -50,6 +50,7 @@ use crate::icons::{self, Icon};
 use crate::link_dialog::{LinkAction, LinkDialog};
 use crate::paragraph_dialog::{ParagraphDialog, ParagraphValues};
 use crate::picture::{Handle, PictureDrag};
+use crate::protect_dialog::{ProtectAction, ProtectDialog, ProtectMode};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
 use crate::ruler::{self, RULER_SIZE, RulerParagraph, RulerState};
 use crate::settings::Settings;
@@ -184,6 +185,9 @@ struct OpenDocument {
     /// Открытый для правки колонтитул: тогда `doc`, `history` и `layout`
     /// — колонтитула, а сам документ отложен здесь.
     story: Option<Box<StoryEdit>>,
+    /// Открыт только для чтения: у файла пароль на изменение или
+    /// «рекомендовать только чтение», и правку ещё не разрешили.
+    read_only: bool,
 }
 
 /// Статистика документа и выделения для строки состояния.
@@ -212,7 +216,6 @@ impl OpenDocument {
             path,
             saved: 0,
             autosaved: 0,
-            doc,
             history: History::new(),
             layout,
             cursor: Position::default(),
@@ -221,6 +224,12 @@ impl OpenDocument {
             goal_x: None,
             counts: None,
             story: None,
+            read_only: doc
+                .settings
+                .write_protection
+                .as_ref()
+                .is_some_and(|w| w.recommended || w.password.is_some()),
+            doc,
         }
     }
 
@@ -295,6 +304,18 @@ impl OpenDocument {
         self.story.as_ref().map_or(&self.doc, |s| &s.body)
     }
 
+    /// Править документ нельзя: он открыт только для чтения или защищён
+    /// («Ограничить редактирование»).
+    fn locked(&self) -> bool {
+        self.read_only
+            || self
+                .body()
+                .settings
+                .protection
+                .as_ref()
+                .is_some_and(|p| p.locks_editing())
+    }
+
     /// Открывает для правки верхний (`header`) или нижний колонтитул
     /// страницы `page`.
     fn begin_story(
@@ -304,6 +325,9 @@ impl OpenDocument {
         shaper: &mut Shaper,
         library: &FontLibrary,
     ) {
+        if self.locked() {
+            return;
+        }
         if self.story.is_some() {
             self.end_story(shaper, library);
         }
@@ -342,6 +366,9 @@ impl OpenDocument {
         shaper: &mut Shaper,
         library: &FontLibrary,
     ) {
+        if self.locked() {
+            return;
+        }
         if self.story.is_some() {
             self.end_story(shaper, library);
         }
@@ -384,6 +411,9 @@ impl OpenDocument {
         shaper: &mut Shaper,
         library: &FontLibrary,
     ) {
+        if self.locked() {
+            return;
+        }
         let header = self.story.as_ref().and_then(|s| s.header());
         self.end_story(shaper, library);
         let Some(section) = self.layout.pages.get(page).map(|p| p.section) else {
@@ -670,6 +700,8 @@ pub struct Viewer {
     link_dialog: LinkDialog,
     /// Окно «Закладка».
     bookmark_dialog: BookmarkDialog,
+    /// Окно «Ограничить редактирование».
+    protect_dialog: ProtectDialog,
     /// Окно «Символ».
     symbol_dialog: SymbolDialog,
     /// Окно «Шрифт».
@@ -885,6 +917,7 @@ impl Viewer {
             paragraph_dialog: ParagraphDialog::default(),
             link_dialog: LinkDialog::default(),
             bookmark_dialog: BookmarkDialog::default(),
+            protect_dialog: ProtectDialog::default(),
             symbol_dialog: SymbolDialog::default(),
             font_dialog: FontDialog::default(),
             applied_theme: None,
@@ -1314,11 +1347,15 @@ impl Viewer {
             if let Some(action) = self.bookmark_dialog.ui(&ctx) {
                 self.bookmark_action(&ctx, action);
             }
+            if let Some(action) = self.protect_dialog.ui(&ctx) {
+                self.protect_action(action);
+            }
             if let Some(c) = self.symbol_dialog.ui(&ctx) {
                 crate::symbols::remember(&ctx, c);
                 self.run_ribbon(&ctx, vec![RibbonCommand::InsertSymbol(c)]);
             }
             egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+            self.protection_bar(ui);
             if self.navigation.open && self.document.is_some() {
                 let info = self.navigation_info();
                 let (library, painter, document) =
@@ -1535,7 +1572,18 @@ impl Viewer {
         // Вёрстка устаревает после правки; обновляем её перед следующим
         // движением курсора и в конце.
         let mut stale = false;
+        let locked = document.locked();
         for action in actions {
+            // В защищённом документе можно двигать курсор, выделять
+            // и копировать, но не править.
+            if locked
+                && matches!(
+                    action,
+                    Action::Cut | Action::Paste(..) | Action::Edit(_) | Action::Undo | Action::Redo
+                )
+            {
+                continue;
+            }
             match action.clone() {
                 Action::Move(motion, extend) => {
                     if std::mem::take(&mut stale) {
@@ -1702,6 +1750,89 @@ impl Viewer {
 
     /// Окно «Ссылка»: с текстом выделенного (или ссылки у курсора —
     /// тогда она выделяется целиком) и закладками документа.
+    /// Выполняет ответ окна «Ограничить редактирование»: проверяет
+    /// пароль и меняет защиту (шагом, который можно отменить).
+    fn protect_action(&mut self, action: ProtectAction) {
+        use letter_editor::protection::{can_modify, can_unprotect, new_password, protect};
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        document.end_story(&mut self.shaper, &self.library);
+        let settings = &document.doc.settings;
+        let command = match action {
+            ProtectAction::Protect { edit, password } => {
+                Command::Protection(Some(protect(edit, &password)))
+            }
+            ProtectAction::Unprotect(password) => match settings.protection.as_ref() {
+                Some(p) if !can_unprotect(p, &password) => {
+                    self.protect_dialog.fail();
+                    return;
+                }
+                _ => Command::Protection(None),
+            },
+            ProtectAction::WriteProtect {
+                password,
+                recommended,
+            } => Command::WriteProtection((recommended || !password.is_empty()).then(|| {
+                letter_model::WriteProtection {
+                    recommended,
+                    password: (!password.is_empty()).then(|| new_password(&password)),
+                    other: Vec::new(),
+                }
+            })),
+            ProtectAction::AllowEditing(password) => {
+                if settings
+                    .write_protection
+                    .as_ref()
+                    .is_some_and(|w| !can_modify(w, &password))
+                {
+                    self.protect_dialog.fail();
+                } else {
+                    document.read_only = false;
+                }
+                return;
+            }
+        };
+        let selection = document.selection();
+        let selection = document.history.run(&mut document.doc, selection, command);
+        document.set_selection(selection);
+        document.relayout(&mut self.shaper, &self.library);
+    }
+
+    /// Полоса над документом, если править его нельзя, с кнопкой, которая
+    /// снимает защиту.
+    fn protection_bar(&mut self, ui: &mut egui::Ui) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        if !document.locked() {
+            return;
+        }
+        let read_only = document.read_only;
+        let clicked = egui::Panel::top("protection-bar")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (text, button) = if read_only {
+                        ("protect-bar-read-only", "protect-allow-editing")
+                    } else {
+                        ("protect-bar-locked", "protect-stop")
+                    };
+                    ui.label(tr(text));
+                    ui.button(tr(button)).clicked()
+                })
+                .inner
+            })
+            .inner;
+        if clicked {
+            let mode = if read_only {
+                ProtectMode::AllowEditing
+            } else {
+                ProtectMode::Unprotect
+            };
+            self.protect_dialog.show(mode, false);
+        }
+    }
+
     fn open_link_dialog(&mut self) {
         let Some(document) = &mut self.document else {
             return;
@@ -2108,6 +2239,23 @@ impl Viewer {
                         document.begin_story(page, header, &mut self.shaper, &self.library);
                         document.cursor_since = ctx.input(|i| i.time);
                         self.reveal_cursor = true;
+                    }
+                }
+                RibbonCommand::RestrictEditing => {
+                    if let Some(document) = &self.document {
+                        let settings = &document.body().settings;
+                        let mode = if document.read_only {
+                            ProtectMode::AllowEditing
+                        } else if settings.protection.as_ref().is_some_and(|p| p.enforced) {
+                            ProtectMode::Unprotect
+                        } else {
+                            ProtectMode::Protect
+                        };
+                        let recommended = settings
+                            .write_protection
+                            .as_ref()
+                            .is_some_and(|w| w.recommended);
+                        self.protect_dialog.show(mode, recommended);
                     }
                 }
                 RibbonCommand::InsertToc | RibbonCommand::UpdateToc => {
@@ -3663,6 +3811,49 @@ mod tests {
         // Курсор после правки рисуется, IME знает, где он.
         let output = ctx.run_ui(screen(), |ui| viewer.ui(ui));
         assert!(output.platform_output.ime.is_some());
+    }
+
+    #[test]
+    fn protected_document_is_not_edited() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let before = first_text(&mut viewer);
+        viewer.protect_action(ProtectAction::Protect {
+            edit: letter_model::EditRestriction::ReadOnly,
+            password: "пароль".into(),
+        });
+        assert!(viewer.document.as_ref().unwrap().locked());
+        frame(&ctx, &mut viewer, events(vec![Event::Text("a".into())]));
+        assert_eq!(first_text(&mut viewer), before);
+        // Неверный пароль защиту не снимает, верный — снимает.
+        viewer.protect_action(ProtectAction::Unprotect("нет".into()));
+        assert!(viewer.document.as_ref().unwrap().locked());
+        assert!(viewer.protect_dialog.open);
+        viewer.protect_action(ProtectAction::Unprotect("пароль".into()));
+        assert!(!viewer.document.as_ref().unwrap().locked());
+        frame(&ctx, &mut viewer, events(vec![Event::Text("a".into())]));
+        assert_eq!(first_text(&mut viewer), format!("a{before}"));
+
+        // Пароль на изменение: после сохранения и открытия — только
+        // чтение, пока не введён пароль.
+        viewer.protect_action(ProtectAction::WriteProtect {
+            password: "2".into(),
+            recommended: false,
+        });
+        let dir = std::env::temp_dir().join(format!("letter-protect-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.docx");
+        assert!(viewer.save_to(&path));
+        viewer.open(&path).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        assert!(viewer.document.as_ref().unwrap().locked());
+        viewer.protect_action(ProtectAction::AllowEditing("1".into()));
+        assert!(viewer.document.as_ref().unwrap().locked());
+        viewer.protect_action(ProtectAction::AllowEditing("2".into()));
+        assert!(!viewer.document.as_ref().unwrap().locked());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

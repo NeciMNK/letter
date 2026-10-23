@@ -2092,8 +2092,10 @@ dependencies = [
 name = "letter-editor"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "letter-layout",
  "letter-model",
+ "sha2",
  "unicode-segmentation",
 ]
 

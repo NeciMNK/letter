@@ -11,7 +11,8 @@
 //! - [`format`] — оформление выделенного;
 //! - [`lists`] — списки: маркеры, нумерация, уровни;
 //! - [`search`] — поиск и замена;
-//! - [`table`] — таблицы: вставка, ячейки, строки и столбцы.
+//! - [`table`] — таблицы: вставка, ячейки, строки и столбцы;
+//! - [`protection`] — пароли защиты документа.
 
 pub mod caret;
 pub mod clipboard;
@@ -27,6 +28,7 @@ pub mod notes;
 pub mod outline;
 pub mod picture;
 pub mod position;
+pub mod protection;
 pub mod search;
 pub mod section;
 pub mod selection;
