@@ -15,6 +15,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod comments;
 mod document;
 mod error;
 mod names;
@@ -119,6 +120,18 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
             note_parts.push((kind, part, root.root_attributes()));
         }
     }
+    // Примечания; ответы и «решено» — из второй части, если первая понята.
+    let mut comment_parts = Vec::new();
+    if let Some((part, root)) = read_related_xml(&mut package, &main, "comments")
+        && let Some(mut comments) = comments::read_comments(&root)
+    {
+        comment_parts.push((part, root.root_attributes()));
+        if let Some((part, root)) = read_related_xml(&mut package, &main, "commentsExtended") {
+            comments::read_comments_extended(&root, &mut comments);
+            comment_parts.push((part, root.root_attributes()));
+        }
+        doc.comments = comments;
+    }
     let mut rebuilt = vec![
         Some(main.clone()),
         styles_part.clone(),
@@ -128,6 +141,7 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
     ];
     rebuilt.extend(stories.iter().map(|(name, _)| Some(name.clone())));
     rebuilt.extend(note_parts.iter().map(|(_, name, _)| Some(name.clone())));
+    rebuilt.extend(comment_parts.iter().map(|(name, _)| Some(name.clone())));
     let mut source = read_source(&mut package, &rebuilt)?;
     attach_images(|f| doc.for_each_picture_mut(f), &images, &source, &look);
     let addresses = package.external_links(&main);
@@ -185,6 +199,23 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
             NoteKind::Endnote => source.endnotes_part = entry,
         }
     }
+    // Картинки и ссылки примечаний — по связям части примечаний.
+    let mut comment_parts = comment_parts.into_iter();
+    if let Some((name, attributes)) = comment_parts.next() {
+        let relationships = package.relationships(&name);
+        let addresses = package.external_links(&name);
+        for comment in &mut doc.comments {
+            attach_links(&mut comment.blocks, &addresses);
+            attach_images(
+                |f| for_each_picture_in(&mut comment.blocks, f),
+                &relationships,
+                &source,
+                &look,
+            );
+        }
+        source.comments_part = Some((name, attributes));
+    }
+    source.comments_extended_part = comment_parts.next();
     source.header_footer_parts = stories;
     source.main_part = main;
     source.styles_part = styles_part;
