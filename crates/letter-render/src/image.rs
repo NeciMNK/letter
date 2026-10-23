@@ -103,9 +103,9 @@ impl RgbaImage {
                 }
             }
             crossings.sort_by(f32::total_cmp);
-            for span in crossings.chunks_exact(2) {
-                let from = (span[0] - 0.5).ceil().max(0.0) as i64;
-                let to = ((span[1] - 0.5).floor() as i64).min(i64::from(self.width) - 1);
+            for &[left, right] in crossings.as_chunks::<2>().0 {
+                let from = (left - 0.5).ceil().max(0.0) as i64;
+                let to = ((right - 0.5).floor() as i64).min(i64::from(self.width) - 1);
                 for px in from..=to {
                     self.blend(px, py, color, 255);
                 }
