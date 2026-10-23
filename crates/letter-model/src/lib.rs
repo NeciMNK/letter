@@ -17,34 +17,60 @@
 //! То, что программа пока не понимает, хранится как [`RawXml`] и при
 //! сохранении записывается обратно без изменений.
 
+mod border;
 mod document;
+mod field;
+mod note;
+mod numbering;
 mod package;
 mod paragraph;
+mod picture;
 mod properties;
 mod raw;
 mod resolve;
 mod run;
 mod section;
 mod style;
+mod symbol;
 mod table;
 mod theme;
 mod units;
+mod watermark;
 
-pub use document::{Document, Numbering, Settings};
+pub use border::{Border, Borders, ParagraphBorders, Shading};
+pub use document::{Document, Settings, for_each_picture_in};
+pub use field::{Field, alphabetic, fields, roman, set_field_result};
+pub use note::{Note, NoteKind, NoteReference};
+pub use numbering::{
+    AbstractNumbering, LevelOverride, LevelSuffix, ListCounters, ListLabel, ListLevel,
+    NumberFormat, Numbering, NumberingInstance, NumberingRef,
+};
 pub use package::{SourcePackage, SourcePart};
 pub use paragraph::{
-    Alignment, FirstLineIndent, Indentation, Inline, LineSpacing, Paragraph, ParagraphProps,
-    Spacing, TabLeader, TabStop, TabStopKind,
+    Alignment, Bookmark, FirstLineIndent, Indentation, Inline, LineSpacing, Paragraph,
+    ParagraphProps, Spacing, TabLeader, TabStop, TabStopKind,
+};
+pub use picture::{
+    Anchor, AnchorAlign, AnchorPosition, Distance, EMU_PER_POINT, HorizontalFrom, ImageData,
+    Picture, Placement, VerticalFrom, Wrap,
 };
 pub use properties::{AppProperties, CoreProperties, Properties, Statistics};
 pub use raw::RawXml;
-pub use resolve::{ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps};
+pub use resolve::{ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps, overlay_borders};
 pub use run::{
-    BreakKind, Color, Highlight, Run, RunContent, RunFonts, RunProps, ThemeColor, ThemeFont,
-    Underline, VerticalAlign,
+    BreakKind, Color, FieldChar, FieldCharKind, Highlight, Hyperlink, OBJECT_CHAR, Run, RunContent,
+    RunFonts, RunProps, ThemeColor, ThemeFont, Underline, VerticalAlign,
 };
-pub use section::{Orientation, PageMargins, PageSize, Section, SectionProps};
+pub use section::{
+    Columns, HeaderFooter, HeaderFooterKind, HeaderFooters, Orientation, PageBorderDisplay,
+    PageBorders, PageMargins, PageSize, Section, SectionProps, SectionStart,
+};
 pub use style::{DocDefaults, Style, StyleKind, Styles};
-pub use table::{Block, Table, TableCell, TableRow};
+pub use symbol::{Symbol, is_symbol_font, symbol_char};
+pub use table::{
+    Block, CellMargins, CellProps, CellVerticalAlign, HeightRule, RowHeight, RowProps, Table,
+    TableCell, TableLayout, TableProps, TableRow, TableWidth, VerticalMerge,
+};
 pub use theme::{Theme, ThemeFontSet};
 pub use units::{HalfPoints, Twips};
+pub use watermark::{Watermark, find_watermark, is_watermark};

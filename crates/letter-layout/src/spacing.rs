@@ -44,6 +44,13 @@ impl LineRule {
     pub fn height(self, line: &Line) -> f32 {
         let natural = line.natural_height();
         match self {
+            // Строку, которую по высоте задаёт рисунок, Word не
+            // растягивает множителем (сверено с PDF из Word).
+            LineRule::Multiple(_)
+                if line.object_height > 0.0 && line.object_height >= line.ascent =>
+            {
+                natural
+            }
             LineRule::Multiple(m) if m.is_finite() && m > 0.0 => natural * m,
             LineRule::Multiple(_) => natural,
             LineRule::Exact(h) if h.is_finite() && h >= 0.0 => h,
@@ -208,6 +215,7 @@ mod tests {
             ascent,
             descent,
             leading,
+            object_height: 0.0,
             items: Vec::new(),
             end: LineEnd::Paragraph,
         }
@@ -250,6 +258,18 @@ mod tests {
         assert!(close(LineRule::Exact(9.0).height(&l), 9.0));
         assert!(close(LineRule::AtLeast(9.0).height(&l), 14.0));
         assert!(close(LineRule::AtLeast(20.0).height(&l), 20.0));
+        // Строка, которую задаёт рисунок, множителем не растягивается.
+        let picture = Line {
+            ascent: 50.0,
+            object_height: 50.0,
+            ..l.clone()
+        };
+        assert!(close(LineRule::Multiple(1.15).height(&picture), 54.0));
+        let icon = Line {
+            object_height: 5.0,
+            ..l.clone()
+        };
+        assert!(close(LineRule::Multiple(2.0).height(&icon), 28.0));
         // Испорченные значения — как одинарный.
         assert!(close(LineRule::Multiple(f32::NAN).height(&l), 14.0));
         assert!(close(LineRule::Exact(-1.0).height(&l), 14.0));

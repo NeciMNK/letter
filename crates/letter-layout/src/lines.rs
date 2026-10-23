@@ -17,13 +17,17 @@
 //! Все размеры — в пунктах, отсчёт по горизонтали — от левого поля
 //! страницы (как позиции табуляций в Word).
 
+use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
+
+use letter_model::{ImageData, OBJECT_CHAR};
 
 use unicode_bidi::{BidiInfo, Level};
 use unicode_linebreak::{BreakOpportunity, linebreaks};
 
 use crate::fonts::{FontLibrary, FontMatch};
-use crate::shaping::{ShapedRun, Shaper, TextStyle};
+use crate::shaping::{ShapedGlyph, ShapedRun, Shaper, TextStyle};
 
 /// Допуск при сравнении ширин, пт: строка «влезает», если вылезает
 /// меньше чем на эту величину.
@@ -31,13 +35,19 @@ const EPSILON: f32 = 0.01;
 
 /// Кусок текста абзаца с одним оформлением. `'\t'` в тексте —
 /// табуляция, `'\n'` — разрыв строки (Shift+Enter), `'\u{c}'` — разрыв
-/// страницы (Ctrl+Enter).
+/// страницы (Ctrl+Enter), `'\u{b}'` — разрыв колонки.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextSpan {
     /// Текст.
     pub text: String,
     /// Оформление.
     pub style: TextStyle,
+    /// Объект в строке (рисунок): тогда текст — один знак
+    /// [`OBJECT_CHAR`], а место в строке задаёт объект.
+    pub object: Option<InlineObject>,
+    /// Надпись вместо текста (номер сноски): тогда текст — один знак
+    /// [`OBJECT_CHAR`], а видна надпись — неделимо, как одна буква.
+    pub label: Option<String>,
 }
 
 impl TextSpan {
@@ -46,8 +56,47 @@ impl TextSpan {
         TextSpan {
             text: text.into(),
             style,
+            object: None,
+            label: None,
         }
     }
+
+    /// Надпись `label` (номер сноски), которая в тексте абзаца — один
+    /// знак [`OBJECT_CHAR`].
+    pub fn label(label: impl Into<String>, style: TextStyle) -> TextSpan {
+        TextSpan {
+            text: OBJECT_CHAR.to_string(),
+            style,
+            object: None,
+            label: Some(label.into()),
+        }
+    }
+
+    /// Объект в строке (рисунок); `style` — оформление знака, по нему
+    /// считается глубина строки под базовой линией.
+    pub fn object(object: InlineObject, style: TextStyle) -> TextSpan {
+        TextSpan {
+            text: OBJECT_CHAR.to_string(),
+            style,
+            object: Some(object),
+            label: None,
+        }
+    }
+}
+
+/// Объект, который стоит в строке как большая буква: низ — на базовой
+/// линии, ширина и высота заданы.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InlineObject {
+    /// Ширина, пт.
+    pub width: f32,
+    /// Высота, пт.
+    pub height: f32,
+    /// Картинка рисунка (`None` — рисовать заглушку).
+    pub image: Option<Arc<ImageData>>,
+    /// Плавающий объект: в строке от него только знак привязки без
+    /// ширины и высоты, сам объект ставит раскладка по страницам.
+    pub floating: bool,
 }
 
 /// Выравнивание строк абзаца.
@@ -133,6 +182,33 @@ pub struct ParagraphFormat {
     pub default_tab: f32,
     /// Десятичный разделитель для табуляции «по разделителю».
     pub decimal_separator: char,
+    /// Автоматическая расстановка переносов (`None` — выключена).
+    pub hyphenation: Option<Hyphenation>,
+}
+
+/// Настройки автоматической расстановки переносов.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hyphenation {
+    /// Ширина зоны переноса, пт: слово переносится, только если без
+    /// переноса справа в строке осталось бы не меньше места.
+    pub zone: f32,
+    /// Не больше стольких строк подряд кончаются переносом; 0 — без
+    /// ограничения.
+    pub limit: u32,
+    /// Переносить слова из прописных букв.
+    pub caps: bool,
+}
+
+impl Default for Hyphenation {
+    /// Как в Word: зона 0,25 дюйма, без ограничения, прописные
+    /// переносятся.
+    fn default() -> Hyphenation {
+        Hyphenation {
+            zone: 18.0,
+            limit: 0,
+            caps: true,
+        }
+    }
 }
 
 impl ParagraphFormat {
@@ -147,6 +223,7 @@ impl ParagraphFormat {
             tab_stops: Vec::new(),
             default_tab: 36.0,
             decimal_separator: '.',
+            hyphenation: None,
         }
     }
 
@@ -174,6 +251,9 @@ pub enum LineEnd {
     Break,
     /// Разрыв страницы (Ctrl+Enter): следующая строка — на новой странице.
     Page,
+    /// Разрыв колонки (Ctrl+Shift+Enter): следующая строка — в следующей
+    /// колонке (или на новой странице, если колонка последняя).
+    Column,
     /// Конец абзаца.
     Paragraph,
 }
@@ -185,6 +265,8 @@ pub enum LineItem {
     Text(TextItem),
     /// Пустое место табуляции (возможно, с заполнителем).
     Tab(TabItem),
+    /// Объект в строке (рисунок).
+    Object(ObjectItem),
 }
 
 impl LineItem {
@@ -193,6 +275,7 @@ impl LineItem {
         match self {
             LineItem::Text(t) => t.x,
             LineItem::Tab(t) => t.x,
+            LineItem::Object(o) => o.x,
         }
     }
 
@@ -201,6 +284,7 @@ impl LineItem {
         match self {
             LineItem::Text(t) => t.run.width(),
             LineItem::Tab(t) => t.width,
+            LineItem::Object(o) => o.width,
         }
     }
 }
@@ -232,6 +316,24 @@ pub struct TabItem {
     pub span: usize,
 }
 
+/// Объект (рисунок) на своём месте в строке. Низ объекта — на базовой
+/// линии строки.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectItem {
+    /// Где знак объекта в тексте абзаца, байты.
+    pub at: usize,
+    /// Левый край, пт от левого поля.
+    pub x: f32,
+    /// Ширина, пт.
+    pub width: f32,
+    /// Высота, пт (у знака привязки плавающего объекта — 0).
+    pub height: f32,
+    /// Номер куска [`TextSpan`] с объектом.
+    pub span: usize,
+    /// Картинка.
+    pub image: Option<Arc<ImageData>>,
+}
+
 /// Одна строка абзаца.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Line {
@@ -247,6 +349,9 @@ pub struct Line {
     pub descent: f32,
     /// Дополнительный промежуток над строкой (внешний интерлиньяж), пт.
     pub leading: f32,
+    /// Высота самого высокого рисунка в строке, пт (0 — рисунков нет).
+    /// Рисунок стоит на базовой линии, поэтому `ascent` не меньше его.
+    pub object_height: f32,
     /// Части строки в порядке показа слева направо.
     pub items: Vec<LineItem>,
     /// Чем кончается строка.
@@ -280,6 +385,8 @@ enum Kind {
     Tab,
     /// Разрыв строки или страницы.
     Break(LineEnd),
+    /// Объект в строке (рисунок) из куска с этим номером.
+    Object,
 }
 
 /// Неделимая часть текста.
@@ -379,21 +486,47 @@ pub fn break_lines(
     mark_style: &TextStyle,
     format: &ParagraphFormat,
 ) -> ParagraphLines {
+    break_lines_around(shaper, library, spans, mark_style, format, &mut |_| None)
+}
+
+/// Свободное место для строки рядом с плавающим рисунком: края, пт от
+/// левого края области абзаца (как [`Line::x`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineRoom {
+    /// Левый край.
+    pub left: f32,
+    /// Правый край.
+    pub right: f32,
+}
+
+/// Как [`break_lines`], но место для каждой строки может быть уже:
+/// перед каждой строкой вызывается `room` с уже готовыми строками
+/// и возвращает место для следующей (`None` — вся ширина).
+pub fn break_lines_around(
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+    spans: &[TextSpan],
+    mark_style: &TextStyle,
+    format: &ParagraphFormat,
+    room: &mut dyn FnMut(&[Line]) -> Option<LineRoom>,
+) -> ParagraphLines {
     let mut builder = Builder::new(shaper, library, spans, format);
     let mut lines = Vec::new();
     let mut start = 0;
     let mut first = true;
     loop {
+        builder.room = room(&lines);
         let (end, kind) = builder.fit(start, first);
         lines.push(builder.place(start, end, first, kind, mark_style));
         start = end;
         first = false;
         let finished = start >= builder.clusters.len();
         // После разрыва в самом конце абзаца — ещё одна пустая строка.
-        if finished && !matches!(kind, LineEnd::Break | LineEnd::Page) {
+        if finished && !matches!(kind, LineEnd::Break | LineEnd::Page | LineEnd::Column) {
             break;
         }
         if finished {
+            builder.room = room(&lines);
             lines.push(builder.place(start, start, first, LineEnd::Paragraph, mark_style));
             break;
         }
@@ -413,8 +546,29 @@ struct Builder<'a> {
     clusters: Vec<Cluster>,
     /// Можно ли перенести строку после байта с этим номером.
     breaks: Vec<bool>,
+    /// Объекты кусков (`None` у обычного текста).
+    objects: Vec<Option<InlineObject>>,
     /// Заданные позиции табуляции по возрастанию, без черт.
     stops: Vec<TabStop>,
+    /// Место для текущей строки, если его сужает плавающий рисунок.
+    room: Option<LineRoom>,
+    /// Дефисы переноса по номерам кластеров, после которых можно
+    /// перенести строку с дефисом: мягкий перенос (U+00AD) или место
+    /// автоматического переноса в слове. Дефис виден, только если строка
+    /// перенесена на этом месте.
+    hyphens: HashMap<usize, Hyphen>,
+    /// Где в тексте можно автоматически перенести слово, байты.
+    auto_points: Vec<bool>,
+    /// Сколько строк подряд перед текущей кончаются переносом.
+    hyphen_streak: u32,
+}
+
+/// Дефис переноса после кластера.
+#[derive(Debug, Clone, Copy)]
+struct Hyphen {
+    glyph: ShapedGlyph,
+    /// Место автоматического переноса (а не мягкий перенос).
+    auto: bool,
 }
 
 impl<'a> Builder<'a> {
@@ -431,6 +585,10 @@ impl<'a> Builder<'a> {
                 breaks[at] = true;
             }
         }
+        let auto_points = match &format.hyphenation {
+            Some(h) => hyphenation_points(&text, h.caps),
+            None => Vec::new(),
+        };
         let mut stops: Vec<TabStop> = format
             .tab_stops
             .iter()
@@ -447,6 +605,11 @@ impl<'a> Builder<'a> {
             clusters: Vec::new(),
             breaks,
             stops,
+            objects: spans.iter().map(|s| s.object.clone()).collect(),
+            room: None,
+            hyphens: HashMap::new(),
+            auto_points,
+            hyphen_streak: 0,
         };
         builder.shape(spans);
         builder
@@ -459,6 +622,24 @@ impl<'a> Builder<'a> {
         for (index, span) in spans.iter().enumerate() {
             let span_range = offset..offset + span.text.len();
             offset = span_range.end;
+            if let Some(object) = &span.object {
+                // Объект — один неделимый кластер на весь кусок.
+                if !span_range.is_empty() {
+                    self.clusters.push(Cluster {
+                        level: levels[span_range.start].number(),
+                        range: span_range,
+                        width: if object.floating { 0.0 } else { object.width },
+                        span: index,
+                        kind: Kind::Object,
+                    });
+                }
+                continue;
+            }
+            if let Some(label) = &span.label {
+                let level = levels[span_range.start].number();
+                self.shape_label(span_range, level, index, label, span);
+                continue;
+            }
             // Куски одного направления между табуляциями и разрывами.
             let mut piece_start = span_range.start;
             for (i, c) in span.text.char_indices() {
@@ -467,6 +648,7 @@ impl<'a> Builder<'a> {
                     '\t' => Some(Kind::Tab),
                     '\n' => Some(Kind::Break(LineEnd::Break)),
                     '\u{c}' => Some(Kind::Break(LineEnd::Page)),
+                    '\u{b}' => Some(Kind::Break(LineEnd::Column)),
                     _ => None,
                 };
                 let level_changes = at > piece_start && levels[at] != levels[at - 1];
@@ -496,6 +678,48 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Надпись куска `span` вместо его знака `range`: один неделимый
+    /// кластер с глифами надписи.
+    fn shape_label(
+        &mut self,
+        range: Range<usize>,
+        level: u8,
+        span: usize,
+        label: &str,
+        source: &TextSpan,
+    ) {
+        if range.is_empty() {
+            return;
+        }
+        let runs =
+            self.shaper
+                .shape_range(self.library, label, 0..label.len(), level, &source.style);
+        let mut runs = runs.into_iter();
+        let Some(mut run) = runs.next() else {
+            return;
+        };
+        for extra in runs {
+            run.glyphs.extend(extra.glyphs);
+        }
+        for glyph in &mut run.glyphs {
+            glyph.cluster = range.start;
+        }
+        run.range = range.clone();
+        let width = run.width();
+        let index = self.runs.len();
+        self.runs.push(run);
+        self.clusters.push(Cluster {
+            range,
+            width,
+            span,
+            level,
+            kind: Kind::Text {
+                run: index,
+                space: false,
+            },
+        });
+    }
+
     fn shape_piece(&mut self, range: Range<usize>, level: u8, span: usize, source: &TextSpan) {
         if range.is_empty() {
             return;
@@ -522,6 +746,17 @@ impl<'a> Builder<'a> {
                     .map(|g| g.x_advance)
                     .sum();
                 let space = self.text[range.clone()].chars().all(is_hanging_space);
+                let soft = self.text[range.clone()].ends_with(SOFT_HYPHEN);
+                let auto = !soft && self.auto_points.get(range.end).copied().unwrap_or(false);
+                if (soft || auto)
+                    && run.level % 2 == 0
+                    && let Some(glyph) = self.hyphen_glyph(&run, &source.style)
+                {
+                    let cluster = range.start;
+                    let glyph = ShapedGlyph { cluster, ..glyph };
+                    self.hyphens
+                        .insert(self.clusters.len(), Hyphen { glyph, auto });
+                }
                 self.clusters.push(Cluster {
                     range,
                     width,
@@ -532,6 +767,31 @@ impl<'a> Builder<'a> {
             }
             self.runs.push(run);
         }
+    }
+
+    /// Глиф дефиса тем же шрифтом, что и кусок `run` (если кусок набран
+    /// запасным шрифтом, например кириллица — шрифтом с кириллицей, то
+    /// и дефис им же).
+    fn hyphen_glyph(&mut self, run: &ShapedRun, style: &TextStyle) -> Option<ShapedGlyph> {
+        let fallback = TextStyle {
+            family: run.font.family.clone(),
+            ..style.clone()
+        };
+        for style in [style, &fallback] {
+            let runs = self.shaper.shape_range(self.library, "-", 0..1, 0, style);
+            if let [hyphen] = runs.as_slice()
+                && hyphen.font.id == run.font.id
+                && hyphen.glyphs.len() == 1
+            {
+                return hyphen.glyphs.first().copied();
+            }
+        }
+        None
+    }
+
+    /// Ширина дефиса, который появится при переносе после кластера `i`.
+    fn hyphen_width(&self, i: usize) -> f32 {
+        self.hyphens.get(&i).map_or(0.0, |h| h.glyph.x_advance)
     }
 
     /// Следующая позиция табуляции после `x`.
@@ -578,12 +838,41 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Где начинается текущая строка с учётом [`Builder::room`].
+    fn line_start(&self, first: bool) -> f32 {
+        let start = self.format.line_start(first);
+        self.room.map_or(start, |r| start.max(r.left))
+    }
+
+    /// Где кончается место для текста текущей строки.
+    fn line_end(&self) -> f32 {
+        let end = self.format.line_end();
+        self.room.map_or(end, |r| end.min(r.right))
+    }
+
     /// Ищет, где кончится строка, начатая с кластера `start`.
     fn fit(&mut self, start: usize, first: bool) -> (usize, LineEnd) {
-        let line_end = self.format.line_end();
-        let mut state = TabState::new(self.format.line_start(first));
+        let line_end = self.line_end();
+        let mut state = TabState::new(self.line_start(first));
+        // Последнее место переноса и последнее — без автоматического
+        // переноса слова (с местом, где кончается текст).
         let mut last_break = None;
+        let mut last_plain: Option<(usize, f32)> = None;
         let mut has_content = false;
+        let hyphenation = self.format.hyphenation;
+        let auto_allowed =
+            hyphenation.is_some_and(|h| h.limit == 0 || self.hyphen_streak < h.limit);
+        // Где перенести строку, если кластер `i` не влез. Слово
+        // переносится, только если без этого справа осталось бы не
+        // меньше зоны переноса.
+        let wrap_at = |i: usize, last_break: Option<usize>, last_plain: Option<(usize, f32)>| {
+            let end = last_break.filter(|&b| b > start);
+            let plain = last_plain.filter(|&(b, _)| b > start);
+            match (end, plain, hyphenation) {
+                (Some(b), Some((p, x)), Some(h)) if b != p && line_end - x < h.zone => p,
+                _ => end.unwrap_or(i),
+            }
+        };
         for (i, cluster) in self.clusters.iter().enumerate().skip(start) {
             match cluster.kind {
                 Kind::Break(end) => return (i + 1, end),
@@ -599,21 +888,36 @@ impl<'a> Builder<'a> {
                     // после неё не переносим.
                     has_content |= !stop.default || stop.position <= line_end + EPSILON;
                 }
+                Kind::Object => {
+                    state.add_text(cluster.width, false);
+                    if has_content && state.x() > line_end + EPSILON {
+                        return (wrap_at(i, last_break, last_plain), LineEnd::Wrap);
+                    }
+                    has_content = true;
+                }
                 Kind::Text { space, .. } => {
                     let separator =
                         self.text[cluster.range.clone()].contains(self.format.decimal_separator);
                     state.add_text(cluster.width, separator);
                     if !space {
                         if has_content && state.x() > line_end + EPSILON {
-                            let end = last_break.filter(|&b| b > start).unwrap_or(i);
-                            return (end, LineEnd::Wrap);
+                            return (wrap_at(i, last_break, last_plain), LineEnd::Wrap);
                         }
                         has_content = true;
                     }
                 }
             }
-            if self.breaks[cluster.range.end] {
+            // На переносе с дефисом строку можно разорвать, только если
+            // влезет и появившийся дефис.
+            let hyphen = self.hyphens.get(&i);
+            let auto = hyphen.is_some_and(|h| h.auto);
+            if (self.breaks[cluster.range.end] || (auto && auto_allowed))
+                && hyphen.is_none_or(|h| state.x() + h.glyph.x_advance <= line_end + EPSILON)
+            {
                 last_break = Some(i + 1);
+                if !auto {
+                    last_plain = Some((i + 1, state.x()));
+                }
             }
         }
         (self.clusters.len(), LineEnd::Paragraph)
@@ -629,7 +933,8 @@ impl<'a> Builder<'a> {
         mark_style: &TextStyle,
     ) -> Line {
         let format = self.format;
-        let line_start = format.line_start(first);
+        let line_start = self.line_start(first);
+        let line_end = self.line_end();
         let clusters = &self.clusters[start..end];
         // Пробелы и разрыв в конце строки не считаются в ширину.
         let content_end = clusters
@@ -639,6 +944,18 @@ impl<'a> Builder<'a> {
 
         // Ширины табуляций.
         let mut widths: Vec<f32> = clusters.iter().map(|c| c.width).collect();
+        // Перенос на мягком переносе: в конце строки виден дефис.
+        let hyphen = (kind == LineEnd::Wrap && content_end > 0)
+            .then(|| content_end - 1)
+            .filter(|&i| self.hyphens.contains_key(&(start + i)));
+        if let Some(i) = hyphen {
+            widths[i] += self.hyphen_width(start + i);
+        }
+        self.hyphen_streak = if hyphen.is_some() {
+            self.hyphen_streak + 1
+        } else {
+            0
+        };
         let mut state = TabState::new(line_start);
         let mut leaders = vec![TabLeader::None; clusters.len()];
         let mut pending: Option<usize> = None;
@@ -653,7 +970,7 @@ impl<'a> Builder<'a> {
                     // заданная позиция.
                     let stop = if stop.default {
                         Stop {
-                            position: stop.position.min(format.line_end().max(state.x())),
+                            position: stop.position.min(line_end.max(state.x())),
                             ..stop
                         }
                     } else {
@@ -667,6 +984,7 @@ impl<'a> Builder<'a> {
                     cluster.width,
                     self.text[cluster.range.clone()].contains(format.decimal_separator),
                 ),
+                Kind::Object => state.add_text(cluster.width, false),
                 Kind::Break(_) => {}
             }
         }
@@ -676,7 +994,7 @@ impl<'a> Builder<'a> {
 
         // Выравнивание.
         let content_width: f32 = widths[..content_end].iter().sum();
-        let extra = format.line_end() - line_start - content_width;
+        let extra = line_end - line_start - content_width;
         let after_tab = clusters[..content_end]
             .iter()
             .rposition(|c| c.kind == Kind::Tab)
@@ -696,7 +1014,7 @@ impl<'a> Builder<'a> {
             }
             Align::Distribute if extra > 0.0 => {
                 let gaps: Vec<usize> = (after_tab..content_end.saturating_sub(1))
-                    .filter(|&i| matches!(clusters[i].kind, Kind::Text { .. }))
+                    .filter(|&i| matches!(clusters[i].kind, Kind::Text { .. } | Kind::Object))
                     .collect();
                 for &i in &gaps {
                     widths[i] += extra / gaps.len() as f32;
@@ -741,7 +1059,7 @@ impl<'a> Builder<'a> {
                 _ => false,
             };
             if !same_run && !group.is_empty() {
-                items.extend(self.text_item(group_x, clusters, &group, &stretched));
+                items.extend(self.text_item(group_x, start, &group, &stretched, hyphen));
                 group.clear();
             }
             match cluster.kind {
@@ -760,12 +1078,28 @@ impl<'a> Builder<'a> {
                         span: cluster.span,
                     }));
                 }
+                Kind::Object => {
+                    let object = self
+                        .objects
+                        .get(cluster.span)
+                        .cloned()
+                        .flatten()
+                        .filter(|o| !o.floating);
+                    items.push(LineItem::Object(ObjectItem {
+                        at: cluster.range.start,
+                        x,
+                        width: cluster.width,
+                        height: object.as_ref().map_or(0.0, |o| o.height),
+                        span: cluster.span,
+                        image: object.and_then(|o| o.image),
+                    }));
+                }
                 Kind::Break(_) => {}
             }
             x += widths[i];
         }
         if !group.is_empty() {
-            items.extend(self.text_item(group_x, clusters, &group, &stretched));
+            items.extend(self.text_item(group_x, start, &group, &stretched, hyphen));
         }
 
         let range = match (clusters.first(), clusters.last()) {
@@ -773,33 +1107,46 @@ impl<'a> Builder<'a> {
             _ => self.text.len()..self.text.len(),
         };
         let (ascent, descent, leading) = self.line_height(start..end, mark_style);
+        // Рисунок стоит на базовой линии и поднимает строку.
+        let object_height = items
+            .iter()
+            .filter_map(|item| match item {
+                LineItem::Object(object) => Some(object.height),
+                _ => None,
+            })
+            .fold(0.0, f32::max);
         Line {
             range,
             x: line_start + offset,
             width: widths[..content_end].iter().sum(),
-            ascent,
+            ascent: ascent.max(object_height),
             descent,
             leading,
+            object_height,
             items,
             end: kind,
         }
     }
 
-    /// Глифы кластеров `group` (подряд в порядке показа, из одного куска).
+    /// Глифы кластеров `group` (подряд в порядке показа, из одного куска;
+    /// номера — от кластера `start`). `hyphen` — кластер, после которого
+    /// дорисовывается дефис мягкого переноса.
     fn text_item(
         &self,
         x: f32,
-        clusters: &[Cluster],
+        start: usize,
         group: &[usize],
         stretched: &[f32],
+        hyphen: Option<usize>,
     ) -> Option<LineItem> {
+        let clusters = &self.clusters[start..];
         let first = clusters.get(*group.first()?)?;
         let Kind::Text { run, .. } = first.kind else {
             return None;
         };
         let source = self.runs.get(run)?;
         let mut glyphs = Vec::new();
-        let start = group.iter().map(|&i| clusters[i].range.start).min()?;
+        let from = group.iter().map(|&i| clusters[i].range.start).min()?;
         let end = group.iter().map(|&i| clusters[i].range.end).max()?;
         for glyph in &source.glyphs {
             let owner = group
@@ -809,6 +1156,11 @@ impl<'a> Builder<'a> {
             if owner.is_some() {
                 glyphs.push((owner, *glyph));
             }
+        }
+        if let Some(i) = hyphen.filter(|i| group.contains(i))
+            && let Some(hyphen) = self.hyphens.get(&(start + i))
+        {
+            glyphs.push((Some(i), hyphen.glyph));
         }
         // Растяжку получает последний глиф кластера.
         for &i in group {
@@ -822,11 +1174,13 @@ impl<'a> Builder<'a> {
             x,
             span: first.span,
             run: ShapedRun {
-                range: start..end,
+                range: from..end,
                 font: source.font.clone(),
                 size: source.size,
                 level: source.level,
                 glyphs: glyphs.into_iter().map(|(_, g)| g).collect(),
+                width_scale: source.width_scale,
+                hidden: source.hidden,
             },
         }))
     }
@@ -837,6 +1191,7 @@ impl<'a> Builder<'a> {
         for cluster in &self.clusters[clusters] {
             if let Kind::Text { run, .. } = cluster.kind
                 && let Some(r) = self.runs.get(run)
+                && !r.hidden
                 && !fonts.iter().any(|(f, s)| f.id == r.font.id && *s == r.size)
             {
                 fonts.push((&r.font, r.size));
@@ -870,11 +1225,57 @@ impl<'a> Builder<'a> {
 
 /// Пробел, который может висеть в конце строки. Неразрывные пробелы
 /// ведут себя как буквы.
+/// Места автоматического переноса в тексте (байты): между слогами слов
+/// русского и английского языка. Слова с мягким переносом не трогаются,
+/// как в Word; слова из прописных букв — только если `caps`.
+fn hyphenation_points(text: &str, caps: bool) -> Vec<bool> {
+    let mut points = vec![false; text.len() + 1];
+    // Слова — куски из букв; слово, в котором есть мягкий перенос, не
+    // переносится автоматически.
+    let mut words: Vec<(usize, usize, bool)> = Vec::new();
+    for (at, c) in text.char_indices() {
+        let end = at + c.len_utf8();
+        match words.last_mut() {
+            Some((_, e, soft)) if *e == at && (c.is_alphabetic() || c == SOFT_HYPHEN) => {
+                *e = end;
+                *soft |= c == SOFT_HYPHEN;
+            }
+            _ if c.is_alphabetic() => words.push((at, end, false)),
+            _ => {}
+        }
+    }
+    for (from, to, soft) in words {
+        let word = &text[from..to];
+        if soft || (!caps && word.chars().all(|c| !c.is_lowercase())) {
+            continue;
+        }
+        let lang = if word.chars().any(|c| matches!(c, '\u{400}'..='\u{4ff}')) {
+            hypher::Lang::Russian
+        } else if word.chars().all(|c| c.is_ascii_alphabetic()) {
+            hypher::Lang::English
+        } else {
+            continue;
+        };
+        let mut offset = from;
+        let mut syllables = hypher::hyphenate(word, lang).peekable();
+        while let Some(syllable) = syllables.next() {
+            offset += syllable.len();
+            if syllables.peek().is_some() {
+                points[offset] = true;
+            }
+        }
+    }
+    points
+}
+
+/// Мягкий перенос: невидим, но строку можно перенести на нём с дефисом.
+const SOFT_HYPHEN: char = '\u{ad}';
+
 fn is_hanging_space(c: char) -> bool {
     c.is_whitespace()
         && !matches!(
             c,
-            '\u{a0}' | '\u{202f}' | '\u{2007}' | '\t' | '\n' | '\u{c}'
+            '\u{a0}' | '\u{202f}' | '\u{2007}' | '\t' | '\n' | '\u{c}' | '\u{b}'
         )
 }
 
@@ -958,6 +1359,30 @@ mod tests {
     }
 
     #[test]
+    fn label_takes_its_width() {
+        let spans = [
+            TextSpan::new("ab", mono()),
+            TextSpan::label("12", mono()),
+            TextSpan::new("c", mono()),
+        ];
+        let p = lay(&spans, &ParagraphFormat::new(MONO * 20.0));
+        let line = &p.lines[0];
+        // Надпись из двух знаков стоит на месте одного знака текста.
+        assert_eq!(p.text, format!("ab{OBJECT_CHAR}c"));
+        assert!(close(line.width, MONO * 5.0), "{}", line.width);
+        let label = line
+            .items
+            .iter()
+            .find_map(|item| match item {
+                LineItem::Text(t) if t.span == 1 => Some(t),
+                _ => None,
+            })
+            .expect("нет надписи");
+        assert_eq!(label.run.range, 2..2 + OBJECT_CHAR.len_utf8());
+        assert_eq!(label.run.glyphs.len(), 2);
+    }
+
+    #[test]
     fn long_word_is_cut() {
         let p = lay_text("abcdefgh", &ParagraphFormat::new(MONO * 3.0 + 0.001));
         assert_eq!(line_texts(&p), ["abc", "def", "gh"]);
@@ -973,6 +1398,133 @@ mod tests {
         // Неразрывный пробел не даёт переноса.
         let p = lay_text("ab\u{a0}cd", &ParagraphFormat::new(MONO * 3.0 + 0.001));
         assert_eq!(line_texts(&p), ["ab\u{a0}", "cd"]);
+    }
+
+    /// Видимые глифы строки.
+    fn visible_glyphs(line: &Line) -> usize {
+        line.items
+            .iter()
+            .map(|item| match item {
+                LineItem::Text(t) => t.run.glyphs.iter().filter(|g| g.x_advance > 0.0).count(),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    /// Самое длинное начало слова `word` до места переноса, которое
+    /// с дефисом занимает не больше `room` знаков.
+    fn best_prefix(word: &str, lang: hypher::Lang, room: usize) -> String {
+        let mut prefix = String::new();
+        let mut best = String::new();
+        let syllables: Vec<&str> = hypher::hyphenate(word, lang).collect();
+        for syllable in &syllables[..syllables.len() - 1] {
+            prefix.push_str(syllable);
+            if prefix.chars().count() < room {
+                best = prefix.clone();
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn words_are_hyphenated_automatically() {
+        let mut format = ParagraphFormat::new(MONO * 10.0 + 0.001);
+        format.hyphenation = Some(Hyphenation {
+            zone: 0.0,
+            ..Hyphenation::default()
+        });
+        let p = lay_text("aa hyphenation", &format);
+        let prefix = best_prefix("hyphenation", hypher::Lang::English, 10 - 3);
+        assert!(!prefix.is_empty());
+        let first = format!("aa {prefix}");
+        assert_eq!(line_texts(&p)[0], first);
+        // Дефис виден в конце строки и считается в ширину.
+        assert_eq!(visible_glyphs(&p.lines[0]), first.chars().count() + 1);
+        assert!(close(
+            p.lines[0].width,
+            MONO * (first.chars().count() + 1) as f32
+        ));
+        // Русский.
+        let p = lay_text("ну переносы", &format);
+        let prefix = best_prefix("переносы", hypher::Lang::Russian, 10 - 3);
+        assert_eq!(line_texts(&p)[0], format!("ну {prefix}"));
+        // Широкая зона: перенос не нужен, слово целиком на новой строке.
+        format.hyphenation = Some(Hyphenation {
+            zone: MONO * 20.0,
+            ..Hyphenation::default()
+        });
+        let p = lay_text("aa hyphenation", &format);
+        assert_eq!(line_texts(&p)[0], "aa ");
+        // Без настройки переносов нет.
+        let p = lay_text("aa hyphenation", &ParagraphFormat::new(MONO * 10.0 + 0.001));
+        assert_eq!(line_texts(&p)[0], "aa ");
+        // Слова из прописных — только если разрешено.
+        format.hyphenation = Some(Hyphenation {
+            zone: 0.0,
+            caps: false,
+            ..Hyphenation::default()
+        });
+        let p = lay_text("aa HYPHENATION", &format);
+        assert_eq!(line_texts(&p)[0], "aa ");
+    }
+
+    #[test]
+    fn consecutive_hyphens_are_limited() {
+        let text = "hyphenation ".repeat(12);
+        let mut format = ParagraphFormat::new(MONO * 16.0 + 0.001);
+        format.hyphenation = Some(Hyphenation {
+            zone: 0.0,
+            ..Hyphenation::default()
+        });
+        let ends = |p: &ParagraphLines| -> Vec<bool> {
+            p.lines
+                .iter()
+                .map(|l| {
+                    let t = &p.text[l.range.clone()];
+                    !t.ends_with(' ') && l.end == LineEnd::Wrap
+                })
+                .collect()
+        };
+        let free = ends(&lay_text(&text, &format));
+        assert!(free.windows(2).any(|w| w[0] && w[1]), "{free:?}");
+        format.hyphenation = Some(Hyphenation {
+            zone: 0.0,
+            limit: 1,
+            ..Hyphenation::default()
+        });
+        let limited = ends(&lay_text(&text, &format));
+        assert!(limited.iter().any(|&h| h));
+        assert!(!limited.windows(2).any(|w| w[0] && w[1]), "{limited:?}");
+    }
+
+    #[test]
+    fn soft_hyphen_shows_only_at_line_end() {
+        let glyphs = |line: &Line| -> usize {
+            line.items
+                .iter()
+                .map(|item| match item {
+                    LineItem::Text(t) => t.run.glyphs.iter().filter(|g| g.x_advance > 0.0).count(),
+                    _ => 0,
+                })
+                .sum()
+        };
+        // Влезает: мягкий перенос не виден и не занимает места.
+        let p = lay_text("ab\u{ad}cd", &ParagraphFormat::new(MONO * 10.0));
+        assert_eq!(line_texts(&p), ["ab\u{ad}cd"]);
+        assert!(close(p.lines[0].width, MONO * 4.0), "{}", p.lines[0].width);
+        assert_eq!(glyphs(&p.lines[0]), 4);
+        // Не влезает: перенос на мягком переносе, в конце строки — дефис.
+        let p = lay_text("ab\u{ad}cdef", &ParagraphFormat::new(MONO * 4.0 + 0.001));
+        assert_eq!(line_texts(&p), ["ab\u{ad}", "cdef"]);
+        assert!(close(p.lines[0].width, MONO * 3.0), "{}", p.lines[0].width);
+        assert_eq!(glyphs(&p.lines[0]), 3);
+        // Дефис тоже должен влезть, иначе перенос — на прошлом пробеле.
+        let p = lay_text("ab cd\u{ad}ef", &ParagraphFormat::new(MONO * 5.0 + 0.001));
+        assert_eq!(line_texts(&p), ["ab ", "cd\u{ad}ef"]);
+        // Неразрывный дефис виден всегда и не даёт переноса.
+        let p = lay_text("ab\u{2011}cd", &ParagraphFormat::new(MONO * 4.0 + 0.001));
+        assert_eq!(line_texts(&p), ["ab\u{2011}c", "d"]);
+        assert_eq!(glyphs(&p.lines[0]), 4);
     }
 
     #[test]
@@ -1159,6 +1711,7 @@ mod tests {
             .map(|item| match item {
                 LineItem::Text(t) => &p.text[t.run.range.clone()],
                 LineItem::Tab(_) => "\t",
+                LineItem::Object(_) => "\u{fffc}",
             })
             .collect();
         // Слева направо: «abc », иврит, « def».
@@ -1193,11 +1746,51 @@ mod tests {
             .map(|item| match item {
                 LineItem::Text(t) => (t.span, t.run.size),
                 LineItem::Tab(t) => (t.span, 0.0),
+                LineItem::Object(o) => (o.span, 0.0),
             })
             .collect();
         assert_eq!(spans, [(0, 10.0), (1, 20.0)]);
         // Высота строки — по самому крупному шрифту.
         assert!(p.lines[0].ascent > 15.0);
+    }
+
+    #[test]
+    fn pictures_stand_in_the_line_like_big_letters() {
+        let picture = |width| {
+            TextSpan::object(
+                InlineObject {
+                    width,
+                    height: 50.0,
+                    image: None,
+                    floating: false,
+                },
+                mono(),
+            )
+        };
+        let p = lay(
+            &[
+                TextSpan::new("ab ", mono()),
+                picture(60.0),
+                TextSpan::new(" cd ", mono()),
+                picture(120.0),
+            ],
+            &ParagraphFormat::new(150.0),
+        );
+        // Второй рисунок не влез и ушёл на новую строку.
+        assert_eq!(p.lines.len(), 2, "{:?}", p.lines);
+        let LineItem::Object(first) = &p.lines[0].items[1] else {
+            panic!("{:?}", p.lines[0].items);
+        };
+        assert_eq!(first.at, 3);
+        assert!((first.x - 18.0).abs() < 0.1, "{}", first.x);
+        assert!(close(first.width, 60.0));
+        // Строка поднялась до верха рисунка.
+        assert!(close(p.lines[0].ascent, 50.0));
+        let LineItem::Object(second) = &p.lines[1].items[0] else {
+            panic!("{:?}", p.lines[1].items);
+        };
+        assert!(close(second.x, 0.0));
+        assert_eq!(&p.text[second.at..], "\u{fffc}");
     }
 
     #[test]

@@ -1,0 +1,20 @@
+[package]
+name = "letter-text"
+description = "Обычный текст, HTML и Markdown: импорт и экспорт."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+encoding_rs = "0.8"
+letter-model.workspace = true
+pulldown-cmark = { version = "0.13", default-features = false }
+
+[dev-dependencies]
+letter-docx.workspace = true

@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use letter_docx::{ReadError, read_bytes, read_file};
 use letter_model::{
-    Block, Color, Document, HalfPoints, Inline, PageSize, Paragraph, RunContent, Underline,
-    VerticalAlign,
+    Block, Color, Document, HalfPoints, HeaderFooter, Inline, NoteKind, OBJECT_CHAR, PageSize,
+    Paragraph, RunContent, Underline, VerticalAlign,
 };
 
 fn fixture(name: &str) -> Document {
@@ -112,43 +112,158 @@ fn table() {
     assert_eq!(table.rows.len(), 3);
     assert_eq!(table.rows[0].cells.len(), 3);
     assert_eq!(table.rows[0].cells[1].plain_text(), "R1C2");
-    // Объединённая ячейка: в строке две ячейки, у первой gridSpan в свойствах.
+    // Объединённая ячейка: в строке две ячейки, первая на два столбца.
     assert_eq!(table.rows[2].cells.len(), 2);
+    assert_eq!(table.rows[2].cells[0].span(), 2);
+    assert_eq!(table.grid.len(), 3);
+    assert!(table.raw_props.is_empty());
+    assert_eq!(table.props.style.as_deref(), Some("TableGrid"));
+    assert_eq!(table.props.width, Some(letter_model::TableWidth::Auto));
     assert!(
-        table.rows[2].cells[0].raw_props[0]
-            .as_str()
-            .contains("gridSpan")
+        table
+            .rows
+            .iter()
+            .all(|r| r.cells.iter().all(|c| c.raw_props.is_empty()))
     );
-    assert!(table.raw_props.iter().any(|r| r.local_name() == "tblGrid"));
 }
 
 #[test]
-fn image_is_kept_as_unknown() {
+fn inline_image_is_read() {
     let doc = fixture("image.docx");
-    let drawing = paragraphs(&doc)
+    let picture = paragraphs(&doc)
         .iter()
         .flat_map(|p| p.runs())
         .flat_map(|r| &r.content)
         .find_map(|c| match c {
-            RunContent::Unknown(raw) if raw.local_name() == "drawing" => Some(raw),
+            RunContent::Picture(picture) => Some(picture),
             _ => None,
         })
-        .expect("drawing");
-    assert!(drawing.as_str().contains("r:embed"));
-    assert!(drawing.as_str().contains("xmlns:r="));
+        .expect("picture");
+    // 1828800 × 1097280 EMU = 144 × 86,4 пт.
+    assert_eq!((picture.width, picture.height), (1_828_800, 1_097_280));
+    assert_eq!(picture.relationship.as_deref(), Some("rId9"));
+    let image = picture.image.as_ref().expect("image bytes");
+    assert_eq!(image.name, "word/media/image1.png");
+    assert!(image.bytes.starts_with(b"\x89PNG"));
+    let raw = picture.raw.as_ref().expect("raw drawing");
+    assert!(raw.as_str().contains("r:embed"));
+    assert!(raw.as_str().contains("xmlns:r="));
+    assert!(doc.plain_text().contains('\u{fffc}'));
 }
 
 #[test]
-fn header_footer_references_are_kept() {
-    let doc = fixture("header-footer.docx");
-    let names: Vec<_> = doc.sections[0]
-        .props
-        .unknown
+fn floating_pictures_are_read() {
+    use letter_model::{AnchorAlign, HorizontalFrom, Placement, VerticalFrom, Wrap};
+    let doc = fixture("floating.docx");
+    let anchors: Vec<_> = paragraphs(&doc)
         .iter()
-        .map(|r| r.local_name())
+        .flat_map(|p| p.runs())
+        .flat_map(|r| &r.content)
+        .filter_map(|c| match c {
+            RunContent::Picture(picture) => picture.anchor.as_deref(),
+            _ => None,
+        })
         .collect();
-    assert!(names.contains(&"headerReference"), "{names:?}");
-    assert!(names.contains(&"footerReference"), "{names:?}");
+    let [square, behind] = anchors[..] else {
+        panic!("{anchors:?}");
+    };
+    assert_eq!(square.wrap, Wrap::Square);
+    assert_eq!(square.horizontal.relative, HorizontalFrom::Page);
+    assert_eq!(square.horizontal.placement, Placement::Offset(4_572_000));
+    assert_eq!(square.vertical.relative, VerticalFrom::Paragraph);
+    assert_eq!(square.distance.left, 114_300);
+    assert!(!square.behind_text);
+    assert_eq!((behind.wrap, behind.behind_text), (Wrap::None, true));
+    assert_eq!(
+        behind.vertical.placement,
+        Placement::Align(AnchorAlign::End)
+    );
+}
+
+#[test]
+fn headers_and_footers_are_read() {
+    let doc = fixture("header-footer.docx");
+    let props = &doc.sections[0].props;
+    let text = |story: Option<&HeaderFooter>| {
+        story
+            .map(|s| s.blocks.iter().map(Block::plain_text).collect::<Vec<_>>())
+            .unwrap_or_default()
+    };
+    assert_eq!(text(props.headers.default.as_ref()), ["Header text"]);
+    assert_eq!(text(props.footers.default.as_ref()), ["Footer text"]);
+
+    let doc = fixture("headers.docx");
+    assert!(doc.settings.even_and_odd_headers);
+    let first = &doc.sections[0].props;
+    assert!(first.title_page);
+    assert_eq!(text(first.headers.first.as_ref()), ["First page header"]);
+    assert_eq!(text(first.headers.even.as_ref()), ["Even page header"]);
+    assert_eq!(
+        text(first.footers.default.as_ref()),
+        ["Odd page footer, page 1 of 1"]
+    );
+    // Второй раздел своего верхнего колонтитула не задаёт.
+    let second = &doc.sections[1].props;
+    assert!(second.headers.is_empty());
+    assert_eq!(
+        text(second.footers.even.as_ref()),
+        ["Second section even footer"]
+    );
+}
+
+#[test]
+fn hyperlinks_and_bookmarks() {
+    let doc = fixture("links.docx");
+    let p = paragraphs(&doc);
+    assert_eq!(p[0].plain_text(), "Site: example site.");
+    let link = |p: &Paragraph| {
+        p.runs()
+            .find_map(|r| r.props.link.clone())
+            .expect("нет ссылки")
+    };
+    let site = link(p[0]);
+    assert_eq!(
+        site.target.as_deref(),
+        Some("https://example.com/page?a=1&b=2")
+    );
+    assert!(site.history);
+    let inner = link(p[1]);
+    assert_eq!(inner.target, None);
+    assert_eq!(inner.anchor.as_deref(), Some("target"));
+    assert_eq!(p[2].plain_text(), "This is the target paragraph.");
+    assert!(matches!(&p[2].content[1], Inline::BookmarkStart(b) if b.name == "target"));
+    assert!(matches!(&p[2].content[3], Inline::BookmarkEnd(id) if id == "0"));
+}
+
+#[test]
+fn footnotes_and_endnotes() {
+    let doc = fixture("notes.docx");
+    let p = paragraphs(&doc);
+    let references: Vec<_> = p
+        .iter()
+        .flat_map(|p| p.runs())
+        .flat_map(|r| &r.content)
+        .filter_map(|c| match c {
+            RunContent::NoteReference(r) => Some((r.kind, r.id.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        references,
+        [
+            (NoteKind::Footnote, "1"),
+            (NoteKind::Footnote, "2"),
+            (NoteKind::Endnote, "1")
+        ]
+    );
+    assert_eq!(doc.footnotes.len(), 4);
+    assert_eq!(doc.footnotes[0].special.as_deref(), Some("separator"));
+    let second = &doc.footnotes[3];
+    assert!(second.is_regular());
+    assert_eq!(second.id, "2");
+    let text = second.blocks[0].plain_text();
+    assert_eq!(text, format!("{OBJECT_CHAR} Second footnote."));
+    assert_eq!(doc.endnotes.len(), 3);
 }
 
 #[test]
@@ -267,5 +382,73 @@ fn styles_and_theme_resolve_like_word() {
     assert_eq!(
         body_para.line_spacing,
         letter_model::LineSpacing::Multiple(276)
+    );
+}
+
+#[test]
+fn list_definitions() {
+    let doc = fixture("lists.docx");
+    assert!(!doc.numbering.abstracts.is_empty());
+    assert!(!doc.numbering.instances.is_empty());
+    let items = paragraphs(&doc);
+    // «Apples» — маркированный список из стиля ListBullet.
+    let apples = doc.resolve_paragraph(&items[1].props);
+    let (id, level) = apples.numbering.expect("в списке");
+    assert_eq!(level, 0);
+    let lvl = doc.numbering.level(id, level).unwrap();
+    assert_eq!(lvl.format, Some(letter_model::NumberFormat::Bullet));
+    // Отступ — из уровня списка.
+    assert!(apples.indent_left.0 > 0);
+    // «First» — нумерованный.
+    let first = doc.resolve_paragraph(&items[5].props);
+    let (id, level) = first.numbering.expect("в списке");
+    let lvl = doc.numbering.level(id, level).unwrap();
+    assert_eq!(lvl.format, Some(letter_model::NumberFormat::Decimal));
+    assert_eq!(doc.resolve_paragraph(&items[0].props).numbering, None);
+
+    // Открыть → сохранить → открыть: списки те же.
+    let again = read_bytes(&letter_docx::write_bytes(&doc).unwrap()).unwrap();
+    assert_eq!(again.numbering, doc.numbering);
+    assert_eq!(
+        again.source.as_ref().and_then(|s| s.numbering_part.clone()),
+        Some("word/numbering.xml".to_owned())
+    );
+}
+
+#[test]
+fn new_document_with_a_list_gets_a_numbering_part() {
+    use letter_model::{
+        AbstractNumbering, ListLevel, NumberFormat, NumberingInstance, NumberingRef,
+    };
+    let mut doc = Document::new();
+    doc.numbering.abstracts.push(AbstractNumbering {
+        id: 0,
+        levels: vec![ListLevel {
+            level: 0,
+            format: Some(NumberFormat::Decimal),
+            text: Some("%1.".into()),
+            start: Some(1),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    doc.numbering.instances.push(NumberingInstance {
+        id: 1,
+        abstract_id: 0,
+        ..Default::default()
+    });
+    let mut item = Paragraph::text("пункт");
+    item.props.numbering = Some(NumberingRef {
+        id: Some(1),
+        level: Some(0),
+    });
+    doc.sections[0].blocks = vec![item.into()];
+    let again = read_bytes(&letter_docx::write_bytes(&doc).unwrap()).unwrap();
+    assert_eq!(again.numbering, doc.numbering);
+    assert_eq!(
+        again
+            .resolve_paragraph(&paragraphs(&again)[0].props)
+            .numbering,
+        Some((1, 0))
     );
 }

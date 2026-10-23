@@ -115,6 +115,21 @@ impl<R: Read + Seek> Package<R> {
         }
     }
 
+    /// Внешние связи части `part` (адреса гиперссылок): имя связи и адрес.
+    pub fn external_links(&mut self, part: &str) -> Vec<(String, String)> {
+        let Ok(Some(bytes)) = self.read_part(&rels_part_for(part)) else {
+            return Vec::new();
+        };
+        let Ok(root) = xml::parse(&bytes) else {
+            return Vec::new();
+        };
+        root.elements()
+            .filter(|e| e.local == "Relationship")
+            .filter(|e| attr(e, "TargetMode") == Some("External"))
+            .filter_map(|e| Some((attr(e, "Id")?.to_string(), attr(e, "Target")?.to_string())))
+            .collect()
+    }
+
     /// Первая связь части `part` с типом, оканчивающимся на `/<kind>`
     /// (например, `styles`), — имя части-цели.
     pub fn related_part(&mut self, part: &str, kind: &str) -> Option<String> {
@@ -137,6 +152,8 @@ pub(crate) fn rels_part_for(part: &str) -> String {
 /// Связь между частями пакета.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Relationship {
+    /// Имя связи (`rId5`): по нему на связь ссылается часть.
+    pub id: String,
     /// Тип связи (URI).
     pub kind: String,
     /// Имя части-цели внутри архива.
@@ -149,6 +166,7 @@ fn parse_relationships(rels: &xml::Element, base_dir: &str) -> Vec<Relationship>
         .filter(|e| e.local == "Relationship")
         .filter(|e| attr(e, "TargetMode") != Some("External"))
         .filter_map(|e| {
+            let id = attr(e, "Id").unwrap_or_default().to_string();
             let kind = attr(e, "Type")?.to_string();
             let target = attr(e, "Target")?;
             let target = if target.starts_with('/') || base_dir.is_empty() {
@@ -156,7 +174,7 @@ fn parse_relationships(rels: &xml::Element, base_dir: &str) -> Vec<Relationship>
             } else {
                 normalize_part_name(&format!("{base_dir}/{target}"))
             };
-            Some(Relationship { kind, target })
+            Some(Relationship { id, kind, target })
         })
         .collect()
 }

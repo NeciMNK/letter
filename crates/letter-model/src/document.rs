@@ -1,6 +1,9 @@
 //! Документ целиком.
 
-use crate::{Block, Paragraph, Properties, RawXml, Section, SourcePackage, Styles, Theme, Twips};
+use crate::{
+    Block, Color, Inline, Note, Numbering, Paragraph, Picture, Properties, RawXml, RunContent,
+    Section, SourcePackage, Styles, Theme, Twips,
+};
 
 /// Документ: разделы с содержимым, стили, нумерация списков и настройки.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,7 +22,14 @@ pub struct Document {
     pub settings: Settings,
     /// Свойства документа: название, автор, даты, статистика.
     pub properties: Properties,
-    /// Непонятые элементы уровня документа (например, фон страницы `w:background`).
+    /// Сноски (с служебными: чертой над сносками и т. п.) в порядке из
+    /// файла.
+    pub footnotes: Vec<Note>,
+    /// Концевые сноски.
+    pub endnotes: Vec<Note>,
+    /// Цвет страницы (`w:background`); `None` — белая.
+    pub background: Option<Color>,
+    /// Непонятые элементы уровня документа (например, фон-рисунок).
     pub unknown: Vec<RawXml>,
     /// Части исходного файла, которые программа не разбирает и при
     /// сохранении возвращает без изменений. У нового документа — `None`.
@@ -40,6 +50,9 @@ impl Document {
             theme: Theme::default(),
             settings: Settings::default(),
             properties: Properties::default(),
+            footnotes: Vec::new(),
+            endnotes: Vec::new(),
+            background: None,
             unknown: Vec::new(),
             source: None,
         }
@@ -57,6 +70,45 @@ impl Document {
             .collect::<Vec<_>>()
             .join("\n")
     }
+
+    /// Вызывает `f` для каждого рисунка документа, включая рисунки
+    /// в таблицах (и во вложенных таблицах).
+    pub fn for_each_picture_mut(&mut self, mut f: impl FnMut(&mut Picture)) {
+        for section in &mut self.sections {
+            pictures_in(&mut section.blocks, &mut f);
+        }
+    }
+}
+
+/// Вызывает `f` для каждого рисунка в блоках `blocks`, включая рисунки
+/// в таблицах (например, в колонтитуле).
+pub fn for_each_picture_in(blocks: &mut [Block], mut f: impl FnMut(&mut Picture)) {
+    pictures_in(blocks, &mut f);
+}
+
+fn pictures_in(blocks: &mut [Block], f: &mut impl FnMut(&mut Picture)) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(paragraph) => {
+                for inline in &mut paragraph.content {
+                    let Inline::Run(run) = inline else { continue };
+                    for item in &mut run.content {
+                        if let RunContent::Picture(picture) = item {
+                            f(picture);
+                        }
+                    }
+                }
+            }
+            Block::Table(table) => {
+                for row in &mut table.rows {
+                    for cell in &mut row.cells {
+                        pictures_in(&mut cell.blocks, f);
+                    }
+                }
+            }
+            Block::Unknown(_) => {}
+        }
+    }
 }
 
 impl Default for Document {
@@ -64,12 +116,6 @@ impl Default for Document {
         Document::new()
     }
 }
-
-/// Определения нумерованных и маркированных списков (`word/numbering.xml`).
-/// Пока пусто: списки появятся в задаче F5.1.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub struct Numbering {}
 
 /// Настройки документа (`word/settings.xml`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +127,25 @@ pub struct Settings {
     /// Если нет — между абзацами берётся больший из двух, как в HTML;
     /// так Word делает по умолчанию.
     pub add_paragraph_spacing: bool,
+    /// Режим совместимости с версией Word (`compatibilityMode`): 15 —
+    /// Word 2013 и новее, 14 — Word 2010, 12 — Word 2007 (так считается,
+    /// если режим не указан). От него зависит, например, где стоит левая
+    /// граница таблицы.
+    pub compatibility_mode: u32,
+    /// «Разные колонтитулы для чётных и нечётных страниц»
+    /// (`w:evenAndOddHeaders`).
+    pub even_and_odd_headers: bool,
+    /// Автоматическая расстановка переносов (`w:autoHyphenation`).
+    pub auto_hyphenation: bool,
+    /// Ширина зоны переноса (`w:hyphenationZone`): слово переносится,
+    /// только если без переноса справа осталось бы больше места.
+    pub hyphenation_zone: Twips,
+    /// Не больше стольких строк подряд кончаются переносом
+    /// (`w:consecutiveHyphenLimit`); 0 — без ограничения.
+    pub consecutive_hyphen_limit: u32,
+    /// «Переносы в словах из прописных букв» выключены
+    /// (`w:doNotHyphenateCaps`).
+    pub do_not_hyphenate_caps: bool,
 }
 
 impl Default for Settings {
@@ -89,6 +154,12 @@ impl Default for Settings {
         Settings {
             default_tab_stop: Twips(708),
             add_paragraph_spacing: false,
+            compatibility_mode: 12,
+            even_and_odd_headers: false,
+            auto_hyphenation: false,
+            hyphenation_zone: Twips(360),
+            consecutive_hyphen_limit: 0,
+            do_not_hyphenate_caps: false,
         }
     }
 }
@@ -118,9 +189,12 @@ mod tests {
             Paragraph::from_runs([Run::text("Hello, "), Run::text("world").with_props(italic)])
                 .into(),
             Table {
+                grid: Vec::new(),
                 raw_props: Vec::new(),
+                props: Default::default(),
                 rows: vec![TableRow {
                     raw_props: Vec::new(),
+                    props: Default::default(),
                     cells: vec![TableCell::text("1"), TableCell::text("2")],
                 }],
             }

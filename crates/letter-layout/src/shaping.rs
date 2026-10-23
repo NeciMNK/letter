@@ -59,6 +59,14 @@ pub struct TextStyle {
     /// выключены. Обязательные лигатуры (например, в арабском) работают
     /// всегда.
     pub ligatures: bool,
+    /// Добавка к ширине каждого знака, пт (разреженный или уплотнённый
+    /// интервал).
+    pub letter_spacing: f32,
+    /// Масштаб по ширине: `1.0` — как есть.
+    pub width_scale: f32,
+    /// Скрытый текст: глифы есть (для курсора), но места не занимают
+    /// и не рисуются.
+    pub hidden: bool,
 }
 
 impl TextStyle {
@@ -71,6 +79,9 @@ impl TextStyle {
             italic: false,
             kerning: false,
             ligatures: false,
+            letter_spacing: 0.0,
+            width_scale: 1.0,
+            hidden: false,
         }
     }
 }
@@ -103,6 +114,10 @@ pub struct ShapedRun {
     pub level: u8,
     /// Глифы в порядке отображения (для письма справа налево — с конца).
     pub glyphs: Vec<ShapedGlyph>,
+    /// Масштаб глифов по ширине (`w:w`); ширины в `glyphs` уже с ним.
+    pub width_scale: f32,
+    /// Скрытый текст: ширина ноль, не рисуется.
+    pub hidden: bool,
 }
 
 impl ShapedRun {
@@ -346,6 +361,7 @@ impl Shaper {
                     previous.clone()
                 }
                 _ if self.has_glyph(library, primary.id, c)
+                    || (c == NO_BREAK_HYPHEN && self.has_glyph(library, primary.id, '-'))
                     || c.is_whitespace()
                     || c.is_control() =>
                 {
@@ -372,10 +388,22 @@ impl Shaper {
         level: u8,
         style: &TextStyle,
     ) -> Option<ShapedRun> {
+        let segment = &text[range.clone()];
+        // Неразрывный дефис есть не во всех шрифтах: тогда он рисуется
+        // обычным дефисом, как в Word.
+        let hyphen =
+            segment.contains(NO_BREAK_HYPHEN) && !self.has_glyph(library, font.id, NO_BREAK_HYPHEN);
         let data = self.font_data(library, font.id)?;
         let shaper = ShaperFont::new(&data.font);
         let mut buffer = Buffer::new();
-        buffer.push_str(&text[range.clone()]);
+        if hyphen {
+            for (i, c) in segment.char_indices() {
+                let c = if c == NO_BREAK_HYPHEN { '-' } else { c };
+                buffer.push(u32::from(c), u32::try_from(i).unwrap_or(u32::MAX));
+            }
+        } else {
+            buffer.push_str(segment);
+        }
         buffer.set_direction(if level % 2 == 1 {
             Direction::RightToLeft
         } else {
@@ -398,17 +426,25 @@ impl Shaper {
         )
         .ok()?;
         let scale = style.size / f32::from(shaper.units_per_em());
+        let width_scale = if style.width_scale > 0.0 {
+            style.width_scale
+        } else {
+            1.0
+        };
         let output = buffer;
         let glyphs = output
             .glyph_infos()
             .iter()
             .zip(output.glyph_positions())
-            .map(|(info, pos)| ShapedGlyph {
-                glyph_id: u16::try_from(info.glyph_id).unwrap_or(0),
-                cluster: range.start + info.cluster as usize,
-                x_advance: pos.x_advance as f32 * scale,
-                x_offset: pos.x_offset as f32 * scale,
-                y_offset: pos.y_offset as f32 * scale,
+            .map(|(info, pos)| {
+                let advance = pos.x_advance as f32 * scale * width_scale + style.letter_spacing;
+                ShapedGlyph {
+                    glyph_id: u16::try_from(info.glyph_id).unwrap_or(0),
+                    cluster: range.start + info.cluster as usize,
+                    x_advance: if style.hidden { 0.0 } else { advance },
+                    x_offset: pos.x_offset as f32 * scale * width_scale,
+                    y_offset: pos.y_offset as f32 * scale,
+                }
             })
             .collect();
         Some(ShapedRun {
@@ -417,6 +453,8 @@ impl Shaper {
             size: style.size,
             level,
             glyphs,
+            width_scale,
+            hidden: style.hidden,
         })
     }
 }
@@ -435,6 +473,9 @@ pub fn direction_runs(text: &str) -> Vec<(Range<usize>, u8)> {
     }
     runs
 }
+
+/// Неразрывный дефис (Ctrl+Shift+-).
+const NO_BREAK_HYPHEN: char = '\u{2011}';
 
 /// Составной знак (ударение, точки над буквой) или невидимый
 /// соединитель, который должен остаться с предыдущей буквой.

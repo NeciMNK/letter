@@ -3,7 +3,7 @@
 //! Здесь только хранение. Вычисление итоговых свойств с учётом наследования
 //! (`basedOn`) появится в задаче F1.4.
 
-use crate::{ParagraphProps, RawXml, RunProps};
+use crate::{ParagraphProps, RawXml, RunProps, TableProps};
 
 /// Все стили документа (содержимое `word/styles.xml`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -61,6 +61,8 @@ pub struct Style {
     pub paragraph: ParagraphProps,
     /// Оформление символов, заданное стилем.
     pub run: RunProps,
+    /// Свойства таблицы (`w:tblPr`) — у стилей таблиц.
+    pub table: TableProps,
     /// Стиль создан пользователем, а не встроен в Word (`w:customStyle`).
     pub custom: bool,
     /// Непонятые элементы стиля (`w:uiPriority`, `w:qFormat`, свойства
@@ -80,9 +82,38 @@ impl Style {
             next: None,
             paragraph: ParagraphProps::default(),
             run: RunProps::default(),
+            table: TableProps::default(),
             custom: false,
             unknown: Vec::new(),
         }
+    }
+
+    /// Стиль показывается в галерее «Стили» на ленте (`w:qFormat`).
+    pub fn is_quick(&self) -> bool {
+        self.has("qFormat")
+    }
+
+    /// Стиль скрыт от пользователя (`w:hidden` или `w:semiHidden`).
+    pub fn is_hidden(&self) -> bool {
+        self.has("hidden") || self.has("semiHidden")
+    }
+
+    /// Порядок в списках стилей (`w:uiPriority`); меньше — раньше.
+    /// Без него Word ставит стиль в конец (99).
+    pub fn ui_priority(&self) -> u32 {
+        self.unknown
+            .iter()
+            .find(|raw| raw.local_name() == "uiPriority")
+            .and_then(|raw| raw.attribute("val")?.parse().ok())
+            .unwrap_or(99)
+    }
+
+    fn has(&self, element: &str) -> bool {
+        self.unknown.iter().any(|raw| {
+            raw.local_name() == element
+                // `<w:semiHidden w:val="0"/>` выключает признак.
+                && !matches!(raw.attribute("val"), Some("0" | "false" | "off"))
+        })
     }
 }
 
@@ -102,6 +133,23 @@ pub enum StyleKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gallery_flags_come_from_raw_elements() {
+        let mut style = Style::new("Heading1", StyleKind::Paragraph);
+        assert!(!style.is_quick() && !style.is_hidden());
+        assert_eq!(style.ui_priority(), 99);
+        style.unknown = vec![
+            RawXml::new(r#"<w:uiPriority w:val="9"/>"#),
+            RawXml::new("<w:qFormat/>"),
+            RawXml::new(r#"<w:semiHidden w:val="0"/>"#),
+        ];
+        assert!(style.is_quick() && !style.is_hidden());
+        assert_eq!(style.ui_priority(), 9);
+        style.unknown.push(RawXml::new("<w:unhideWhenUsed/>"));
+        style.unknown.push(RawXml::new("<w:semiHidden/>"));
+        assert!(style.is_hidden());
+    }
 
     #[test]
     fn find_styles() {

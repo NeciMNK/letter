@@ -1,11 +1,43 @@
-//! Приложение `letter`: главное окно редактора. Пока это просмотрщик:
-//! открывает .docx и показывает страницы.
+//! Приложение `letter`: главное окно редактора. Открывает, правит
+//! и сохраняет документы .docx, .rtf, .odt, .txt, .html и .md.
 //!
-//! Запуск: `letter [файл.docx]`.
+//! Запуск: `letter [файл]`; без файла открывается пустой документ.
 
 // В релизной сборке под Windows не показываем окно консоли рядом с программой.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod backstage;
+mod bookmark_dialog;
+mod clipboard;
+mod context_menu;
+mod design;
+mod fields;
+mod files;
+mod find;
+mod font_dialog;
+mod headers;
+mod home;
+mod i18n;
+mod icons;
+mod insert;
+mod keytips;
+mod language;
+mod layout;
+mod link_dialog;
+mod navigation;
+mod paragraph_dialog;
+mod picture;
+mod print;
+mod references;
+mod ribbon;
+mod ruler;
+mod settings;
+mod shortcuts;
+mod story;
+mod styles;
+mod symbols;
+mod theme;
+mod units;
 mod view;
 mod viewer;
 
@@ -31,11 +63,13 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             // Ctrl+плюс/минус меняют масштаб документа, а не интерфейса.
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
-            // Светлое оформление, как у Word по умолчанию.
-            cc.egui_ctx.set_theme(egui::Theme::Light);
-            let mut viewer = Viewer::new(FontLibrary::new());
-            if let Some(file) = file {
-                viewer.open_or_report(&file);
+            icons::install(&cc.egui_ctx);
+            symbols::install(&cc.egui_ctx);
+            let mut viewer = Viewer::with_storage(FontLibrary::new(), files::app_dir());
+            match file {
+                Some(file) => viewer.open_or_report(&file),
+                // Как Word: без файла — сразу пустой документ.
+                None => viewer.new_document(),
             }
             Ok(Box::new(LetterApp { viewer }))
         }),

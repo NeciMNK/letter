@@ -2,8 +2,13 @@
 //! (подчёркивания, выделение маркером, заполнители табуляции)
 //! в пикселях. Список одинаков для экрана и для картинки.
 
-use letter_layout::{FontLibrary, LineItem, Page, PageLine, TabItem, TabLeader, TextItem};
-use letter_model::{Color, ResolvedRunProps, Underline};
+use letter_layout::{
+    Float, FontLibrary, LineItem, Page, PageLine, PageStory, PageWatermark, ShapeKind, TabItem,
+    TabLeader, TextItem, baseline_rise,
+};
+use std::sync::Arc;
+
+use letter_model::{Color, ImageData, ResolvedRunProps, Underline};
 
 use crate::glyphs::{GlyphCache, GlyphKey, SUBPIXEL_STEPS};
 
@@ -41,11 +46,26 @@ pub enum DrawItem {
         /// Цвет.
         color: Rgba,
     },
+    /// Рисунок: картинка, растянутая на прямоугольник.
+    Picture {
+        /// Левый край.
+        x: f32,
+        /// Верхний край.
+        y: f32,
+        /// Ширина.
+        width: f32,
+        /// Высота.
+        height: f32,
+        /// Картинка; `None` — нарисовать заглушку.
+        image: Option<Arc<ImageData>>,
+    },
 }
 
 /// Список того, что нарисовать на странице при масштабе `scale`
-/// пикселей на пункт. Сначала идут фоны (выделение маркером), потом
-/// глифы, потом линии.
+/// пикселей на пункт. Сначала идут фоны (заливка ячеек, выделение
+/// маркером) и плавающие рисунки за текстом, потом рисунки в строке,
+/// глифы и линии (подчёркивания, границы таблиц), последними — плавающие
+/// рисунки перед текстом.
 pub fn page_scene(
     page: &Page,
     scale: f32,
@@ -53,15 +73,43 @@ pub fn page_scene(
     cache: &mut GlyphCache,
 ) -> Vec<DrawItem> {
     let mut backgrounds = Vec::new();
+    let mut pictures = Vec::new();
     let mut glyphs = Vec::new();
     let mut lines = Vec::new();
-    for line in &page.lines {
+    let stories: Vec<&PageStory> = [&page.header, &page.footer]
+        .into_iter()
+        .chain(page.notes.iter().map(|n| &n.story))
+        .collect();
+    let shapes = stories.iter().flat_map(|s| &s.shapes).chain(&page.shapes);
+    for shape in shapes {
+        let (r, g, b) = shape.color;
+        let item = rect(
+            scale,
+            shape.x,
+            shape.y,
+            shape.width,
+            shape.height,
+            [r, g, b, 255],
+        );
+        match shape.kind {
+            ShapeKind::Fill => backgrounds.push(item),
+            ShapeKind::Rule => lines.push(item),
+        }
+    }
+    if let Some(mark) = &page.watermark {
+        watermark(&mut backgrounds, mark, scale);
+    }
+    let all_lines = stories.iter().flat_map(|s| &s.lines).chain(&page.lines);
+    for line in all_lines {
         for item in &line.line.items {
             match item {
                 LineItem::Text(text) => {
                     let Some(props) = line.spans.get(text.span) else {
                         continue;
                     };
+                    if text.run.hidden {
+                        continue;
+                    }
                     let x = line.x + text.x;
                     let width = text.run.width();
                     if let Some((r, g, b)) = props.highlight.rgb() {
@@ -75,7 +123,7 @@ pub fn page_scene(
                         ));
                     }
                     let color = text_color(props);
-                    push_glyphs(&mut glyphs, line, text, scale, color);
+                    push_glyphs(&mut glyphs, line, text, baseline_rise(props), scale, color);
                     decorate(
                         &mut lines, library, cache, line, text, props, x, width, scale, color,
                     );
@@ -85,12 +133,88 @@ pub fn page_scene(
                         leader(&mut lines, line, tab, props, scale);
                     }
                 }
+                // Знак привязки плавающего рисунка места не занимает.
+                LineItem::Object(object) if object.width == 0.0 && object.height == 0.0 => {}
+                LineItem::Object(object) => pictures.push(DrawItem::Picture {
+                    x: (line.x + object.x) * scale,
+                    y: (line.baseline - object.height) * scale,
+                    width: object.width * scale,
+                    height: object.height * scale,
+                    image: object.image.clone(),
+                }),
+            }
+        }
+        // Номер или маркер пункта списка.
+        if let Some(label) = &line.label {
+            let props = &label.props;
+            let color = text_color(props);
+            for item in &label.items {
+                let LineItem::Text(text) = item else {
+                    continue;
+                };
+                if text.run.hidden {
+                    continue;
+                }
+                push_glyphs(&mut glyphs, line, text, baseline_rise(props), scale, color);
+                let (x, width) = (line.x + text.x, text.run.width());
+                decorate(
+                    &mut lines, library, cache, line, text, props, x, width, scale, color,
+                );
             }
         }
     }
+    let float = |f: &Float| DrawItem::Picture {
+        x: f.x * scale,
+        y: f.y * scale,
+        width: f.width * scale,
+        height: f.height * scale,
+        image: f.image.clone(),
+    };
+    let floats = || stories.iter().flat_map(|s| &s.floats).chain(&page.floats);
+    backgrounds.extend(floats().filter(|f| f.behind).map(float));
+    backgrounds.extend(pictures);
     backgrounds.extend(glyphs);
     backgrounds.extend(lines);
+    backgrounds.extend(floats().filter(|f| !f.behind).map(float));
     backgrounds
+}
+
+/// Глифы подложки вдоль повёрнутой базовой линии.
+fn watermark(out: &mut Vec<DrawItem>, mark: &PageWatermark, scale: f32) {
+    let (sin, cos) = mark.rotation.to_radians().sin_cos();
+    // Поворот глифа против часовой стрелки, целые градусы.
+    let rotation = (360.0 - mark.rotation).rem_euclid(360.0).round() as u16 % 360;
+    let (r, g, b) = mark.color;
+    let color = [r, g, b, mark.alpha];
+    let mut pen = 0.0;
+    for run in &mark.runs {
+        let size_64 = (run.size * scale * 64.0).round().max(1.0) as u32;
+        for glyph in &run.glyphs {
+            // Вдоль строки и вверх от неё, потом поворот.
+            let (along, up) = (pen + glyph.x_offset, glyph.y_offset);
+            let x = (mark.x + along * cos + up * sin) * scale;
+            let y = (mark.y + along * sin - up * cos) * scale;
+            let whole = x.floor();
+            let subpixel =
+                (((x - whole) * f32::from(SUBPIXEL_STEPS)).floor() as u8).min(SUBPIXEL_STEPS - 1);
+            out.push(DrawItem::Glyph {
+                key: GlyphKey {
+                    font: run.font.id,
+                    glyph_id: glyph.glyph_id,
+                    size_64,
+                    subpixel,
+                    bold: run.font.synthetic_bold,
+                    italic: run.font.synthetic_italic,
+                    width_percent: (run.width_scale * 100.0).round().clamp(1.0, 600.0) as u16,
+                    rotation,
+                },
+                x: whole as i32,
+                y: y.round() as i32,
+                color,
+            });
+            pen += glyph.x_advance;
+        }
+    }
 }
 
 fn rect(scale: f32, x: f32, y: f32, width: f32, height: f32, color: Rgba) -> DrawItem {
@@ -111,13 +235,21 @@ pub fn text_color(props: &ResolvedRunProps) -> Rgba {
     }
 }
 
-fn push_glyphs(out: &mut Vec<DrawItem>, line: &PageLine, text: &TextItem, scale: f32, color: Rgba) {
+/// Глифы куска; `rise` — подъём над базовой линией (индексы), пт.
+fn push_glyphs(
+    out: &mut Vec<DrawItem>,
+    line: &PageLine,
+    text: &TextItem,
+    rise: f32,
+    scale: f32,
+    color: Rgba,
+) {
     let run = &text.run;
     let size_64 = (run.size * scale * 64.0).round().max(1.0) as u32;
     let mut pen = line.x + text.x;
     for glyph in &run.glyphs {
         let x = (pen + glyph.x_offset) * scale;
-        let y = (line.baseline - glyph.y_offset) * scale;
+        let y = (line.baseline - rise - glyph.y_offset) * scale;
         let whole = x.floor();
         let subpixel =
             (((x - whole) * f32::from(SUBPIXEL_STEPS)).floor() as u8).min(SUBPIXEL_STEPS - 1);
@@ -129,6 +261,8 @@ fn push_glyphs(out: &mut Vec<DrawItem>, line: &PageLine, text: &TextItem, scale:
                 subpixel,
                 bold: run.font.synthetic_bold,
                 italic: run.font.synthetic_italic,
+                width_percent: (run.width_scale * 100.0).round().clamp(1.0, 600.0) as u16,
+                rotation: 0,
             },
             x: whole as i32,
             y: y.round() as i32,
@@ -169,16 +303,21 @@ fn decorate(
         });
     // Линия не тоньше половины пиксельной точки при 100 %.
     let thin = |t: f32| (t * size).max(0.5);
-    let mut bar = |offset: f32, thickness: f32| {
+    let underline_color = match props.underline_color {
+        Some(Color::Rgb(r, g, b)) => [r, g, b, 255],
+        _ => color,
+    };
+    let mut bar = |offset: f32, thickness: f32, color: Rgba| {
         let y = line.baseline - offset - thickness / 2.0;
         out.push(rect(scale, x, y, width, thickness, color));
     };
+    let mut underline = |offset: f32, thickness: f32| bar(offset, thickness, underline_color);
     match props.underline {
         Underline::None => {}
         Underline::Double | Underline::WavyDouble => {
             let t = thin(underline_thickness);
-            bar(underline_at * size, t);
-            bar(underline_at * size - 2.0 * t, t);
+            underline(underline_at * size, t);
+            underline(underline_at * size - 2.0 * t, t);
         }
         Underline::Thick
         | Underline::DottedHeavy
@@ -186,17 +325,17 @@ fn decorate(
         | Underline::DashLongHeavy
         | Underline::DashDotHeavy
         | Underline::DashDotDotHeavy
-        | Underline::WavyHeavy => bar(underline_at * size, 2.0 * thin(underline_thickness)),
+        | Underline::WavyHeavy => underline(underline_at * size, 2.0 * thin(underline_thickness)),
         // Точки, штрихи и волны пока рисуются сплошной линией.
-        _ => bar(underline_at * size, thin(underline_thickness)),
+        _ => underline(underline_at * size, thin(underline_thickness)),
     }
     if props.strike {
-        bar(strike_at * size, thin(strike_thickness));
+        bar(strike_at * size, thin(strike_thickness), color);
     }
     if props.double_strike {
         let t = thin(strike_thickness);
-        bar(strike_at * size + t, t);
-        bar(strike_at * size - t, t);
+        bar(strike_at * size + t, t, color);
+        bar(strike_at * size - t, t, color);
     }
 }
 

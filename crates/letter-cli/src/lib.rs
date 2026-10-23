@@ -8,6 +8,8 @@
 //!   документ по страницам и печатает строки каждой страницы;
 //! - `letter-cli render [--embedded-fonts] файл.docx папка` — рисует
 //!   страницы в картинки PNG (96 точек на дюйм, как Word при 100 %);
+//! - `letter-cli pdf [--embedded-fonts] файл.docx выход.pdf` — сохраняет
+//!   документ в PDF (как «Сохранить как PDF» в программе);
 //! - `letter-cli compare [--embedded-fonts] [--tolerance пт] файл.docx
 //!   эталон.pdf` — сверяет нашу вёрстку с PDF, сохранённым из Word;
 //! - `letter-cli pdf-lines файл.pdf` — печатает строки текста PDF так, как
@@ -19,12 +21,14 @@ pub mod pdf;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use letter_layout::{FontLibrary, Shaper, layout_document};
-use letter_render::{GlyphCache, RgbaImage, SCREEN_PIXELS_PER_POINT, render_page};
+use letter_layout::{FontLibrary, PageLine, Shaper, layout_document};
+use letter_render::{
+    GlyphCache, OutlineItem, PdfInfo, RgbaImage, SCREEN_PIXELS_PER_POINT, render_page, write_pdf,
+};
 
 use letter_model::{
-    Alignment, Block, BreakKind, Document, FirstLineIndent, Inline, LineSpacing, Paragraph,
-    ParagraphProps, Run, RunContent, RunProps, Section, Table,
+    Alignment, Block, BreakKind, Document, FieldCharKind, FirstLineIndent, Inline, LineSpacing,
+    NoteKind, Paragraph, ParagraphProps, Run, RunContent, RunProps, Section, Table,
 };
 
 /// Справка по командам.
@@ -34,6 +38,7 @@ pub const USAGE: &str = "\
   letter-cli roundtrip вход.docx выход.docx  открыть → сохранить → открыть и сравнить
   letter-cli pages [--embedded-fonts] файл.docx  разложить по страницам и напечатать строки
   letter-cli render [--embedded-fonts] файл.docx папка  нарисовать страницы в PNG
+  letter-cli pdf [--embedded-fonts] файл.docx выход.pdf  сохранить в PDF
   letter-cli compare [--embedded-fonts] [--tolerance пт] файл.docx эталон.pdf
                                                сверить вёрстку с PDF из Word
   letter-cli pdf-lines файл.pdf               напечатать строки текста PDF";
@@ -54,6 +59,12 @@ pub fn run(args: &[String]) -> Result<String, String> {
         ["render", "--embedded-fonts", path, dir] => {
             render(&open(path)?, &FontLibrary::embedded_only(), Path::new(dir))
         }
+        ["pdf", path, output] => save_pdf(&open(path)?, &FontLibrary::new(), Path::new(output)),
+        ["pdf", "--embedded-fonts", path, output] => save_pdf(
+            &open(path)?,
+            &FontLibrary::embedded_only(),
+            Path::new(output),
+        ),
         ["compare", rest @ ..] => compare_command(rest),
         ["pdf-lines", path] => pdf_lines(Path::new(path)),
         _ => Err(USAGE.to_string()),
@@ -147,6 +158,38 @@ pub fn render(doc: &Document, library: &FontLibrary, dir: &Path) -> Result<Strin
     Ok(out)
 }
 
+/// Сохраняет документ в PDF `output`.
+pub fn save_pdf(doc: &Document, library: &FontLibrary, output: &Path) -> Result<String, String> {
+    let bytes = export_pdf(doc, library);
+    std::fs::write(output, &bytes).map_err(|e| format!("{}: {e}", output.display()))?;
+    Ok(format!(
+        "Сохранено в {} ({} байт).\n",
+        output.display(),
+        bytes.len()
+    ))
+}
+
+/// PDF документа: страницы, оглавление из заголовков, переходы по
+/// ссылкам на закладки, название и автор.
+pub fn export_pdf(doc: &Document, library: &FontLibrary) -> Vec<u8> {
+    let layout = layout_document(doc, &mut Shaper::new(), library);
+    let info = PdfInfo {
+        title: doc.properties.core.title.clone(),
+        author: doc.properties.core.creator.clone(),
+        outline: letter_editor::document_outline(doc, &layout)
+            .into_iter()
+            .map(|entry| OutlineItem {
+                level: entry.level,
+                title: entry.title,
+                page: entry.page,
+                top: entry.top,
+            })
+            .collect(),
+        anchors: letter_editor::bookmark_places(doc, &layout),
+    };
+    write_pdf(&layout.pages, library, &info)
+}
+
 fn write_png(image: &RgbaImage, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let file = std::io::BufWriter::new(std::fs::File::create(path)?);
     let mut encoder = png::Encoder::new(file, image.width, image.height);
@@ -209,15 +252,42 @@ pub fn pages(doc: &Document, library: &FontLibrary) -> String {
             mm(page.height),
             page.lines.len()
         );
-        for line in &page.lines {
-            let text = line.text.get(line.line.range.clone()).unwrap_or_default();
-            let _ = writeln!(
-                out,
-                "  {:7.2} пт  абзац {:<3} {:?}",
-                line.top,
-                line.paragraph + 1,
-                text.trim_end()
-            );
+        let notes: Vec<PageLine> = page
+            .notes
+            .iter()
+            .flat_map(|n| n.story.lines.iter().cloned())
+            .collect();
+        let stories = [
+            ("верхний колонтитул", &page.header.lines),
+            ("текст", &page.lines),
+            ("сноски", &notes),
+            ("нижний колонтитул", &page.footer.lines),
+        ];
+        for (name, lines) in stories {
+            // Строки текста — без подписи, как раньше.
+            if name != "текст" && !lines.is_empty() {
+                let _ = writeln!(out, "  {name}:");
+            }
+            for line in lines {
+                let text = line.text.get(line.line.range.clone()).unwrap_or_default();
+                let label = line
+                    .label
+                    .as_ref()
+                    .map(|l| format!("{} ", l.text))
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    out,
+                    "  {:7.2} пт  h {:5.2}  x {:6.2}  абзац {:<3} {label}{:?}",
+                    line.top,
+                    line.height,
+                    line.x + line.line.x,
+                    line.paragraph + 1,
+                    text.trim_end()
+                );
+            }
+            if name != "текст" && !lines.is_empty() {
+                let _ = writeln!(out, "  ---");
+            }
         }
     }
     out
@@ -233,6 +303,14 @@ pub fn dump(doc: &Document) -> String {
         doc.sections.len(),
         doc.styles.styles.len()
     );
+    if !doc.numbering.is_empty() {
+        let _ = writeln!(
+            out,
+            "Списков: {} (определений {})",
+            doc.numbering.instances.len(),
+            doc.numbering.abstracts.len()
+        );
+    }
     if let Some(title) = &core.title {
         let _ = writeln!(out, "Название: {title:?}");
     }
@@ -250,6 +328,17 @@ pub fn dump(doc: &Document) -> String {
     }
     for (i, section) in doc.sections.iter().enumerate() {
         dump_section(&mut out, i + 1, section);
+    }
+    for (title, notes) in [
+        ("Сноска", &doc.footnotes),
+        ("Концевая сноска", &doc.endnotes),
+    ] {
+        for note in notes.iter().filter(|n| n.is_regular()) {
+            let _ = writeln!(out, "{title} {}", note.id);
+            for block in &note.blocks {
+                dump_block(&mut out, 1, block);
+            }
+        }
     }
     out
 }
@@ -297,6 +386,12 @@ fn dump_paragraph(out: &mut String, depth: usize, p: &Paragraph) {
     for inline in &p.content {
         match inline {
             Inline::Run(run) => dump_run(out, depth + 1, run),
+            Inline::BookmarkStart(b) => {
+                let _ = writeln!(out, "{}Закладка {:?} ({})", indent(depth + 1), b.name, b.id);
+            }
+            Inline::BookmarkEnd(id) => {
+                let _ = writeln!(out, "{}Конец закладки ({id})", indent(depth + 1));
+            }
             Inline::Unknown(raw) => {
                 let _ = writeln!(out, "{}Непонятое <{}>", indent(depth + 1), raw.name());
             }
@@ -309,9 +404,36 @@ fn dump_run(out: &mut String, depth: usize, run: &Run) {
     for item in &run.content {
         match item {
             RunContent::Text(text) => content.push_str(text),
+            RunContent::Symbol(s) => {
+                let _ = write!(content, "<символ {} {:04X}>", s.font, s.code);
+            }
             RunContent::Unknown(raw) => {
                 let _ = write!(content, "<{}>", raw.name());
             }
+            RunContent::Picture(picture) => {
+                let _ = write!(
+                    content,
+                    "<рисунок {:.1}×{:.1} пт>",
+                    picture.width_points(),
+                    picture.height_points()
+                );
+            }
+            RunContent::FieldChar(c) => content.push_str(match c.kind {
+                FieldCharKind::Begin => "<поле>",
+                FieldCharKind::Separate => "<результат>",
+                FieldCharKind::End => "</поле>",
+            }),
+            RunContent::FieldCode(code) => {
+                let _ = write!(content, "<код {code:?}>");
+            }
+            RunContent::NoteReference(r) => {
+                let kind = match r.kind {
+                    NoteKind::Footnote => "сноска",
+                    NoteKind::Endnote => "концевая сноска",
+                };
+                let _ = write!(content, "<{kind} {}>", r.id);
+            }
+            RunContent::NoteMark(_) => content.push_str("<номер сноски>"),
             RunContent::Tab => content.push('\t'),
             RunContent::Break(BreakKind::Line) => content.push('\n'),
             RunContent::Break(BreakKind::Page) => content.push_str("<разрыв страницы>"),
@@ -346,6 +468,11 @@ fn paragraph_props(props: &ParagraphProps) -> String {
     let mut parts = Vec::new();
     if let Some(style) = &props.style {
         parts.push(format!("стиль {style}"));
+    }
+    if let Some(numbering) = props.numbering {
+        let id = numbering.id.map_or("?".to_owned(), |i| i.to_string());
+        let level = numbering.level.unwrap_or(0);
+        parts.push(format!("список {id}, уровень {level}"));
     }
     if let Some(alignment) = props.alignment {
         parts.push(
@@ -395,11 +522,17 @@ fn run_props(props: &RunProps) -> String {
     if let Some(style) = &props.style {
         parts.push(format!("стиль {style}"));
     }
+    if let Some(link) = &props.link {
+        parts.push(format!("ссылка {:?}", link.address()));
+    }
     let toggles = [
         (props.bold, "ж"),
         (props.italic, "к"),
         (props.strike, "зачёркнутый"),
         (props.double_strike, "двойное зачёркивание"),
+        (props.caps, "все прописные"),
+        (props.small_caps, "малые прописные"),
+        (props.hidden, "скрытый"),
     ];
     for (value, name) in toggles {
         match value {
@@ -422,6 +555,15 @@ fn run_props(props: &RunProps) -> String {
     }
     if let Some(highlight) = props.highlight {
         parts.push(format!("выделение {highlight:?}"));
+    }
+    if let Some(spacing) = props.spacing {
+        parts.push(format!("интервал между буквами {}", spacing.0));
+    }
+    if let Some(scale) = props.scale {
+        parts.push(format!("масштаб {scale} %"));
+    }
+    if let Some(position) = props.position {
+        parts.push(format!("смещение {position}"));
     }
     if let Some(align) = props.vertical_align {
         parts.push(format!("{align:?}"));
