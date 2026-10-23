@@ -277,6 +277,7 @@ numbering = Numbering
 numbering-hint = Numbering: start a numbered list
 multilevel = Multilevel List
 multilevel-hint = Multilevel List: 1., 1.1., 1.1.1.
+control-today = Today
 restart-numbering = Restart at 1
 continue-numbering = Continue Numbering
 show-marks = Show/Hide ¶

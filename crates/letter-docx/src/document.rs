@@ -1519,8 +1519,8 @@ mod tests {
             panic!("expected paragraph")
         };
         assert_eq!(title.props.controls.len(), 1);
-        assert_eq!(title.props.controls[0].tag(), Some("cover"));
-        assert_eq!(title.props.controls[0].title(), Some("Титул"));
+        assert_eq!(title.props.controls[0].tag().as_deref(), Some("cover"));
+        assert_eq!(title.props.controls[0].title().as_deref(), Some("Титул"));
         let Block::Table(table) = blocks[1] else {
             panic!("expected table")
         };
@@ -1532,7 +1532,7 @@ mod tests {
         let Block::Paragraph(cell) = &table.rows[0].cells[0].blocks[0] else {
             panic!("expected paragraph")
         };
-        assert_eq!(cell.props.controls[0].tag(), Some("cell"));
+        assert_eq!(cell.props.controls[0].tag().as_deref(), Some("cell"));
         let Block::Paragraph(form) = blocks[3] else {
             panic!("expected paragraph")
         };
@@ -1540,7 +1540,7 @@ mod tests {
         let runs: Vec<_> = form.runs().collect();
         assert!(runs[0].props.control.is_none() && runs[3].props.control.is_none());
         let name = runs[1].props.control.as_ref().expect("control");
-        assert_eq!(name.tag(), Some("name"));
+        assert_eq!(name.tag().as_deref(), Some("name"));
         assert!(name.end_props.is_some());
         assert!(Arc::ptr_eq(
             name,

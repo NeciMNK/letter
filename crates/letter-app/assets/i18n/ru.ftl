@@ -273,6 +273,7 @@ numbering = Нумерация
 numbering-hint = Нумерация: начать нумерованный список
 multilevel = Многоуровневый список
 multilevel-hint = Многоуровневый список: 1., 1.1., 1.1.1.
+control-today = Сегодня
 restart-numbering = Начать заново с 1
 continue-numbering = Продолжить нумерацию
 show-marks = Отобразить все знаки
