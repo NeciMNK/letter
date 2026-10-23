@@ -6,6 +6,7 @@ use letter_editor::{Command, ParagraphFormat, RunFormat};
 use letter_model::{Alignment, LineSpacing, NoteKind};
 
 use crate::ribbon::RibbonCommand;
+use crate::view::ViewMode;
 
 /// Сочетание клавиш и что оно делает.
 #[derive(Debug, Clone, PartialEq)]
@@ -56,6 +57,10 @@ pub fn table() -> Vec<Shortcut> {
         global(CTRL, Key::W, C::CloseDocument),
         global(CTRL, Key::F4, C::CloseDocument),
         global(Modifiers::ALT, Key::F4, C::Exit),
+        // Режимы просмотра.
+        local(CTRL_ALT, Key::P, C::ViewMode(ViewMode::Print)),
+        local(CTRL_ALT, Key::O, C::ViewMode(ViewMode::Outline)),
+        local(CTRL_ALT, Key::N, C::ViewMode(ViewMode::Draft)),
         // Правка.
         local(CTRL, Key::Z, C::Undo),
         local(Modifiers::ALT, Key::Backspace, C::Undo),

@@ -159,6 +159,8 @@ pub enum RibbonCommand {
     Style(String),
     /// Окно «Найти».
     Find,
+    /// Режим просмотра («Вид → Режимы», кнопки в строке состояния).
+    ViewMode(crate::view::ViewMode),
     /// Окно «Заменить».
     Replace,
     /// «Выделить все».
@@ -286,6 +288,8 @@ pub struct RibbonInfo {
     pub ruler: bool,
     /// Область навигации показана.
     pub navigation: bool,
+    /// Режим просмотра.
+    pub view_mode: crate::view::ViewMode,
     /// Курсор в таблице.
     pub in_table: bool,
     /// Выделено несколько ячеек таблицы: их можно объединить.
@@ -602,6 +606,24 @@ fn command_button(
 
 /// Вкладка «Вид».
 fn view(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+    group(ui, tr("group-views"), |ui| {
+        ui.horizontal(|ui| {
+            for mode in crate::view::ViewMode::ALL {
+                let response = ui.add(egui::Button::selectable(
+                    info.view_mode == mode,
+                    tr(mode.key()),
+                ));
+                let keytip = match mode {
+                    crate::view::ViewMode::Read => "keytip-view-read",
+                    crate::view::ViewMode::Print => "keytip-view-print",
+                    crate::view::ViewMode::Web => "keytip-view-web",
+                    crate::view::ViewMode::Outline => "keytip-view-outline",
+                    crate::view::ViewMode::Draft => "keytip-view-draft",
+                };
+                command_button(ui, response, keytip, RibbonCommand::ViewMode(mode), out);
+            }
+        });
+    });
     group(ui, tr("group-show"), |ui| {
         let mut ruler = info.ruler;
         let response = ui.checkbox(&mut ruler, tr("ruler"));

@@ -48,6 +48,7 @@ use crate::find::{FindAction, FindDialog};
 use crate::font_dialog::{FontDialog, FontValues};
 use crate::icons::{self, Icon};
 use crate::link_dialog::{LinkAction, LinkDialog};
+use crate::modes::{LayoutView, WEB_MARGIN, outline_indent, outline_levels, view_document};
 use crate::paragraph_dialog::{ParagraphDialog, ParagraphValues};
 use crate::picture::{Handle, PictureDrag};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
@@ -56,8 +57,8 @@ use crate::settings::Settings;
 use crate::symbols::SymbolDialog;
 use crate::theme::{Palette, ThemeChoice};
 use crate::view::{
-    MAX_ZOOM, MIN_ZOOM, PAGE_GAP, Zoom, anchored_offset, clamp_zoom, current_page, page_width_zoom,
-    place_pages, step_zoom,
+    MAX_ZOOM, MIN_ZOOM, PAGE_GAP, PageBox, ViewMode, Zoom, anchored_offset, clamp_zoom,
+    current_page, page_width_zoom, place_view, read_zoom, step_zoom,
 };
 use letter_editor::CoverPage;
 
@@ -184,6 +185,12 @@ struct OpenDocument {
     /// Открытый для правки колонтитул: тогда `doc`, `history` и `layout`
     /// — колонтитула, а сам документ отложен здесь.
     story: Option<Box<StoryEdit>>,
+    /// Как верстается документ: по листам или по ширине окна
+    /// («Веб-документ», «Структура»).
+    view: LayoutView,
+    /// Уровни абзацев для значков режима «Структура» (посчитаны при
+    /// вёрстке в этом режиме).
+    outline: Vec<Option<u8>>,
 }
 
 /// Статистика документа и выделения для строки состояния.
@@ -221,6 +228,8 @@ impl OpenDocument {
             goal_x: None,
             counts: None,
             story: None,
+            view: LayoutView::Pages,
+            outline: Vec::new(),
         }
     }
 
@@ -285,7 +294,13 @@ impl OpenDocument {
                 self.layout = story.edit_layout();
             }
             None => {
-                self.layout = layout_document_cached(&self.doc, shaper, library, &mut self.cache);
+                let copy = view_document(&self.doc, self.view);
+                let doc = copy.as_ref().unwrap_or(&self.doc);
+                self.layout = layout_document_cached(doc, shaper, library, &mut self.cache);
+                self.outline = match self.view {
+                    LayoutView::Outline { .. } => outline_levels(&self.doc),
+                    _ => Vec::new(),
+                };
             }
         }
     }
@@ -656,6 +671,8 @@ pub struct Viewer {
     ribbon: Ribbon,
     /// Показывать линейки.
     show_ruler: bool,
+    /// Режим просмотра.
+    view_mode: ViewMode,
     /// Показывать знаки форматирования (¶).
     show_marks: bool,
     /// Открыто окно «Статистика» (щелчок по числу слов).
@@ -854,6 +871,7 @@ impl Viewer {
             find: FindDialog::default(),
             backstage: Backstage::default(),
             show_ruler: settings.show_ruler,
+            view_mode: ViewMode::Print,
             settings,
             dir: dir.clone(),
             library,
@@ -1276,11 +1294,31 @@ impl Viewer {
                 .inner;
             self.run_ribbon(&ctx, commands);
         } else {
-            let info = self.ribbon_info();
-            let commands = egui::Panel::top("ribbon")
-                .show(ui, |ui| self.ribbon.ui(ui, &info))
-                .inner;
-            self.run_ribbon(&ctx, commands);
+            if self.view_mode == ViewMode::Read {
+                // В режиме чтения ленты нет: только имя и выход.
+                let title = self.title();
+                let close = egui::Panel::top("read-bar")
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(title);
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.button(tr("read-close")).clicked()
+                            })
+                            .inner
+                        })
+                        .inner
+                    })
+                    .inner;
+                if close {
+                    self.set_view_mode(ViewMode::Print);
+                }
+            } else {
+                let info = self.ribbon_info();
+                let commands = egui::Panel::top("ribbon")
+                    .show(ui, |ui| self.ribbon.ui(ui, &info))
+                    .inner;
+                self.run_ribbon(&ctx, commands);
+            }
             if let Some(action) = self.find.ui(&ctx) {
                 self.find_action(&ctx, action);
             }
@@ -1319,7 +1357,7 @@ impl Viewer {
                 self.run_ribbon(&ctx, vec![RibbonCommand::InsertSymbol(c)]);
             }
             egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-            if self.navigation.open && self.document.is_some() {
+            if self.navigation.open && self.document.is_some() && self.view_mode != ViewMode::Read {
                 let info = self.navigation_info();
                 let (library, painter, document) =
                     (&self.library, &mut self.painter, &self.document);
@@ -1395,6 +1433,13 @@ impl Viewer {
 
     /// Масштаб при ширине видимой части `view_width`.
     fn effective_zoom(&self, view_width: f32) -> f32 {
+        // В режиме чтения два листа рядом всегда целиком в окне.
+        if self.view_mode == ViewMode::Read {
+            let first = self.document.as_ref().and_then(|d| d.layout.pages.first());
+            return first.map_or(1.0, |p| {
+                read_zoom((p.width, p.height), Vec2::new(view_width, self.view_size.y))
+            });
+        }
         match self.zoom {
             Zoom::Fixed(z) => clamp_zoom(z),
             Zoom::PageWidth => {
@@ -1403,6 +1448,80 @@ impl Viewer {
                 });
                 page_width_zoom(widest, view_width)
             }
+        }
+    }
+
+    /// Клавиши режима чтения: текст не правится, стрелки, PageUp/PageDown
+    /// и пробел листают по два листа, Esc выходит.
+    fn read_keys(&mut self, ctx: &Context) {
+        let pages = self.page_count();
+        let mut target = None;
+        let mut close = false;
+        let current = self.current_page - self.current_page % 2;
+        ctx.input_mut(|i| {
+            i.events.retain(|event| {
+                let egui::Event::Key {
+                    key, pressed: true, ..
+                } = event
+                else {
+                    // Набранный текст в режиме чтения не нужен.
+                    return !matches!(event, egui::Event::Text(_) | egui::Event::Paste(_));
+                };
+                match key {
+                    Key::Escape => close = true,
+                    Key::ArrowRight | Key::ArrowDown | Key::PageDown | Key::Space => {
+                        target = Some((current + 2).min(pages.saturating_sub(1)));
+                    }
+                    Key::ArrowLeft | Key::ArrowUp | Key::PageUp => {
+                        target = Some(current.saturating_sub(2));
+                    }
+                    Key::Home => target = Some(0),
+                    Key::End => target = Some(pages.saturating_sub(1)),
+                    _ => return true,
+                }
+                false
+            });
+        });
+        if close {
+            self.set_view_mode(ViewMode::Print);
+        } else if let Some(page) = target {
+            self.scroll_to = Some((page - page % 2, 0.0));
+        }
+    }
+
+    /// Включает режим просмотра `mode`.
+    fn set_view_mode(&mut self, mode: ViewMode) {
+        if self.view_mode == mode {
+            return;
+        }
+        self.view_mode = mode;
+        // Колонтитулы правятся только в разметке страницы.
+        if mode != ViewMode::Print
+            && let Some(document) = &mut self.document
+        {
+            document.end_story(&mut self.shaper, &self.library);
+        }
+        self.reveal_cursor = true;
+    }
+
+    /// Верстает документ заново, если режим просмотра или ширина окна
+    /// (в режимах без листов) изменились. `view_width` — ширина области
+    /// листов, точки.
+    fn sync_layout_view(&mut self, view_width: f32, zoom: f32) {
+        // Поля вокруг листа и место под полосу прокрутки.
+        let free = view_width - 2.0 * PAGE_GAP - 16.0;
+        let width = (free / (zoom * SCREEN_PIXELS_PER_POINT)).floor();
+        let wanted = match self.view_mode {
+            ViewMode::Web => LayoutView::Web { width },
+            ViewMode::Outline => LayoutView::Outline { width },
+            ViewMode::Print | ViewMode::Read | ViewMode::Draft => LayoutView::Pages,
+        };
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        if document.story.is_none() && document.view != wanted {
+            document.view = wanted;
+            document.relayout(&mut self.shaper, &self.library);
         }
     }
 
@@ -1459,6 +1578,10 @@ impl Viewer {
         let screen = self.view_size.y * points;
         // Клавиши достаются полю ввода (например, размер шрифта на ленте).
         if self.document.is_none() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        if self.view_mode == ViewMode::Read {
+            self.read_keys(ctx);
             return;
         }
         // Esc кончает правку колонтитула.
@@ -1940,6 +2063,7 @@ impl Viewer {
             page_width: self.zoom == Zoom::PageWidth,
             ruler: self.show_ruler,
             navigation: self.navigation.open,
+            view_mode: self.view_mode,
             marks: self.show_marks,
             fonts: self.font_names.clone(),
             ..RibbonInfo::default()
@@ -2056,6 +2180,7 @@ impl Viewer {
                 RibbonCommand::PageWidth => self.set_zoom(Zoom::PageWidth, None),
                 RibbonCommand::ToggleRuler => self.show_ruler = !self.show_ruler,
                 RibbonCommand::ToggleNavigation => self.navigation.open = !self.navigation.open,
+                RibbonCommand::ViewMode(mode) => self.set_view_mode(mode),
                 RibbonCommand::ToggleMarks => self.show_marks = !self.show_marks,
                 RibbonCommand::Paragraph(format) => {
                     actions.push(Action::Edit(Command::Paragraph(format)));
@@ -2262,7 +2387,9 @@ impl Viewer {
     /// Область документа: линейки сверху и слева, листы.
     fn document_area(&mut self, ui: &mut egui::Ui) {
         let full = ui.available_rect_before_wrap();
-        if !self.show_ruler || self.document.is_none() {
+        // Линейки размечают лист — они только в разметке страницы.
+        let ruled = self.view_mode == ViewMode::Print;
+        if !self.show_ruler || !ruled || self.document.is_none() {
             self.pages(ui);
             return;
         }
@@ -2404,12 +2531,19 @@ impl Viewer {
                     self.set_zoom(Zoom::PageWidth, None);
                 }
                 ui.separator();
-                // Режимы просмотра справа налево; пока есть только
-                // разметка страницы, остальные появятся в фазе 6.
+                // Режимы просмотра справа налево, как в Word.
                 let size = egui::vec2(22.0, 18.0);
-                icons::icon_button(ui, Icon::WebLayout, tr("view-web-soon"), size, false, false);
-                icons::icon_button(ui, Icon::PrintLayout, tr("view-print"), size, true, true);
-                icons::icon_button(ui, Icon::ReadMode, tr("view-read-soon"), size, false, false);
+                for (icon, mode) in [
+                    (Icon::WebLayout, ViewMode::Web),
+                    (Icon::PrintLayout, ViewMode::Print),
+                    (Icon::ReadMode, ViewMode::Read),
+                ] {
+                    let on = self.view_mode == mode;
+                    let has = self.document.is_some();
+                    if icons::icon_button(ui, icon, tr(mode.key()), size, has, on).clicked() {
+                        self.set_view_mode(mode);
+                    }
+                }
             });
         });
     }
@@ -2491,6 +2625,8 @@ impl Viewer {
         }
 
         let zoom = self.zoom();
+        self.sync_layout_view(area_rect.width(), zoom);
+        let mode = self.view_mode;
         let Viewer {
             library,
             painter,
@@ -2506,8 +2642,8 @@ impl Viewer {
             Some(story) => &story.display.pages,
             None => &document.layout.pages,
         };
-        let sizes: Vec<(f32, f32)> = pages.iter().map(|p| (p.width, p.height)).collect();
-        let placement = place_pages(&sizes, zoom, area_rect.width());
+        let boxes: Vec<PageBox> = pages.iter().map(|p| page_box(p, mode)).collect();
+        let placement = place_view(&boxes, zoom, area_rect.width(), mode);
 
         if std::mem::take(&mut self.reveal_cursor)
             && let Some(c) = caret(&document.layout, document.cursor)
@@ -2574,7 +2710,7 @@ impl Viewer {
                 )
             });
             let spot = pointer.and_then(|pointer| {
-                let page = nearest_page(&placement.rects, pointer - origin.to_vec2())?;
+                let page = nearest_page(&placement.clips, pointer - origin.to_vec2())?;
                 Some((page, (pointer - screen_rect(page).min) * points))
             });
             let under_pointer =
@@ -2809,8 +2945,28 @@ impl Viewer {
             // Тень листа выходит за его края: рисуем и чуть невидимые.
             let visible = viewport.expand(PAGE_GAP);
             for (i, page) in pages.iter().enumerate() {
-                if placement.rects[i].intersects(visible) {
-                    painter.paint_page(ui.painter(), library, page, screen_rect(i));
+                if placement.clips[i].intersects(visible) {
+                    // В черновике и без листов видна только полоса текста:
+                    // ни полей, ни тени.
+                    let clip = placement.clips[i].translate(origin.to_vec2());
+                    let sheet = if mode.continuous() {
+                        ui.painter().with_clip_rect(clip.intersect(ui.clip_rect()))
+                    } else {
+                        ui.painter().clone()
+                    };
+                    painter.paint_page(&sheet, library, page, screen_rect(i));
+                    if mode == ViewMode::Draft && i + 1 < pages.len() {
+                        paint_page_break(ui.painter(), clip);
+                    }
+                    if mode == ViewMode::Outline {
+                        paint_outline_marks(
+                            &sheet,
+                            page,
+                            screen_rect(i),
+                            1.0 / points,
+                            &document.outline,
+                        );
+                    }
                     if *show_marks {
                         paint_marks(ui.painter(), page, screen_rect(i).min, 1.0 / points);
                     }
@@ -2856,7 +3012,7 @@ impl Viewer {
             // что посередине окна.
             let caret_page = caret(&document.layout, document.cursor)
                 .map(|c| c.page)
-                .filter(|&p| p < placement.rects.len() && placement.rects[p].intersects(viewport))
+                .filter(|&p| p < placement.clips.len() && placement.clips[p].intersects(viewport))
                 .unwrap_or_else(|| current_page(&placement, viewport.top(), viewport.height()));
             if caret_page < placement.rects.len() {
                 ruler_page = Some((caret_page, screen_rect(caret_page)));
@@ -3139,6 +3295,88 @@ fn reveal(offset: Vec2, view: Vec2, target: Rect) -> Vec2 {
     )
 }
 
+/// Лист для расстановки в режиме `mode`. В режимах без листов «лист» —
+/// одна длинная полоса: видна только часть с текстом.
+fn page_box(page: &letter_layout::Page, mode: ViewMode) -> PageBox {
+    let (top, bottom) = match mode {
+        ViewMode::Draft => (page.margins.top, page.margins.bottom),
+        ViewMode::Web | ViewMode::Outline => {
+            let end = page
+                .lines
+                .iter()
+                .map(|l| l.top + l.height)
+                .fold(page.margins.top, f32::max);
+            (0.0, (page.height - end - WEB_MARGIN).max(0.0))
+        }
+        ViewMode::Print | ViewMode::Read => (0.0, 0.0),
+    };
+    PageBox {
+        width: page.width,
+        height: page.height,
+        top,
+        bottom,
+    }
+}
+
+/// Пунктир между листами в черновике, по нижнему краю полосы `band`.
+fn paint_page_break(painter: &egui::Painter, band: Rect) {
+    let y = band.bottom();
+    let stroke = egui::Stroke::new(1.0, Color32::from_gray(150));
+    let shapes = egui::Shape::dashed_line(
+        &[Pos2::new(band.left(), y), Pos2::new(band.right(), y)],
+        stroke,
+        3.0,
+        3.0,
+    );
+    painter.extend(shapes);
+}
+
+/// Значки режима «Структура» у первой строки каждого абзаца: у заголовка
+/// с текстом под ним — кружок с плюсом, у заголовка без него — с минусом,
+/// у основного текста — точка. `levels` — из [`outline_levels`].
+fn paint_outline_marks(
+    painter: &egui::Painter,
+    page: &letter_layout::Page,
+    rect: Rect,
+    scale: f32,
+    levels: &[Option<u8>],
+) {
+    let color = Color32::from_gray(90);
+    let stroke = egui::Stroke::new(1.0, color);
+    for line in page
+        .lines
+        .iter()
+        .filter(|l| l.line.range.start == 0 && l.cell.is_none())
+    {
+        let index = line.paragraph;
+        let Some(&level) = levels.get(index) else {
+            continue;
+        };
+        let x = rect.left() + (line.x + outline_indent(levels, index) - 9.0) * scale;
+        let y = rect.top() + (line.baseline - 3.5) * scale;
+        let center = Pos2::new(x, y);
+        match level {
+            Some(level) => {
+                let r = 4.0 * scale;
+                painter.circle_stroke(center, r, stroke);
+                let arm = 2.5 * scale;
+                painter.hline(x - arm..=x + arm, y, stroke);
+                // Плюс, если под заголовком есть что-то до следующего
+                // заголовка того же или старшего уровня.
+                let children = levels
+                    .get(index + 1)
+                    .is_some_and(|next| next.is_none_or(|n| n > level));
+                if children {
+                    painter.vline(x, y - arm..=y + arm, stroke);
+                }
+            }
+            None => {
+                painter.circle_filled(center, 1.6 * scale, color);
+            }
+        }
+    }
+}
+
 /// Лист под точкой `point` (координаты содержимого прокрутки) или,
 /// если точка между листами, ближайший по вертикали.
 fn nearest_page(rects: &[Rect], point: Pos2) -> Option<usize> {
@@ -3161,6 +3399,7 @@ fn nearest_page(rects: &[Rect], point: Pos2) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view::place_pages;
     use eframe::egui::{Event, MouseWheelUnit, Pos2, RawInput, Rect, vec2};
     use letter_editor::ParagraphFormat;
 
@@ -4913,6 +5152,67 @@ mod tests {
         h.run();
         h.get_by_label("Число слов: 1 из 3");
         h.get_by_label("Разметка страницы");
-        h.get_by_label("Режим чтения (скоро)");
+        h.get_by_label("Режим чтения");
+    }
+
+    #[test]
+    fn view_modes() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("headings.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let print_width = viewer.document.as_ref().unwrap().layout.pages[0].width;
+
+        // Веб-документ: «лист» шириной в окно, без колонтитулов.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Web)]);
+        frame(&ctx, &mut viewer, screen());
+        frame(&ctx, &mut viewer, screen());
+        let page = &viewer.document.as_ref().unwrap().layout.pages[0];
+        assert!(page.width > print_width, "{} vs {print_width}", page.width);
+        assert!((page.margins.left - WEB_MARGIN).abs() < 0.1);
+        // Текст по-прежнему правится — в самом документе.
+        frame(&ctx, &mut viewer, events(vec![Event::Text("Z".into())]));
+        assert!(first_text(&mut viewer).starts_with('Z'));
+        let document = viewer.document.as_ref().unwrap();
+        assert!(document.layout.pages[0].lines[0].text.starts_with('Z'));
+        assert_eq!(document.doc.sections[0].props.margins, {
+            let doc = letter_docx::read_file(fixture("headings.docx")).unwrap();
+            doc.sections[0].props.margins
+        });
+
+        // Структура: заголовки второго уровня с отступом, у абзацев — значки.
+        frame(
+            &ctx,
+            &mut viewer,
+            key(Key::O, Modifiers::COMMAND | Modifiers::ALT),
+        );
+        assert_eq!(viewer.view_mode, ViewMode::Outline);
+        let plain = frame(&ctx, &mut viewer, screen());
+        let document = viewer.document.as_ref().unwrap();
+        assert!(document.outline.iter().any(Option::is_some));
+        let lines = &document.layout.pages[0].lines;
+        let xs: Vec<f32> = lines.iter().map(|l| l.line.x).collect();
+        assert!(xs.iter().any(|&x| x > 1.0), "{xs:?}");
+
+        // Черновик: вёрстка по листам, как в разметке страницы.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Draft)]);
+        let draft = frame(&ctx, &mut viewer, screen());
+        let page = &viewer.document.as_ref().unwrap().layout.pages[0];
+        assert_eq!(page.width, print_width);
+        assert!(draft > 0 && plain > 0);
+
+        // Режим чтения: ленты нет, текст не правится, Esc — обратно.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Read)]);
+        frame(&ctx, &mut viewer, screen());
+        let before = first_text(&mut viewer);
+        frame(&ctx, &mut viewer, events(vec![Event::Text("Q".into())]));
+        assert_eq!(first_text(&mut viewer), before);
+        let zoom = viewer.zoom();
+        assert!(zoom < 1.0, "{zoom}");
+        frame(&ctx, &mut viewer, key(Key::Escape, Modifiers::NONE));
+        assert_eq!(viewer.view_mode, ViewMode::Print);
+        frame(&ctx, &mut viewer, screen());
+        let page = &viewer.document.as_ref().unwrap().layout.pages[0];
+        assert_eq!(page.width, print_width);
     }
 }
