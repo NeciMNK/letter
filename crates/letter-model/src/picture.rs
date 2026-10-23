@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::RawXml;
+use crate::{RawXml, Shape};
 
 /// Сколько EMU (английских метрических единиц OOXML) в пункте.
 /// В дюйме 914 400 EMU, в сантиметре — 360 000.
@@ -33,6 +33,10 @@ pub struct Picture {
     /// Положение и обтекание плавающего рисунка; `None` — рисунок
     /// в строке.
     pub anchor: Option<Box<Anchor>>,
+    /// Фигура вместо картинки (прямоугольник, стрелка, надпись,
+    /// группа): тогда [`Picture::image`] и [`Picture::relationship`]
+    /// пусты, а рисуется фигура на весь прямоугольник рисунка.
+    pub shape: Option<Arc<Shape>>,
 }
 
 /// Где стоит плавающий рисунок и как его обтекает текст.
@@ -199,6 +203,7 @@ mod tests {
             relationship: None,
             raw: None,
             anchor: None,
+            shape: None,
         };
         assert_eq!(picture.width_points(), 72.0);
         assert_eq!(picture.height_points(), 10.0);

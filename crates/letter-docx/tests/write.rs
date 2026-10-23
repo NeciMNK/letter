@@ -34,6 +34,7 @@ const FIXTURES: &[&str] = &[
     "notes.docx",
     "borders.docx",
     "watermark.docx",
+    "shapes.docx",
     "header-footer.docx",
     "ru-en.docx",
 ];
@@ -150,6 +151,38 @@ fn edited_document_keeps_images() {
         _ => false,
     });
     assert!(has_drawing);
+}
+
+#[test]
+fn resized_shape_is_saved_without_old_fallback() {
+    let mut doc = read_bytes(&fixture_bytes("shapes.docx")).unwrap();
+    let mut first = true;
+    doc.for_each_picture_mut(|picture| {
+        if std::mem::take(&mut first) {
+            picture.width *= 2;
+        }
+    });
+    let saved = write_bytes(&doc).unwrap();
+    let xml = String::from_utf8(zip_parts(&saved)["word/document.xml"].clone()).unwrap();
+    // У изменённой фигуры нет запасного VML, у остальных остался.
+    assert_eq!(xml.matches("<mc:AlternateContent").count(), 5);
+    assert!(xml.contains(&format!("cx=\"{}\"", 360_000 * 10)));
+    let reopened = read_bytes(&saved).unwrap();
+    let mut widths = Vec::new();
+    reopened.blocks().for_each(|b| {
+        if let Block::Paragraph(p) = b {
+            for run in p.runs() {
+                for item in &run.content {
+                    if let RunContent::Picture(picture) = item {
+                        assert!(picture.shape.is_some());
+                        widths.push(picture.width);
+                    }
+                }
+            }
+        }
+    });
+    assert_eq!(widths.len(), 6);
+    assert_eq!(widths[0], 360_000 * 10);
 }
 
 #[test]
@@ -679,6 +712,7 @@ fn pictures_from_another_document_get_their_own_part() {
         relationship: None,
         raw: None,
         anchor: None,
+        shape: None,
     };
     let mut doc = Document::new();
     doc.sections[0].blocks = vec![

@@ -24,6 +24,7 @@ mod picture;
 mod properties;
 mod serialize;
 mod settings;
+mod shape;
 mod styles;
 mod table;
 mod theme;
@@ -37,8 +38,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use letter_model::{
-    Block, Document, HeaderFooterKind, ImageData, Inline, NoteKind, Picture, SourcePackage,
-    SourcePart, for_each_picture_in,
+    Block, ColorScheme, Document, Geometry, HeaderFooterKind, ImageData, Inline, NoteKind, Picture,
+    Shape, SourcePackage, SourcePart, for_each_picture_in,
 };
 
 pub use error::{ReadError, WriteError};
@@ -125,7 +126,8 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
     rebuilt.extend(stories.iter().map(|(name, _)| Some(name.clone())));
     rebuilt.extend(note_parts.iter().map(|(_, name, _)| Some(name.clone())));
     let mut source = read_source(&mut package, &rebuilt)?;
-    attach_images(|f| doc.for_each_picture_mut(f), &images, &source);
+    let scheme = doc.theme.colors.clone();
+    attach_images(|f| doc.for_each_picture_mut(f), &images, &source, &scheme);
     let addresses = package.external_links(&main);
     for section in &mut doc.sections {
         attach_links(&mut section.blocks, &addresses);
@@ -151,6 +153,7 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
                             |f| for_each_picture_in(&mut story.blocks, f),
                             &relationships,
                             &source,
+                            &scheme,
                         );
                     }
                 }
@@ -171,6 +174,7 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
                 |f| for_each_picture_in(&mut note.blocks, f),
                 &relationships,
                 &source,
+                &scheme,
             );
         }
         let entry = Some((name, attributes));
@@ -319,31 +323,79 @@ fn attach_images(
     visit: impl FnOnce(&mut dyn FnMut(&mut Picture)),
     relationships: &[package::Relationship],
     source: &SourcePackage,
+    scheme: &ColorScheme,
 ) {
     let mut loaded: Vec<(&str, Option<Arc<ImageData>>)> = Vec::new();
     visit(&mut |picture: &mut Picture| {
-        let Some(id) = picture.relationship.as_deref() else {
-            return;
-        };
-        if let Some((_, image)) = loaded.iter().find(|(known, _)| *known == id) {
-            picture.image = image.clone();
-            return;
-        }
-        let image = relationships
-            .iter()
-            .find(|r| r.id == id && r.kind.ends_with("/image"))
-            .and_then(|r| source.part(&r.target))
-            .map(|part| {
-                Arc::new(ImageData {
-                    name: part.name.clone(),
-                    bytes: part.data.clone(),
-                })
-            });
-        picture.image = image.clone();
-        if let Some(r) = relationships.iter().find(|r| r.id == id) {
-            loaded.push((r.id.as_str(), image));
-        }
+        attach_image(picture, relationships, source, scheme, &mut loaded);
     });
+}
+
+/// Картинка одного рисунка. У фигуры цвета темы заменяются настоящими,
+/// а рисунки внутри надписи получают свои картинки.
+fn attach_image<'a>(
+    picture: &mut Picture,
+    relationships: &'a [package::Relationship],
+    source: &SourcePackage,
+    scheme: &ColorScheme,
+    loaded: &mut Vec<(&'a str, Option<Arc<ImageData>>)>,
+) {
+    if let Some(shape) = &mut picture.shape {
+        let shape = Arc::make_mut(shape);
+        resolve_shape_colors(shape, scheme);
+        for_each_shape_text(shape, &mut |blocks| {
+            for_each_picture_in(blocks, |p| {
+                attach_image(p, relationships, source, scheme, loaded);
+            });
+        });
+        return;
+    }
+    let Some(id) = picture.relationship.as_deref() else {
+        return;
+    };
+    if let Some((_, image)) = loaded.iter().find(|(known, _)| *known == id) {
+        picture.image = image.clone();
+        return;
+    }
+    let image = relationships
+        .iter()
+        .find(|r| r.id == id && r.kind.ends_with("/image"))
+        .and_then(|r| source.part(&r.target))
+        .map(|part| {
+            Arc::new(ImageData {
+                name: part.name.clone(),
+                bytes: part.data.clone(),
+            })
+        });
+    picture.image = image.clone();
+    if let Some(r) = relationships.iter().find(|r| r.id == id) {
+        loaded.push((r.id.as_str(), image));
+    }
+}
+
+/// Вызывает `f` для текста надписи фигуры и всех фигур её группы.
+fn for_each_shape_text(shape: &mut Shape, f: &mut dyn FnMut(&mut [Block])) {
+    f(&mut shape.text);
+    if let Geometry::Group(group) = &mut shape.geometry {
+        for child in &mut group.children {
+            for_each_shape_text(&mut child.shape, f);
+        }
+    }
+}
+
+/// Заменяет цвета темы в фигуре (и фигурах группы) настоящими цветами.
+fn resolve_shape_colors(shape: &mut Shape, scheme: &ColorScheme) {
+    if let Some(fill) = &mut shape.fill {
+        *fill = fill.resolved(scheme);
+    }
+    if let Some(line) = &mut shape.line {
+        line.color = line.color.resolved(scheme);
+    }
+    if let Geometry::Group(group) = &mut shape.geometry {
+        for child in &mut group.children {
+            resolve_shape_colors(&mut child.shape, scheme);
+        }
+    }
 }
 
 /// Читает и разбирает часть, связанную с `part` связью вида `kind`;

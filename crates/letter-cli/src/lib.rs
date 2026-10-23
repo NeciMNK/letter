@@ -411,9 +411,15 @@ fn dump_run(out: &mut String, depth: usize, run: &Run) {
                 let _ = write!(content, "<{}>", raw.name());
             }
             RunContent::Picture(picture) => {
+                let kind = match picture.shape.as_deref().map(|s| &s.geometry) {
+                    None => "рисунок".to_string(),
+                    Some(letter_model::Geometry::Group(_)) => "группа".to_string(),
+                    Some(letter_model::Geometry::Custom(_)) => "фигура".to_string(),
+                    Some(letter_model::Geometry::Preset { name, .. }) => format!("фигура {name}"),
+                };
                 let _ = write!(
                     content,
-                    "<рисунок {:.1}×{:.1} пт>",
+                    "<{kind} {:.1}×{:.1} пт>",
                     picture.width_points(),
                     picture.height_points()
                 );

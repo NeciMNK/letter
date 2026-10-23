@@ -8,8 +8,9 @@ use std::path::PathBuf;
 
 use letter_docx::{ReadError, read_bytes, read_file};
 use letter_model::{
-    Block, Color, Document, HalfPoints, HeaderFooter, Inline, NoteKind, OBJECT_CHAR, PageSize,
-    Paragraph, RunContent, Underline, VerticalAlign,
+    Block, Color, ColorBase, Document, Geometry, HalfPoints, HeaderFooter, Inline, LineEnd,
+    NoteKind, OBJECT_CHAR, PageSize, Paragraph, Picture, RunContent, Underline, VerticalAlign,
+    Wrap,
 };
 
 fn fixture(name: &str) -> Document {
@@ -450,5 +451,61 @@ fn new_document_with_a_list_gets_a_numbering_part() {
             .resolve_paragraph(&paragraphs(&again)[0].props)
             .numbering,
         Some((1, 0))
+    );
+}
+
+/// Все рисунки и фигуры документа по порядку.
+fn pictures(doc: &Document) -> Vec<&Picture> {
+    paragraphs(doc)
+        .into_iter()
+        .flat_map(|p| p.runs())
+        .flat_map(|r| &r.content)
+        .filter_map(|c| match c {
+            RunContent::Picture(p) => Some(p),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn shapes_are_read() {
+    let doc = fixture("shapes.docx");
+    let shapes = pictures(&doc);
+    assert_eq!(shapes.len(), 6);
+    assert!(shapes.iter().all(|p| p.image.is_none() && p.raw.is_some()));
+    let shape = |i: usize| shapes[i].shape.as_deref().unwrap();
+    // Надпись: прямоугольник с текстом, цвета из стиля фигуры и темы.
+    let accent1 = doc.theme.colors.color("accent1");
+    assert_eq!(shape(0).geometry, Geometry::preset("rect"));
+    assert_eq!(
+        shape(0).fill.as_ref().unwrap().base,
+        ColorBase::Rgb(accent1)
+    );
+    assert_eq!(shape(0).text[0].plain_text(), "Надпись в прямоугольнике");
+    assert_eq!(shapes[0].anchor.as_ref().unwrap().wrap, Wrap::Square);
+    // Стрелка со своей заливкой и без линии.
+    assert_eq!(
+        shape(1).fill.as_ref().unwrap().base,
+        ColorBase::Rgb([0xFF, 0xC0, 0])
+    );
+    assert_eq!(shape(1).line, None);
+    // Овал без заливки за текстом.
+    assert_eq!(shape(2).fill, None);
+    assert!(shapes[2].anchor.as_ref().unwrap().behind_text);
+    // Линия со стрелкой в строке.
+    assert!(shapes[3].anchor.is_none());
+    assert_eq!(shape(3).line.as_ref().unwrap().tail, LineEnd::Triangle);
+    assert_eq!(
+        shape(3).line.as_ref().unwrap().color.base,
+        ColorBase::Rgb(doc.theme.colors.color("tx1"))
+    );
+    assert!(matches!(shape(4).geometry, Geometry::Custom(_)));
+    let Geometry::Group(group) = &shape(5).geometry else {
+        panic!("{:?}", shape(5).geometry);
+    };
+    assert_eq!(group.children.len(), 2);
+    assert_eq!(
+        group.children[1].shape.geometry,
+        Geometry::preset("ellipse")
     );
 }

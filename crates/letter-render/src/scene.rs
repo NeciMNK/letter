@@ -8,7 +8,7 @@ use letter_layout::{
 };
 use std::sync::Arc;
 
-use letter_model::{Color, ImageData, ResolvedRunProps, Underline};
+use letter_model::{Color, ImageData, ResolvedRunProps, Shape, Underline};
 
 use crate::glyphs::{GlyphCache, GlyphKey, SUBPIXEL_STEPS};
 
@@ -58,6 +58,8 @@ pub enum DrawItem {
         height: f32,
         /// Картинка; `None` — нарисовать заглушку.
         image: Option<Arc<ImageData>>,
+        /// Фигура: рисуется она, а не картинка.
+        shape: Option<Arc<Shape>>,
     },
 }
 
@@ -141,6 +143,7 @@ pub fn page_scene(
                     width: object.width * scale,
                     height: object.height * scale,
                     image: object.image.clone(),
+                    shape: object.shape.clone(),
                 }),
             }
         }
@@ -169,6 +172,7 @@ pub fn page_scene(
         width: f.width * scale,
         height: f.height * scale,
         image: f.image.clone(),
+        shape: f.shape.clone(),
     };
     let floats = || stories.iter().flat_map(|s| &s.floats).chain(&page.floats);
     backgrounds.extend(floats().filter(|f| f.behind).map(float));

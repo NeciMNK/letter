@@ -60,6 +60,7 @@ pub fn picture_from_bytes(bytes: Vec<u8>, extension: &str) -> Result<Picture, St
         relationship: None,
         raw: None,
         anchor: None,
+        shape: None,
     })
 }
 

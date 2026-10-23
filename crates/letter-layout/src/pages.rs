@@ -258,6 +258,8 @@ pub struct Float {
     pub height: f32,
     /// Картинка (`None` — заглушка).
     pub image: Option<Arc<ImageData>>,
+    /// Фигура вместо картинки.
+    pub shape: Option<Arc<letter_model::Shape>>,
     /// Обтекание текстом.
     pub wrap: Wrap,
     /// За текстом (рисуется под ним).
@@ -1121,6 +1123,7 @@ fn place_float(
         width: spec.width,
         height: spec.height,
         image: spec.image.clone(),
+        shape: spec.shape.clone(),
         wrap: anchor.wrap,
         behind: anchor.wrap == Wrap::None && anchor.behind_text,
         distance: Margins {
@@ -1393,6 +1396,7 @@ struct FloatSpec {
     width: f32,
     height: f32,
     image: Option<Arc<ImageData>>,
+    shape: Option<Arc<letter_model::Shape>>,
     anchor: Anchor,
 }
 
@@ -1457,6 +1461,7 @@ fn prepare(
                             width: picture.width_points(),
                             height: picture.height_points(),
                             image: picture.image.clone(),
+                            shape: picture.shape.clone(),
                             anchor: (**anchor).clone(),
                         });
                     }
@@ -1464,6 +1469,7 @@ fn prepare(
                         width: picture.width_points(),
                         height: picture.height_points(),
                         image: picture.image.clone(),
+                        shape: picture.shape.clone(),
                         floating: picture.anchor.is_some(),
                     };
                     let style = text_style(&resolved, &resolved.fonts.h_ansi);
@@ -3117,6 +3123,7 @@ mod tests {
                 behind_text,
                 distance: letter_model::Distance::default(),
             })),
+            shape: None,
         })
     }
 
@@ -3143,6 +3150,7 @@ mod tests {
                 behind_text: false,
                 distance: letter_model::Distance::default(),
             })),
+            shape: None,
         })
     }
 

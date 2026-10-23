@@ -13,11 +13,12 @@ use egui::{
     Color32, ColorImage, Context, Painter, Pos2, Rect, TextureHandle, TextureId, TextureOptions,
 };
 use letter_layout::{FontLibrary, Page};
-use letter_model::ImageData;
+use letter_model::{ImageData, Shape};
 
 use crate::glyphs::{GlyphCache, GlyphImage, GlyphKey, GlyphPixels};
 use crate::picture::{PLACEHOLDER_BORDER, PLACEHOLDER_FILL, decode, fit_within};
 use crate::scene::{DrawItem, Rgba, page_scene};
+use crate::shape::rasterize;
 
 /// Цвет фона вокруг листов (как в Word в режиме разметки).
 pub const DESK_COLOR: Color32 = Color32::from_rgb(0xE6, 0xE6, 0xE6);
@@ -80,7 +81,22 @@ pub struct PagePainter {
     /// Текстуры картинок рисунков (`None` — картинку не удалось
     /// распаковать, рисуется заглушка).
     pictures: Vec<(Arc<ImageData>, Option<TextureHandle>)>,
+    /// Текстуры фигур: для каждой фигуры — последний нарисованный размер.
+    shapes: Vec<ShapeTexture>,
 }
+
+/// Фигура, растеризованная для экрана при одном размере.
+struct ShapeTexture {
+    shape: Arc<Shape>,
+    /// Размер прямоугольника фигуры, пиксели.
+    size: [u32; 2],
+    /// Текстура, угол картинки относительно угла фигуры и размер картинки
+    /// в пикселях; `None` — рисовать нечего.
+    texture: Option<(TextureHandle, [f32; 2], [f32; 2])>,
+}
+
+/// Сколько фигур держать в кеше текстур.
+const MAX_SHAPE_TEXTURES: usize = 256;
 
 impl std::fmt::Debug for PagePainter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -178,7 +194,25 @@ impl PagePainter {
                     y,
                     width,
                     height,
+                    shape: Some(shape),
+                    ..
+                } => {
+                    if let Some((texture, [left, top], [w, h])) =
+                        self.shape_texture(&ctx, shape, width, height, scale)
+                    {
+                        let (x, y) = (x + left, y + top);
+                        let r = Rect::from_min_max(to_screen(x, y), to_screen(x + w, y + h));
+                        let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                        painter.image(texture, r, uv, Color32::WHITE);
+                    }
+                }
+                DrawItem::Picture {
+                    x,
+                    y,
+                    width,
+                    height,
                     image,
+                    shape: None,
                 } => {
                     let r = Rect::from_min_max(to_screen(x, y), to_screen(x + width, y + height));
                     match image.and_then(|data| self.picture(&ctx, data)) {
@@ -194,6 +228,49 @@ impl PagePainter {
         if let Some(mesh) = mesh {
             painter.add(mesh);
         }
+    }
+
+    /// Текстура фигуры размером `width` × `height` пикселей (рисует
+    /// и загружает при первом показе в этом размере).
+    fn shape_texture(
+        &mut self,
+        ctx: &Context,
+        shape: Arc<Shape>,
+        width: f32,
+        height: f32,
+        scale: f32,
+    ) -> Option<(TextureId, [f32; 2], [f32; 2])> {
+        let size = [width.round() as u32, height.round() as u32];
+        let found = self
+            .shapes
+            .iter()
+            .position(|t| Arc::ptr_eq(&t.shape, &shape));
+        if let Some(i) = found {
+            if self.shapes[i].size == size {
+                let texture = self.shapes[i].texture.as_ref()?;
+                return Some((texture.0.id(), texture.1, texture.2));
+            }
+            self.shapes.remove(i);
+        }
+        if self.shapes.len() >= MAX_SHAPE_TEXTURES {
+            self.shapes.remove(0);
+        }
+        let max_side = ctx.input(|i| i.max_texture_side).min(u32::MAX as usize) as f32;
+        let texture = rasterize(&shape, width, height, scale)
+            .filter(|(image, _)| image.width as f32 <= max_side && image.height as f32 <= max_side)
+            .map(|(image, offset)| {
+                let size = [image.width as usize, image.height as usize];
+                let pixels = ColorImage::from_rgba_unmultiplied(size, &image.pixels);
+                let handle = ctx.load_texture("letter-shape", pixels, TextureOptions::LINEAR);
+                (handle, offset, [image.width as f32, image.height as f32])
+            });
+        let result = texture.as_ref().map(|t| (t.0.id(), t.1, t.2));
+        self.shapes.push(ShapeTexture {
+            shape,
+            size,
+            texture,
+        });
+        result
     }
 
     /// Текстура картинки (распаковывает и загружает при первом показе).
