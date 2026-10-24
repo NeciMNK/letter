@@ -8,11 +8,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use letter_model::{
-    Anchor, AnchorAlign, AnchorPosition, Distance, HorizontalFrom, ImageData, Picture, Placement,
-    VerticalFrom, Wrap,
+    Anchor, AnchorAlign, AnchorPosition, Block, Distance, Frame, HorizontalFrom, ImageData,
+    Picture, Placement, VerticalFrom, Wrap,
 };
 
 use crate::fib::{i16_at, u16_at, u32_at};
+use crate::shapes::{self, ShapeRecord};
 
 /// EMU в одном twip (1/20 пункта).
 const EMU_PER_TWIP: i64 = 635;
@@ -22,20 +23,20 @@ const PICF_SIZE: usize = 68;
 
 /// Заголовок записи OfficeArt.
 #[derive(Debug, Clone, Copy)]
-struct Record {
+pub(crate) struct Record {
     /// Версия: 0xF — контейнер с записями внутри.
-    version: u16,
+    pub version: u16,
     /// Номер варианта (у картинок — вид и число меток).
-    instance: u16,
-    kind: u16,
+    pub instance: u16,
+    pub kind: u16,
     /// Начало данных записи.
-    start: usize,
+    pub start: usize,
     /// Конец данных записи.
-    end: usize,
+    pub end: usize,
 }
 
 /// Записи подряд в `bytes[from..to]`; испорченная запись обрывает список.
-fn records(bytes: &[u8], from: usize, to: usize) -> Vec<Record> {
+pub(crate) fn records(bytes: &[u8], from: usize, to: usize) -> Vec<Record> {
     let to = to.min(bytes.len());
     let mut out = Vec::new();
     let mut at = from;
@@ -201,9 +202,14 @@ impl Media {
     }
 }
 
-/// Картинка в строке по смещению `offset` в потоке `Data`; фигура без
-/// картинки — `None`.
-pub(crate) fn inline(data: &[u8], offset: usize, media: &Media) -> Option<Picture> {
+/// Картинка или фигура в строке по смещению `offset` в потоке `Data`;
+/// `text` — текст надписи по номеру фигуры.
+pub(crate) fn inline(
+    data: &[u8],
+    offset: usize,
+    media: &Media,
+    text: &dyn Fn(u32) -> Vec<Block>,
+) -> Option<Picture> {
     let picf = data.get(offset..offset + PICF_SIZE)?;
     let size = u32_at(picf, 0)? as usize;
     let header = usize::from(u16_at(picf, 4)?).max(PICF_SIZE);
@@ -219,9 +225,17 @@ pub(crate) fn inline(data: &[u8], offset: usize, media: &Media) -> Option<Pictur
     let crop = |a: usize, b: usize| goal(a) + goal(b);
     let width = (goal(28) - crop(36, 40)).max(0) * scale(32) / 1000 * EMU_PER_TWIP;
     let height = (goal(30) - crop(38, 42)).max(0) * scale(34) / 1000 * EMU_PER_TWIP;
-    // Фигуры в строке без картинки пока не читаются.
-    let image = media.image(find_blip(data, at, end, &[])?);
-    Some(picture(width, height, Some(image), None))
+    if let Some(blip) = find_blip(data, at, end, &[]) {
+        return Some(picture(width, height, Some(media.image(blip)), None));
+    }
+    // Фигура без картинки; пустая рамка картинки (вид 75) — не фигура.
+    let record = shapes::shapes_in(data, at, end)
+        .into_iter()
+        .next()
+        .filter(|r| r.kind != 75)?;
+    let mut picture = picture(width, height, None, None);
+    picture.shape = Some(Arc::new(shapes::shape(&record, text)));
+    Some(picture)
 }
 
 fn picture(
@@ -248,8 +262,8 @@ fn picture(
 pub(crate) struct Drawings {
     /// Картинки хранилища (`pib` — номер с 1).
     blips: Vec<Option<Blip>>,
-    /// Свойства фигуры (номер свойства и значение) по её номеру (`spid`).
-    shapes: HashMap<u32, Vec<(u16, u32)>>,
+    /// Фигуры по номеру (`spid`).
+    shapes: HashMap<u32, ShapeRecord>,
 }
 
 impl Drawings {
@@ -285,36 +299,21 @@ impl Drawings {
         drawings
     }
 
-    /// Номера картинок у фигур среди записей (с заходом в контейнеры).
+    /// Фигуры среди записей; у группы её фигуры лежат внутри неё.
     fn collect_shapes(&mut self, bytes: &[u8], from: usize, to: usize) {
-        for record in records(bytes, from, to) {
-            match record.kind {
-                0xF004 => {
-                    let inner = records(bytes, record.start, record.end);
-                    let spid = inner
-                        .iter()
-                        .find(|r| r.kind == 0xF00A)
-                        .and_then(|r| u32_at(bytes, r.start));
-                    let props: Vec<(u16, u32)> = inner
-                        .iter()
-                        .filter(|r| matches!(r.kind, 0xF00B | 0xF121 | 0xF122))
-                        .flat_map(|r| properties(bytes, r))
-                        .collect();
-                    if let Some(spid) = spid {
-                        self.shapes.insert(spid, props);
-                    }
-                    // В группе — свои фигуры.
-                    self.collect_shapes(bytes, record.start, record.end);
-                }
-                _ if record.version == 0xF => self.collect_shapes(bytes, record.start, record.end),
-                _ => {}
-            }
+        for shape in shapes::shapes_in(bytes, from, to) {
+            self.shapes.insert(shape.spid, shape);
         }
     }
 
-    /// Плавающая картинка по записи `FSPA` (26 байт); у фигуры без
-    /// картинки — `None`.
-    pub fn floating(&self, fspa: &[u8], media: &Media) -> Option<Picture> {
+    /// Плавающая картинка или фигура по записи `FSPA` (26 байт); `text`
+    /// — текст надписи по номеру фигуры.
+    pub fn floating(
+        &self,
+        fspa: &[u8],
+        media: &Media,
+        text: &dyn Fn(u32) -> Vec<Block>,
+    ) -> Option<Picture> {
         let spid = u32_at(fspa, 0)?;
         let side = |i: usize| i64::from(u32_at(fspa, 4 + i * 4).map_or(0, |v| v as i32));
         let (left, top, right, bottom) = (side(0), side(1), side(2), side(3));
@@ -336,8 +335,8 @@ impl Drawings {
             5 => Wrap::Through,
             _ => Wrap::None,
         };
-        let props = self.shapes.get(&spid).map_or(&[][..], Vec::as_slice);
-        let prop = |id: u16| props.iter().find(|(p, _)| *p == id).map(|&(_, v)| v);
+        let record = self.shapes.get(&spid)?;
+        let prop = |id: u16| record.prop(id);
         // Word 2000 и новее пишет точнее: от чего отсчитывать
         // (`posrelh`, `posrelv`) и выравнивание (`posh`, `posv`).
         let horizontal = match prop(0x0390) {
@@ -382,27 +381,48 @@ impl Drawings {
                 bottom: distance(0x0387, 0),
             },
         };
-        // Фигуры без картинки (надписи, стрелки) пока не читаются.
+        // Повёрнутая почти поперёк фигура записана повёрнутым
+        // прямоугольником.
+        let rotation = shapes::rotation(record);
+        let frame = shapes::rotated_frame(
+            Frame {
+                x: left * EMU_PER_TWIP,
+                y: top * EMU_PER_TWIP,
+                width: (right - left).max(0) * EMU_PER_TWIP,
+                height: (bottom - top).max(0) * EMU_PER_TWIP,
+            },
+            rotation,
+        );
+        let shift = |placement: &mut Placement, by: i64| {
+            if let Placement::Offset(offset) = placement {
+                *offset += by;
+            }
+        };
+        let mut anchor = anchor;
+        shift(
+            &mut anchor.horizontal.placement,
+            frame.x - left * EMU_PER_TWIP,
+        );
+        shift(&mut anchor.vertical.placement, frame.y - top * EMU_PER_TWIP);
+        // Фигура «как знак» (так LibreOffice пишет фигуры в строке):
+        // от знака и строки без сдвига — значит, в строке.
+        let as_character = prop(0x0390) == Some(3)
+            && prop(0x0392) == Some(3)
+            && anchor.horizontal.placement == Placement::Offset(0)
+            && anchor.vertical.placement == Placement::Offset(0);
         let blip =
-            prop(0x0104).and_then(|pib| self.blips.get((pib as usize).checked_sub(1)?)?.clone())?;
-        let image = Some(media.image(blip));
-        Some(picture(
-            (right - left).max(0) * EMU_PER_TWIP,
-            (bottom - top).max(0) * EMU_PER_TWIP,
-            image,
-            Some(anchor),
-        ))
+            prop(0x0104).and_then(|pib| self.blips.get((pib as usize).checked_sub(1)?)?.clone());
+        let mut picture = picture(
+            frame.width,
+            frame.height,
+            blip.map(|b| media.image(b)),
+            (!as_character).then_some(anchor),
+        );
+        if picture.image.is_none() {
+            picture.shape = Some(Arc::new(shapes::shape(record, text)));
+        }
+        Some(picture)
     }
-}
-
-/// Свойства фигуры из таблицы свойств (`OfficeArtFOPT`): записи по
-/// 6 байт — номер (с флагами в старших битах) и значение.
-fn properties(bytes: &[u8], record: &Record) -> Vec<(u16, u32)> {
-    (0..usize::from(record.instance))
-        .map(|i| record.start + i * 6)
-        .take_while(|&at| at + 6 <= record.end)
-        .filter_map(|at| Some((u16_at(bytes, at)? & 0x3FFF, u32_at(bytes, at + 2)?)))
-        .collect()
 }
 
 #[cfg(test)]
@@ -440,7 +460,7 @@ mod tests {
         data.extend(shape);
         data.extend(png_blip());
         let media = Media::default();
-        let picture = inline(&data, 3, &media).unwrap();
+        let picture = inline(&data, 3, &media, &|_| Vec::new()).unwrap();
         assert_eq!(picture.width, 720 * EMU_PER_TWIP);
         assert_eq!(picture.height, 720 * EMU_PER_TWIP);
         let image = picture.image.unwrap();
@@ -448,7 +468,7 @@ mod tests {
         assert_eq!(image.bytes, b"\x89PNG-data");
         // Обрезанный поток — не падение.
         for len in 0..data.len() {
-            let _ = inline(&data[..len], 3, &media);
+            let _ = inline(&data[..len], 3, &media, &|_| Vec::new());
         }
     }
 
@@ -476,7 +496,7 @@ mod tests {
         fspa.extend((1u16 << 1 | 2 << 5 | 0x4000).to_le_bytes());
         fspa.extend([0; 4]);
         let media = Media::default();
-        let picture = drawings.floating(&fspa, &media).unwrap();
+        let picture = drawings.floating(&fspa, &media, &|_| Vec::new()).unwrap();
         assert_eq!(picture.width, 1440 * EMU_PER_TWIP);
         assert_eq!(picture.height, 720 * EMU_PER_TWIP);
         assert_eq!(picture.image.unwrap().bytes, b"\x89PNG-data");

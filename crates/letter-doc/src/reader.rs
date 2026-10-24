@@ -208,6 +208,28 @@ pub(crate) fn read(data: &[u8], password: Option<&str>) -> Result<Document, Read
             .unwrap_or_default()
     };
     let (shapes_main, shapes_headers) = (shapes(index::PLC_SPA_MOM), shapes(index::PLC_SPA_HDR));
+    // Тексты надписей: номер фигуры (`lid` в `FTXBXS`) и кусок текста.
+    let textboxes: Vec<(u32, std::ops::Range<u32>)> = [
+        (index::PLCFTXBX_TXT, fib.stories.textboxes_start()),
+        (
+            index::PLCF_HDRTXBX_TXT,
+            fib.stories.header_textboxes_start(),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(i, start)| Some((fib.part(&table, i).and_then(|b| plc(b, 22))?, start)))
+    .flat_map(|((cps, entries), start)| {
+        entries
+            .into_iter()
+            .enumerate()
+            .filter_map(|(k, entry)| {
+                let lid = u32_at(entry, 14)?;
+                let (a, b) = (*cps.get(k)?, *cps.get(k + 1)?);
+                Some((lid, start.saturating_add(a)..start.saturating_add(b)))
+            })
+            .collect::<Vec<_>>()
+    })
+    .collect();
     let media = Media::default();
 
     let ids = style_ids(&sheet);
@@ -239,6 +261,7 @@ pub(crate) fn read(data: &[u8], password: Option<&str>) -> Result<Document, Read
         drawings: &drawings,
         shapes_main: &shapes_main,
         shapes_headers: &shapes_headers,
+        textboxes: &textboxes,
         media: &media,
     };
     doc.sections = builder.build();
@@ -621,6 +644,8 @@ struct Builder<'a> {
     drawings: &'a Drawings,
     shapes_main: &'a [(u32, &'a [u8])],
     shapes_headers: &'a [(u32, &'a [u8])],
+    /// Тексты надписей: номер фигуры и кусок текста (`CP`).
+    textboxes: &'a [(u32, std::ops::Range<u32>)],
     /// Номера файлов картинок.
     media: &'a Media,
 }
@@ -849,6 +874,8 @@ enum Story {
     Endnote,
     Comment,
     Header,
+    /// Текст надписи.
+    Textbox,
 }
 
 impl Builder<'_> {
@@ -952,7 +979,7 @@ impl Builder<'_> {
                 0x01 | 0x08 if in_code => continue,
                 0x01 | 0x08 => {
                     let picture = if ch.code == 0x01 {
-                        self.inline_picture(ch)
+                        self.inline_picture(ch, story)
                     } else {
                         self.floating_picture(cp, story)
                     };
@@ -1168,7 +1195,7 @@ impl Builder<'_> {
     /// Добавочное оформление куска (после «быстрого сохранения»).
     /// Картинка в строке: знак 0x01 со ссылкой в поток `Data`
     /// (`sprmCPicLocation`).
-    fn inline_picture(&self, ch: &Char) -> Option<Picture> {
+    fn inline_picture(&self, ch: &Char, story: Story) -> Option<Picture> {
         let direct = find(self.chpx, ch.fc).map_or(&[][..], |r| r.grpprl.as_slice());
         let all: Vec<_> = [direct, self.prc(ch)].into_iter().flat_map(sprms).collect();
         // Данные поля (`sprmCFData`) — не картинка.
@@ -1183,7 +1210,28 @@ impl Builder<'_> {
             .filter(|(sprm, _)| *sprm == 0x6A03)
             .filter_map(|(_, op)| u32_at(op, 0))
             .next_back()?;
-        pictures::inline(self.data, offset as usize, self.media)
+        // Надпись внутри надписи не читаем: так не зациклиться на
+        // испорченном файле.
+        let text = |spid| match story {
+            Story::Textbox => Vec::new(),
+            _ => self.textbox(spid),
+        };
+        pictures::inline(self.data, offset as usize, self.media, &text)
+    }
+
+    /// Текст надписи фигуры `spid`.
+    fn textbox(&self, spid: u32) -> Vec<Block> {
+        let Some((_, range)) = self.textboxes.iter().find(|(lid, _)| *lid == spid) else {
+            return Vec::new();
+        };
+        let mut blocks = self.blocks(range.clone(), Story::Textbox);
+        // Как у колонтитула, в конце — лишний знак абзаца.
+        if blocks.len() > 1
+            && matches!(blocks.last(), Some(Block::Paragraph(p)) if p.content.is_empty())
+        {
+            blocks.pop();
+        }
+        blocks
     }
 
     /// Плавающая картинка у знака привязки 0x08 в позиции `cp`.
@@ -1197,7 +1245,8 @@ impl Builder<'_> {
             _ => return None,
         };
         let (_, fspa) = shapes.iter().find(|(at, _)| *at == cp)?;
-        self.drawings.floating(fspa, self.media)
+        self.drawings
+            .floating(fspa, self.media, &|spid| self.textbox(spid))
     }
 
     fn prc(&self, ch: &Char) -> &[u8] {

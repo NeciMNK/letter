@@ -30,6 +30,7 @@ const FIXTURES: &[&str] = &[
     "links",
     "image",
     "floating",
+    "shapes",
 ];
 
 fn dir() -> PathBuf {
@@ -66,8 +67,11 @@ fn text_matches_the_original_docx() {
     for name in FIXTURES {
         // В `pages` LibreOffice превратил разрыв страницы в абзаце
         // в «с новой страницы» у этого абзаца.
-        let expected = docx(name).plain_text().replace('\u{c}', "");
-        assert_eq!(lines(&doc(name).plain_text()), lines(&expected), "{name}");
+        // В `shapes` текст фигуры у LibreOffice — отдельная надпись, то
+        // есть лишний знак объекта: знаки объектов не сравниваем.
+        let expected = docx(name).plain_text().replace(['\u{c}', '\u{fffc}'], "");
+        let text = doc(name).plain_text().replace('\u{fffc}', "");
+        assert_eq!(lines(&text), lines(&expected), "{name}");
     }
 }
 
@@ -553,6 +557,105 @@ fn pictures_survive_saving_as_docx() {
     }
 }
 
+/// Фигуры документа по порядку.
+fn shapes(doc: &Document) -> Vec<&letter_model::Shape> {
+    pictures(doc)
+        .into_iter()
+        .filter_map(|p| p.shape.as_deref())
+        .collect()
+}
+
+#[test]
+fn shapes_and_text_boxes() {
+    use letter_model::{ColorBase, Geometry, LineDash, LineEnd, PathCommand};
+    let doc = doc("shapes");
+    let all = shapes(&doc);
+    // LibreOffice пишет фигуры своим контуром, а текст фигуры —
+    // отдельной надписью поверх неё: 5 фигур, надпись и группа.
+    assert_eq!(all.len(), 7);
+    let rgb = |s: &letter_model::Shape| match s.fill.as_ref().map(|f| &f.base) {
+        Some(ColorBase::Rgb(c)) => Some(*c),
+        _ => None,
+    };
+    // Прямоугольник: синяя заливка и тёмная линия.
+    assert_eq!(all[0].geometry, Geometry::preset("rect"));
+    assert_eq!(rgb(all[0]), Some([79, 129, 189]));
+    assert!(all[0].line.is_some());
+    // Надпись: прозрачная, без линии, с текстом.
+    let text: String = all[1].text.iter().map(Block::plain_text).collect();
+    assert_eq!(text, "Надпись в прямоугольнике");
+    assert!(all[1].line.is_none());
+    // Стрелка — свой контур по формулам: острие справа посередине.
+    let Geometry::Custom(paths) = &all[2].geometry else {
+        panic!("стрелка: {:?}", all[2].geometry);
+    };
+    let (w, h) = (paths[0].width, paths[0].height);
+    assert!(
+        paths[0]
+            .commands
+            .iter()
+            .any(|c| matches!(*c, PathCommand::LineTo(x, y) if x == w && (y - h / 2).abs() <= 2))
+    );
+    assert_eq!(rgb(all[2]), Some([255, 192, 0]));
+    assert!(all[2].line.is_none());
+    // Овал без заливки, красный пунктир.
+    assert!(all[3].fill.is_none());
+    let line = all[3].line.as_ref().unwrap();
+    assert_eq!(line.dash, LineDash::Dash);
+    // Линия со стрелкой на конце.
+    assert_eq!(all[4].line.as_ref().unwrap().tail, LineEnd::Triangle);
+    // Треугольник своим контуром.
+    let Geometry::Custom(paths) = &all[5].geometry else {
+        panic!("треугольник");
+    };
+    assert_eq!(paths[0].commands[0], PathCommand::MoveTo(50, 0));
+    // Группа из двух фигур.
+    let Geometry::Group(group) = &all[6].geometry else {
+        panic!("группа");
+    };
+    assert_eq!(group.children.len(), 2);
+    assert_eq!(rgb(&group.children[1].shape), Some([192, 80, 77]));
+    // Положение и размеры — как в исходном .docx.
+    let source = docx("shapes");
+    let (pictures, original) = (pictures(&doc), pictures(&source));
+    let group_picture = pictures
+        .iter()
+        .find(|p| p.shape.as_deref() == Some(all[6]))
+        .unwrap();
+    let original_group = original
+        .iter()
+        .find(|p| {
+            matches!(
+                p.shape.as_deref().map(|s| &s.geometry),
+                Some(Geometry::Group(_))
+            )
+        })
+        .unwrap();
+    assert!(close(group_picture.width, original_group.width));
+    assert!(close(group_picture.height, original_group.height));
+}
+
+#[test]
+fn shapes_survive_saving_as_docx() {
+    // Фигуры из .doc (без исходного XML) записываются в .docx заново.
+    let doc = doc("shapes");
+    let bytes = letter_docx::write_bytes(&doc).unwrap();
+    let back = letter_docx::read_bytes(&bytes).unwrap();
+    let strip = |s: &letter_model::Shape| {
+        let mut s = s.clone();
+        s.text.clear();
+        s
+    };
+    let (before, after) = (shapes(&doc), shapes(&back));
+    assert_eq!(after.len(), before.len());
+    for (a, b) in before.iter().zip(&after) {
+        assert_eq!(strip(a), strip(b));
+        let text =
+            |s: &letter_model::Shape| -> String { s.text.iter().map(Block::plain_text).collect() };
+        assert_eq!(text(a), text(b));
+    }
+}
+
 #[test]
 fn encrypted_documents_open_with_password() {
     // RC4 — файл LibreOffice, RC4 CryptoAPI и XOR — сделаны программой
@@ -610,7 +713,7 @@ fn broken_files_are_errors_not_crashes() {
     assert!(matches!(read(b"not a doc"), Err(ReadError::NotADoc)));
     assert!(!is_doc(b"PK\x03\x04"));
     // Обрезанные и испорченные копии: только ошибки, без падений.
-    for name in ["table", "floating", "lists"] {
+    for name in ["table", "floating", "lists", "shapes"] {
         let bytes = std::fs::read(dir().join(format!("doc/{name}.doc"))).unwrap();
         assert!(is_doc(&bytes));
         for len in (0..bytes.len()).step_by(997) {

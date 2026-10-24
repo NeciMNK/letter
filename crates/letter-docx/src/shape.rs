@@ -4,6 +4,8 @@
 //! Из фигуры программа понимает контур (готовый или свой), заливку,
 //! линию со стрелками, поворот, отражение и текст надписи. Весь элемент
 //! рисунка при этом хранится как есть ([`letter_model::Picture::raw`]).
+//! Фигура без исходного XML (например, из .doc) записывается заново
+//! ([`graphic_data_xml`]).
 
 use letter_model::{
     ColorBase, ColorMod, DEFAULT_LINE_WIDTH, DEFAULT_TEXT_INSETS, Frame, Geometry, Group,
@@ -381,6 +383,258 @@ fn read_color(e: &Element) -> Option<ShapeColor> {
         })
         .collect();
     Some(ShapeColor { base, mods })
+}
+
+const WPS_NS: &str = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape";
+const WPG_NS: &str = "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup";
+
+/// `a:graphicData` фигуры или группы размером `width` × `height` EMU —
+/// для фигуры без исходного XML. Пространство имён `a:` должно быть
+/// объявлено выше.
+pub(crate) fn graphic_data_xml(shape: &Shape, width: i64, height: i64) -> String {
+    let frame = Frame {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    match &shape.geometry {
+        Geometry::Group(group) => format!(
+            "<a:graphicData uri=\"{WPG_NS}\"><wpg:wgp xmlns:wpg=\"{WPG_NS}\" \
+             xmlns:wps=\"{WPS_NS}\"><wpg:cNvGrpSpPr/>{}</wpg:wgp></a:graphicData>",
+            group_body(shape, group, frame, 0)
+        ),
+        _ => format!(
+            "<a:graphicData uri=\"{WPS_NS}\">{}</a:graphicData>",
+            wsp_xml(shape, frame, true)
+        ),
+    }
+}
+
+/// Свойства и состав группы (после `cNvGrpSpPr`).
+fn group_body(shape: &Shape, group: &Group, frame: Frame, depth: usize) -> String {
+    let inner = group.frame;
+    let mut out = format!(
+        "<wpg:grpSpPr><a:xfrm{}><a:off x=\"{}\" y=\"{}\"/><a:ext cx=\"{}\" cy=\"{}\"/>\
+         <a:chOff x=\"{}\" y=\"{}\"/><a:chExt cx=\"{}\" cy=\"{}\"/></a:xfrm></wpg:grpSpPr>",
+        transform_attrs(shape),
+        frame.x,
+        frame.y,
+        frame.width,
+        frame.height,
+        inner.x,
+        inner.y,
+        inner.width,
+        inner.height
+    );
+    for child in &group.children {
+        match &child.shape.geometry {
+            Geometry::Group(nested) if depth < MAX_DEPTH => out.push_str(&format!(
+                "<wpg:grpSp><wpg:cNvGrpSpPr/>{}</wpg:grpSp>",
+                group_body(&child.shape, nested, child.frame, depth + 1)
+            )),
+            Geometry::Group(_) => {}
+            _ => out.push_str(&wsp_xml(&child.shape, child.frame, false)),
+        }
+    }
+    out
+}
+
+/// Поворот и отражение (атрибуты `a:xfrm`).
+fn transform_attrs(shape: &Shape) -> String {
+    let mut out = String::new();
+    if shape.rotation != 0 {
+        out.push_str(&format!(" rot=\"{}\"", shape.rotation));
+    }
+    if shape.flip_horizontal {
+        out.push_str(" flipH=\"1\"");
+    }
+    if shape.flip_vertical {
+        out.push_str(" flipV=\"1\"");
+    }
+    out
+}
+
+/// Фигура `wps:wsp`; `top` — сама по себе (с объявлением пространства
+/// имён), а не в группе.
+fn wsp_xml(shape: &Shape, frame: Frame, top: bool) -> String {
+    let ns = if top {
+        format!(" xmlns:wps=\"{WPS_NS}\"")
+    } else {
+        String::new()
+    };
+    let text_box = if shape.text.is_empty() {
+        ""
+    } else {
+        " txBox=\"1\""
+    };
+    let mut out = format!(
+        "<wps:wsp{ns}><wps:cNvSpPr{text_box}/><wps:spPr><a:xfrm{}><a:off x=\"{}\" y=\"{}\"/>\
+         <a:ext cx=\"{}\" cy=\"{}\"/></a:xfrm>{}",
+        transform_attrs(shape),
+        frame.x,
+        frame.y,
+        frame.width,
+        frame.height,
+        geometry_xml(&shape.geometry)
+    );
+    match &shape.fill {
+        Some(color) => out.push_str(&format!("<a:solidFill>{}</a:solidFill>", color_xml(color))),
+        None => out.push_str("<a:noFill/>"),
+    }
+    out.push_str(&line_xml(shape.line.as_ref()));
+    out.push_str("</wps:spPr>");
+    if let Some(color) = &shape.text_color {
+        let zero = "<a:srgbClr val=\"000000\"/>";
+        out.push_str(&format!(
+            "<wps:style><a:lnRef idx=\"0\">{zero}</a:lnRef><a:fillRef idx=\"0\">{zero}</a:fillRef>\
+             <a:effectRef idx=\"0\">{zero}</a:effectRef><a:fontRef idx=\"minor\">{}</a:fontRef>\
+             </wps:style>",
+            color_xml(color)
+        ));
+    }
+    if !shape.text.is_empty() {
+        out.push_str(&format!(
+            "<wps:txbx><w:txbxContent>{}</w:txbxContent></wps:txbx>",
+            crate::serialize::blocks_xml(&shape.text)
+        ));
+    }
+    let anchor = match shape.text_anchor {
+        TextAnchor::Top => "t",
+        TextAnchor::Center => "ctr",
+        TextAnchor::Bottom => "b",
+    };
+    let [l, t, r, b] = shape.text_insets;
+    out.push_str(&format!(
+        "<wps:bodyPr lIns=\"{l}\" tIns=\"{t}\" rIns=\"{r}\" bIns=\"{b}\" anchor=\"{anchor}\"/>\
+         </wps:wsp>"
+    ));
+    out
+}
+
+/// Контур: `a:prstGeom` или `a:custGeom`.
+fn geometry_xml(geometry: &Geometry) -> String {
+    match geometry {
+        Geometry::Preset { name, adjust } => {
+            let guides: String = adjust
+                .iter()
+                .map(|(name, value)| {
+                    format!(
+                        "<a:gd name=\"{}\" fmla=\"val {value}\"/>",
+                        crate::serialize::escape_attr(name)
+                    )
+                })
+                .collect();
+            format!(
+                "<a:prstGeom prst=\"{}\"><a:avLst>{guides}</a:avLst></a:prstGeom>",
+                crate::serialize::escape_attr(name)
+            )
+        }
+        Geometry::Custom(paths) => {
+            let mut out = String::from(
+                "<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/>\
+                 <a:rect l=\"l\" t=\"t\" r=\"r\" b=\"b\"/><a:pathLst>",
+            );
+            for path in paths {
+                out.push_str(&format!(
+                    "<a:path w=\"{}\" h=\"{}\"",
+                    path.width, path.height
+                ));
+                if !path.fill {
+                    out.push_str(" fill=\"none\"");
+                }
+                if !path.stroke {
+                    out.push_str(" stroke=\"0\"");
+                }
+                out.push('>');
+                let pt = |(x, y): (i64, i64)| format!("<a:pt x=\"{x}\" y=\"{y}\"/>");
+                for command in &path.commands {
+                    out.push_str(&match *command {
+                        PathCommand::MoveTo(x, y) => format!("<a:moveTo>{}</a:moveTo>", pt((x, y))),
+                        PathCommand::LineTo(x, y) => format!("<a:lnTo>{}</a:lnTo>", pt((x, y))),
+                        PathCommand::CubicTo(points) => {
+                            format!("<a:cubicBezTo>{}</a:cubicBezTo>", points.map(pt).concat())
+                        }
+                        PathCommand::QuadTo(points) => {
+                            format!("<a:quadBezTo>{}</a:quadBezTo>", points.map(pt).concat())
+                        }
+                        PathCommand::ArcTo {
+                            width_radius,
+                            height_radius,
+                            start,
+                            swing,
+                        } => format!(
+                            "<a:arcTo wR=\"{width_radius}\" hR=\"{height_radius}\" \
+                             stAng=\"{start}\" swAng=\"{swing}\"/>"
+                        ),
+                        PathCommand::Close => "<a:close/>".to_string(),
+                    });
+                }
+                out.push_str("</a:path>");
+            }
+            out.push_str("</a:pathLst></a:custGeom>");
+            out
+        }
+        Geometry::Group(_) => "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>".to_string(),
+    }
+}
+
+/// Линия контура `a:ln`; `None` — без линии.
+fn line_xml(line: Option<&ShapeLine>) -> String {
+    let Some(line) = line else {
+        return "<a:ln><a:noFill/></a:ln>".to_string();
+    };
+    let dash = match line.dash {
+        LineDash::Solid => "solid",
+        LineDash::Dot => "sysDot",
+        LineDash::Dash => "dash",
+        LineDash::DashDot => "dashDot",
+    };
+    let end = |name: &str, end: LineEnd| {
+        let kind = match end {
+            LineEnd::None => return String::new(),
+            LineEnd::Triangle => "triangle",
+            LineEnd::Stealth => "stealth",
+            LineEnd::Arrow => "arrow",
+            LineEnd::Diamond => "diamond",
+            LineEnd::Oval => "oval",
+        };
+        format!("<a:{name} type=\"{kind}\"/>")
+    };
+    format!(
+        "<a:ln w=\"{}\"><a:solidFill>{}</a:solidFill><a:prstDash val=\"{dash}\"/>{}{}</a:ln>",
+        line.width,
+        color_xml(&line.color),
+        end("headEnd", line.head),
+        end("tailEnd", line.tail)
+    )
+}
+
+/// Цвет: `a:srgbClr` или `a:schemeClr` с поправками.
+fn color_xml(color: &ShapeColor) -> String {
+    let mods: String = color
+        .mods
+        .iter()
+        .map(|m| {
+            let (name, value) = match *m {
+                ColorMod::LumMod(v) => ("lumMod", v),
+                ColorMod::LumOff(v) => ("lumOff", v),
+                ColorMod::Shade(v) => ("shade", v),
+                ColorMod::Tint(v) => ("tint", v),
+                ColorMod::Alpha(v) => ("alpha", v),
+            };
+            format!("<a:{name} val=\"{value}\"/>")
+        })
+        .collect();
+    match &color.base {
+        ColorBase::Rgb([r, g, b]) => {
+            format!("<a:srgbClr val=\"{r:02X}{g:02X}{b:02X}\">{mods}</a:srgbClr>")
+        }
+        ColorBase::Scheme(name) => format!(
+            "<a:schemeClr val=\"{}\">{mods}</a:schemeClr>",
+            crate::serialize::escape_attr(name)
+        ),
+    }
 }
 
 /// Несколько самых частых именованных цветов (`a:prstClr`).

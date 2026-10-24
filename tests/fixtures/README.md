@@ -93,7 +93,7 @@ soffice --headless --convert-to odt ../docx/имя.docx
 ## Word 97–2003 (`doc/`)
 
 `plain-text`, `bold-italic`, `headings`, `lists`, `table`, `ru-en`, `pages`,
-`header-footer`, `headers`, `notes`, `comments`, `sections`, `borders`, `cells`, `links`, `image`, `floating` — наши файлы из `docx/`, сохранённые LibreOffice в формате
+`header-footer`, `headers`, `notes`, `comments`, `sections`, `borders`, `cells`, `links`, `image`, `floating`, `shapes` — наши файлы из `docx/`, сохранённые LibreOffice в формате
 Word 97–2003:
 
 ```sh

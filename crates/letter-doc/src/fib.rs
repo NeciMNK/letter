@@ -62,6 +62,10 @@ pub(crate) mod index {
     pub const PLCFEND_TXT: usize = 47;
     /// Рисунки документа (`OfficeArtContent`).
     pub const DGG_INFO: usize = 50;
+    /// Надписи основного текста (`PlcftxbxTxt`) и колонтитулов
+    /// (`PlcfHdrtxbxTxt`).
+    pub const PLCFTXBX_TXT: usize = 56;
+    pub const PLCF_HDRTXBX_TXT: usize = 58;
     /// Списки (`PlfLst`, за ним — уровни `LVL`) и их варианты (`PlfLfo`).
     pub const PLF_LST: usize = 73;
     pub const PLF_LFO: usize = 74;
@@ -83,6 +87,10 @@ pub(crate) struct Stories {
     pub comments: u32,
     /// Знаков в концевых сносках.
     pub endnotes: u32,
+    /// Знаков в надписях основного текста.
+    pub textboxes: u32,
+    /// Знаков в надписях колонтитулов.
+    pub header_textboxes: u32,
 }
 
 impl Stories {
@@ -108,9 +116,20 @@ impl Stories {
         self.comments_start().saturating_add(self.comments)
     }
 
+    /// Начало надписей основного текста.
+    pub fn textboxes_start(&self) -> u32 {
+        self.endnotes_start().saturating_add(self.endnotes)
+    }
+
+    /// Начало надписей колонтитулов.
+    pub fn header_textboxes_start(&self) -> u32 {
+        self.textboxes_start().saturating_add(self.textboxes)
+    }
+
     /// Всего знаков во всех этих частях.
     pub fn total(&self) -> u32 {
-        self.endnotes_start().saturating_add(self.endnotes)
+        self.header_textboxes_start()
+            .saturating_add(self.header_textboxes)
     }
 }
 
@@ -185,6 +204,8 @@ impl Fib {
             macros: ccp(6),
             comments: ccp(7),
             endnotes: ccp(8),
+            textboxes: ccp(9),
+            header_textboxes: ccp(10),
         };
         let at = rg_lw + cslw * 4;
         let count = usize::from(u16_at(stream, at).ok_or_else(short)?);
@@ -217,6 +238,8 @@ impl Fib {
             macros: ccp(3)?,
             comments: ccp(4)?,
             endnotes: ccp(5)?,
+            textboxes: ccp(6).unwrap_or(0),
+            header_textboxes: ccp(7).unwrap_or(0),
         };
         let pair = |at: usize| Some((u32_at(stream, at)?, u32_at(stream, at + 4)?));
         // Пары 0–37 — с 0x58; дальше четыре слова о страницах оформления
@@ -351,12 +374,16 @@ mod tests {
             macros: 1,
             comments: 5,
             endnotes: 7,
+            textboxes: 3,
+            header_textboxes: 2,
         };
         assert_eq!(stories.footnotes_start(), 100);
         assert_eq!(stories.headers_start(), 110);
         assert_eq!(stories.comments_start(), 131);
         assert_eq!(stories.endnotes_start(), 136);
-        assert_eq!(stories.total(), 143);
+        assert_eq!(stories.textboxes_start(), 143);
+        assert_eq!(stories.header_textboxes_start(), 146);
+        assert_eq!(stories.total(), 148);
     }
 
     #[test]
