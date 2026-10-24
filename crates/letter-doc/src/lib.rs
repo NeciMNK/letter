@@ -1,5 +1,5 @@
-//! Чтение старого двоичного формата .doc (Word 97–2003, MS-DOC, а также
-//! Word 6.0 и Word 95).
+//! Чтение и запись старого двоичного формата .doc (Word 97–2003, MS-DOC;
+//! читаются и Word 6.0 и Word 95).
 //!
 //! Файл .doc — составной файл OLE. В потоке `WordDocument` лежат
 //! заголовок (FIB) и сам текст, в потоке `0Table` или `1Table` —
@@ -27,6 +27,12 @@
 //! Документ с паролем на открытие (RC4, RC4 CryptoAPI или XOR)
 //! читается функцией [`read_with_password`].
 //!
+//! Запись ([`write`]) — в формат Word 97–2003: текст одним куском в
+//! UTF-16, оформление, стили, разделы, таблицы, поля, гиперссылки,
+//! закладки, колонтитулы, сноски, примечания, списки, картинки в строке
+//! (плавающие тоже пишутся в строку) и сведения о документе. Фигуры,
+//! диаграммы и формулы пока не записываются.
+//!
 //! ```no_run
 //! let doc = letter_doc::read_file("старый.doc")?;
 //! println!("{}", doc.plain_text());
@@ -43,10 +49,13 @@ mod reader;
 mod sprm;
 mod styles;
 mod word6;
+mod writer;
 
 use std::path::Path;
 
 use letter_model::Document;
+
+pub use writer::WriteError;
 
 /// Почему не удалось прочитать файл .doc.
 #[derive(Debug, thiserror::Error)]
@@ -108,4 +117,24 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<Document, ReadError> {
 /// Похож ли файл на .doc: составной файл OLE с потоком `WordDocument`.
 pub fn is_doc(data: &[u8]) -> bool {
     reader::open(data).is_ok_and(|file| file.is_stream("/WordDocument"))
+}
+
+/// Записывает документ в формат .doc (Word 97–2003).
+///
+/// Записываются текст, оформление знаков и абзацев, стили, разделы,
+/// разрывы, таблицы, поля, гиперссылки и закладки.
+pub fn write(doc: &Document) -> Result<Vec<u8>, WriteError> {
+    writer::write(doc, false)
+}
+
+/// Записывает документ как шаблон .dot (Word 97–2003): то же, что
+/// [`write`], с признаком шаблона.
+pub fn write_template(doc: &Document) -> Result<Vec<u8>, WriteError> {
+    writer::write(doc, true)
+}
+
+/// Записывает документ в файл .doc.
+pub fn write_file(doc: &Document, path: impl AsRef<Path>) -> Result<(), WriteError> {
+    std::fs::write(path, write(doc)?)?;
+    Ok(())
 }

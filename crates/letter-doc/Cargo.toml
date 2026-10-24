@@ -1,6 +1,6 @@
 [package]
 name = "letter-doc"
-description = "Чтение старого двоичного формата .doc (Word 97–2003)."
+description = "Чтение и запись старого двоичного формата .doc (Word 97–2003)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -19,6 +19,7 @@ md-5 = "0.11"
 miniz_oxide = "0.8"
 sha1 = "0.11"
 thiserror = "2"
+uuid = "1"
 
 [dev-dependencies]
 letter-docx.workspace = true

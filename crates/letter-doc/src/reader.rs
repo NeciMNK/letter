@@ -1349,6 +1349,8 @@ fn flush_table(state: &mut TableState, blocks: &mut Vec<Block>) {
                     cell.props.borders = Some(look.borders.clone());
                 }
                 cell.props.shading = look.shading.clone().or_else(|| look.shading80.clone());
+                cell.props.v_merge = look.v_merge;
+                cell.props.v_align = look.v_align;
             }
             let (Some(&left), Some(&right)) = (row_edges.get(i), row_edges.get(i + 1)) else {
                 continue;

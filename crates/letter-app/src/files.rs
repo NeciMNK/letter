@@ -19,7 +19,7 @@ use letter_model::Document;
 pub enum FileFormat {
     /// Документ Word (.docx).
     Docx,
-    /// Старый документ Word 97–2003 (.doc, .dot) — только чтение.
+    /// Старый документ Word 97–2003 (.doc, .dot).
     Doc,
     /// RTF.
     Rtf,
@@ -42,9 +42,9 @@ impl FileFormat {
         })
     }
 
-    /// Можно ли записать документ в этом формате.
+    /// Можно ли записать документ в этом формате. Сейчас — во всех.
     pub fn writable(self) -> bool {
-        self != FileFormat::Doc
+        true
     }
 }
 
@@ -72,6 +72,7 @@ pub const SAVE_FILTERS: &[(&str, &[&str])] = &[
     ("filter-docm", &["docm"]),
     ("filter-dotx", &["dotx"]),
     ("filter-dotm", &["dotm"]),
+    ("filter-doc", &["doc"]),
     ("filter-rtf", &["rtf"]),
     ("filter-odt", &["odt"]),
     ("filter-txt", &["txt"]),
@@ -186,7 +187,10 @@ pub fn write(doc: &Document, path: &Path, password: Option<&str>) -> Result<(), 
             None => Ok(bytes),
         })
         .map_err(|e| fail(&e))?,
-        FileFormat::Doc => return Err(fail(&tr("error-read-only-format"))),
+        FileFormat::Doc if is_template(path) => {
+            letter_doc::write_template(doc).map_err(|e| fail(&e))?
+        }
+        FileFormat::Doc => letter_doc::write(doc).map_err(|e| fail(&e))?,
         FileFormat::Rtf => letter_rtf::write(doc).into_bytes(),
         FileFormat::Odt => letter_odt::write(doc).map_err(|e| fail(&e))?,
         FileFormat::Text(letter_text::Format::Text) => letter_text::write_txt(doc),
@@ -537,14 +541,18 @@ pub mod tests {
     }
 
     #[test]
-    fn old_word_documents_are_read_only() {
+    fn old_word_documents_open_and_save() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/doc/table.doc");
         assert_eq!(FileFormat::from_path(&path), Some(FileFormat::Doc));
-        assert!(!FileFormat::Doc.writable() && FileFormat::Docx.writable());
+        assert!(FileFormat::Doc.writable() && FileFormat::Docx.writable());
         let doc = read(&path).unwrap();
         assert!(doc.plain_text().contains("R1C1"));
         let dir = temp_dir("doc");
-        assert!(write(&doc, &dir.join("copy.doc"), None).is_err());
+        for name in ["copy.doc", "copy.dot"] {
+            let copy = dir.join(name);
+            write(&doc, &copy, None).unwrap();
+            assert_eq!(read(&copy).unwrap().plain_text(), doc.plain_text());
+        }
         assert!(is_template(Path::new("a.DOT")));
     }
 

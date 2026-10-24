@@ -1,5 +1,6 @@
 //! Сведения о документе: поток `\u{5}SummaryInformation` (набор свойств
-//! OLE, MS-OLEPS) — название, тема, автор, ключевые слова, даты.
+//! OLE, MS-OLEPS) — название, тема, автор, ключевые слова, даты. Читается
+//! и записывается.
 
 use letter_model::CoreProperties;
 
@@ -54,6 +55,108 @@ pub(crate) fn read(stream: &[u8]) -> CoreProperties {
     core.created = date(12);
     core.modified = date(13);
     core
+}
+
+/// Набор свойств `SummaryInformation`.
+const FMTID_SUMMARY: [u8; 16] = [
+    0xE0, 0x85, 0x9F, 0xF2, 0xF9, 0x4F, 0x68, 0x10, 0xAB, 0x91, 0x08, 0x00, 0x2B, 0x27, 0xB3, 0xD9,
+];
+
+/// Поток `SummaryInformation` со сведениями `core`; строки — в UTF-8
+/// (кодовая страница 65001). Пустые сведения — `None`.
+pub(crate) fn write(core: &CoreProperties) -> Option<Vec<u8>> {
+    let mut values: Vec<(u32, Vec<u8>)> = Vec::new();
+    for (id, text) in [
+        (2, &core.title),
+        (3, &core.subject),
+        (4, &core.creator),
+        (5, &core.keywords),
+        (6, &core.description),
+        (8, &core.last_modified_by),
+        (9, &core.revision),
+    ] {
+        if let Some(text) = text.as_deref().filter(|t| !t.is_empty()) {
+            let mut value = VT_LPSTR.to_le_bytes().to_vec();
+            value.extend((text.len() as u32 + 1).to_le_bytes());
+            value.extend(text.as_bytes());
+            value.push(0);
+            values.push((id, value));
+        }
+    }
+    for (id, date) in [
+        (11, &core.last_printed),
+        (12, &core.created),
+        (13, &core.modified),
+    ] {
+        if let Some(time) = date.as_deref().and_then(parse_filetime) {
+            let mut value = VT_FILETIME.to_le_bytes().to_vec();
+            value.extend(time.to_le_bytes());
+            values.push((id, value));
+        }
+    }
+    if values.is_empty() {
+        return None;
+    }
+    let mut code_page = VT_I2.to_le_bytes().to_vec();
+    code_page.extend(65001u16.to_le_bytes());
+    values.insert(0, (1, code_page));
+
+    let mut set = Vec::new();
+    let mut offset = 8 + values.len() * 8;
+    let mut body = Vec::new();
+    for (id, value) in &values {
+        set.extend(id.to_le_bytes());
+        set.extend((offset as u32).to_le_bytes());
+        body.extend(value);
+        // Каждое значение — с границы 4 байт.
+        while body.len() % 4 != 0 {
+            body.push(0);
+        }
+        offset = 8 + values.len() * 8 + body.len();
+    }
+    let size = 8 + set.len() + body.len();
+    let mut out = vec![0xFE, 0xFF, 0, 0];
+    // Windows, версия 6.
+    out.extend(0x0002_0006u32.to_le_bytes());
+    out.extend([0; 16]);
+    out.extend(1u32.to_le_bytes());
+    out.extend(FMTID_SUMMARY);
+    out.extend(48u32.to_le_bytes());
+    out.extend((size as u32).to_le_bytes());
+    out.extend((values.len() as u32).to_le_bytes());
+    out.extend(set);
+    out.extend(body);
+    Some(out)
+}
+
+/// Время как в .docx (`2026-10-23T12:00:00Z`) в `FILETIME`.
+fn parse_filetime(text: &str) -> Option<u64> {
+    const SECONDS_1601_TO_1970: i64 = 11_644_473_600;
+    let number = |range: std::ops::Range<usize>| text.get(range)?.parse::<i64>().ok();
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = if text.len() >= 19 {
+        (number(11..13)?, number(14..16)?, number(17..19)?)
+    } else {
+        (0, 0, 0)
+    };
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let seconds = days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second;
+    u64::try_from(seconds + SECONDS_1601_TO_1970)
+        .ok()?
+        .checked_mul(10_000_000)
+}
+
+/// Число дней с 1970-01-01 по дате (обратное к [`civil`]).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let yoe = year.rem_euclid(400);
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 /// Строка в позиции `at`: однобайтовая в кодовой странице или UTF-16.
@@ -138,6 +241,23 @@ mod tests {
         let ft = (unix + 11_644_473_600) * 10_000_000;
         assert_eq!(filetime(ft).as_deref(), Some("2026-10-23T12:00:00Z"));
         assert_eq!(filetime(0), None);
+        assert_eq!(parse_filetime("2026-10-23T12:00:00Z"), Some(ft));
+        assert_eq!(days_from_civil(2000, 2, 29), 11_016);
+        assert_eq!(parse_filetime("вчера"), None);
+    }
+
+    #[test]
+    fn write_and_read_back() {
+        let core = CoreProperties {
+            title: Some("Отчёт".into()),
+            creator: Some("Иван".into()),
+            keywords: Some("doc, word".into()),
+            created: Some("2026-10-23T12:00:00Z".into()),
+            ..CoreProperties::default()
+        };
+        let stream = write(&core).unwrap();
+        assert_eq!(read(&stream), core);
+        assert_eq!(write(&CoreProperties::default()), None);
     }
 
     #[test]

@@ -2,10 +2,10 @@
 //! и значение. Здесь они разбираются и переводятся в модель.
 
 use letter_model::{
-    Alignment, Border, Borders, Color, FirstLineIndent, HalfPoints, HeightRule, Highlight,
-    LineSpacing, NumberingRef, Orientation, ParagraphBorders, ParagraphProps, RowHeight, RowProps,
-    RunProps, SectionStart, Shading, TabLeader, TabStop, TabStopKind, Twips, Underline,
-    VerticalAlign,
+    Alignment, Border, Borders, CellVerticalAlign, Color, FirstLineIndent, HalfPoints, HeightRule,
+    Highlight, LineSpacing, NumberingRef, Orientation, ParagraphBorders, ParagraphProps, RowHeight,
+    RowProps, RunProps, SectionStart, Shading, TabLeader, TabStop, TabStopKind, Twips, Underline,
+    VerticalAlign, VerticalMerge,
 };
 
 use crate::fib::{i16_at, u16_at, u32_at};
@@ -209,6 +209,10 @@ pub(crate) struct CellLook {
     pub shading: Option<Shading>,
     /// Заливка из старого (`Shd80`, 16 цветов) — если нового нет.
     pub shading80: Option<Shading>,
+    /// Объединение по вертикали (флаги `TC80`).
+    pub v_merge: Option<VerticalMerge>,
+    /// Выравнивание по вертикали (флаги `TC80`).
+    pub v_align: Option<CellVerticalAlign>,
 }
 
 impl TableMarks {
@@ -335,7 +339,18 @@ fn apply_tap(marks: &mut TableMarks, sprm: u16, op: &[u8]) {
                     break;
                 };
                 let side = |n: usize| tc.get(4 + n * 4..8 + n * 4).and_then(brc80);
+                let flags = u16_at(tc, 0).unwrap_or(0);
                 let cell = marks.cell(i);
+                cell.v_merge = match flags & 0x60 {
+                    0x60 => Some(VerticalMerge::Restart),
+                    0x20 => Some(VerticalMerge::Continue),
+                    _ => None,
+                };
+                cell.v_align = match flags >> 7 & 3 {
+                    1 => Some(CellVerticalAlign::Center),
+                    2 => Some(CellVerticalAlign::Bottom),
+                    _ => None,
+                };
                 cell.borders.top = side(0);
                 cell.borders.left = side(1);
                 cell.borders.bottom = side(2);
