@@ -7,7 +7,10 @@
 use std::path::PathBuf;
 
 use letter_doc::{ReadError, is_doc, read, read_file};
-use letter_model::{Block, Document, Inline, Paragraph, RunContent, StyleKind, Twips};
+use letter_model::{
+    Block, Document, HeaderFooter, HeaderFooters, Inline, NoteKind, Paragraph, RunContent,
+    StyleKind, Twips,
+};
 
 const FIXTURES: &[&str] = &[
     "plain-text",
@@ -18,6 +21,10 @@ const FIXTURES: &[&str] = &[
     "ru-en",
     "pages",
     "header-footer",
+    "headers",
+    "notes",
+    "comments",
+    "sections",
 ];
 
 fn dir() -> PathBuf {
@@ -43,14 +50,19 @@ fn paragraphs(doc: &Document) -> Vec<&Paragraph> {
         .collect()
 }
 
+/// Непустые строки текста: в .docx раздел кончается отдельным пустым
+/// абзацем, а в .doc конец раздела — знак последнего абзаца.
+fn lines(text: &str) -> Vec<&str> {
+    text.lines().filter(|l| !l.is_empty()).collect()
+}
+
 #[test]
 fn text_matches_the_original_docx() {
     for name in FIXTURES {
-        let text = doc(name).plain_text();
         // В `pages` LibreOffice превратил разрыв страницы в абзаце
         // в «с новой страницы» у этого абзаца.
         let expected = docx(name).plain_text().replace('\u{c}', "");
-        assert_eq!(text, expected, "{name}");
+        assert_eq!(lines(&doc(name).plain_text()), lines(&expected), "{name}");
     }
 }
 
@@ -144,6 +156,166 @@ fn chapters_start_on_new_pages() {
     // Разрыв — у самой главы или у пустого абзаца перед ней.
     let before = |p: &Paragraph| p.props.page_break_before == Some(true);
     assert!(before(all[i]) || (all[i - 1].plain_text().is_empty() && before(all[i - 1])));
+}
+
+/// Текст колонтитулов раздела: обычный, первой страницы, чётных.
+fn header_texts(h: &HeaderFooters) -> [Option<String>; 3] {
+    let text = |h: &Option<HeaderFooter>| {
+        h.as_ref().map(|h| {
+            h.blocks
+                .iter()
+                .map(Block::plain_text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+    };
+    [text(&h.default), text(&h.first), text(&h.even)]
+}
+
+/// Все особые знаки в тексте (ссылки на сноски и примечания).
+fn references(doc: &Document) -> Vec<RunContent> {
+    paragraphs(doc)
+        .into_iter()
+        .flat_map(|p| &p.content)
+        .filter_map(|i| match i {
+            Inline::Run(r) => Some(&r.content),
+            _ => None,
+        })
+        .flatten()
+        .filter(|c| {
+            matches!(
+                c,
+                RunContent::NoteReference(_) | RunContent::CommentReference(_)
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn headers_and_footers() {
+    let doc = doc("header-footer");
+    let props = &doc.sections[0].props;
+    assert_eq!(
+        header_texts(&props.headers),
+        [Some("Header text".into()), None, None]
+    );
+    assert_eq!(
+        header_texts(&props.footers),
+        [Some("Footer text".into()), None, None]
+    );
+}
+
+#[test]
+fn first_and_even_page_headers() {
+    let (doc, docx) = (doc("headers"), docx("headers"));
+    assert!(doc.settings.even_and_odd_headers);
+    assert_eq!(doc.sections.len(), 2);
+    let (first, second) = (&doc.sections[0].props, &doc.sections[1].props);
+    assert!(first.title_page);
+    assert!(!second.title_page);
+    let original = &docx.sections[0].props;
+    assert_eq!(
+        header_texts(&first.headers),
+        header_texts(&original.headers)
+    );
+    // В нижнем колонтитуле — поля номера страницы; их значения
+    // LibreOffice пересчитал, поэтому сверяем начало.
+    let footers = header_texts(&first.footers);
+    assert!(
+        footers[0]
+            .as_deref()
+            .is_some_and(|t| t.starts_with("Odd page footer, page"))
+    );
+    assert_eq!(footers[1].as_deref(), Some("First page footer"));
+    assert_eq!(footers[2].as_deref(), Some("Even page footer"));
+    // Во втором разделе свои нижние колонтитулы.
+    let footers = header_texts(&second.footers);
+    assert_eq!(footers[0].as_deref(), Some("Second section footer"));
+    assert_eq!(footers[1], None);
+    assert_eq!(footers[2].as_deref(), Some("Second section even footer"));
+}
+
+#[test]
+fn footnotes_and_endnotes() {
+    let (doc, docx) = (doc("notes"), docx("notes"));
+    let texts = |notes: &[letter_model::Note]| {
+        notes
+            .iter()
+            .map(|n| {
+                let text: Vec<_> = n.blocks.iter().map(Block::plain_text).collect();
+                (n.id.clone(), n.special.clone(), text.join("\n"))
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(texts(&doc.footnotes), texts(&docx.footnotes));
+    assert_eq!(texts(&doc.endnotes), texts(&docx.endnotes));
+    assert_eq!(doc.footnotes.iter().filter(|n| n.is_regular()).count(), 2);
+    assert_eq!(references(&doc), references(&docx));
+    // Сноска начинается со своего номера.
+    let first = doc.footnotes.iter().find(|n| n.is_regular()).unwrap();
+    let Block::Paragraph(p) = &first.blocks[0] else {
+        panic!("сноска без абзаца");
+    };
+    assert!(p.content.iter().any(|i| matches!(
+        i,
+        Inline::Run(r) if r.content.contains(&RunContent::NoteMark(NoteKind::Footnote))
+    )));
+}
+
+#[test]
+fn comments_with_authors_and_ranges() {
+    let (doc, docx) = (doc("comments"), docx("comments"));
+    let comments = |d: &Document| {
+        d.comments
+            .iter()
+            .map(|c| {
+                (
+                    c.id.clone(),
+                    c.author.clone(),
+                    c.initials.clone(),
+                    c.plain_text(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(comments(&doc), comments(&docx));
+    assert_eq!(doc.comments.len(), 3);
+    assert_eq!(references(&doc), references(&docx));
+    // Начала и концы отмеченных кусков стоят там же, где в .docx.
+    let marks = |d: &Document| {
+        paragraphs(d)
+            .into_iter()
+            .flat_map(|p| &p.content)
+            .filter(|i| matches!(i, Inline::CommentStart(_) | Inline::CommentEnd(_)))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(marks(&doc), marks(&docx));
+}
+
+#[test]
+fn several_sections() {
+    let (doc, docx) = (doc("sections"), docx("sections"));
+    assert_eq!(doc.sections.len(), docx.sections.len());
+    assert_eq!(lines(&doc.plain_text()), lines(&docx.plain_text()));
+    // «С нечётной страницы» у последнего раздела LibreOffice в .doc не
+    // сохраняет (заменяет стилем страницы), поэтому его не сверяем.
+    let count = doc.sections.len() - 1;
+    let pairs = doc.sections.iter().zip(&docx.sections).take(count);
+    for (i, (a, b)) in pairs.enumerate() {
+        assert_eq!(a.props.page_size, b.props.page_size, "раздел {i}");
+        assert_eq!(
+            a.props.start.unwrap_or_default(),
+            b.props.start.unwrap_or_default(),
+            "раздел {i}"
+        );
+        assert_eq!(
+            a.props.columns.as_ref().map(|c| c.count),
+            b.props.columns.as_ref().map(|c| c.count).or(Some(1)),
+            "раздел {i}"
+        );
+    }
 }
 
 #[test]
