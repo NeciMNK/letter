@@ -22,6 +22,7 @@ mod chart;
 mod comment;
 mod control;
 mod document;
+pub mod drawing;
 mod field;
 mod note;
 mod numbering;
@@ -49,6 +50,7 @@ pub use control::{
     ControlStep, ListItem,
 };
 pub use document::{Document, Settings, for_each_picture_in};
+pub use drawing::Drawing;
 pub use field::{Field, alphabetic, fields, roman, set_field_result};
 pub use note::{Note, NoteKind, NoteReference};
 pub use numbering::{

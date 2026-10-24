@@ -112,6 +112,12 @@ impl GlyphCache {
         self.glyphs.is_empty()
     }
 
+    /// Шейпер для надписей, которые свёрстаны не заранее (текст фигур
+    /// SmartArt).
+    pub(crate) fn shaper(&mut self) -> &mut Shaper {
+        &mut self.shaper
+    }
+
     /// Размеры шрифта (подчёркивание, зачёркивание).
     pub fn metrics(&mut self, library: &FontLibrary, font: FontId) -> Option<FontMetrics> {
         self.shaper.metrics(library, font)

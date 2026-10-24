@@ -35,6 +35,7 @@ const FIXTURES: &[&str] = &[
     "comments.docx",
     "borders.docx",
     "watermark.docx",
+    "smartart.docx",
     "charts.docx",
     "header-footer.docx",
     "ru-en.docx",
@@ -782,6 +783,7 @@ fn pictures_from_another_document_get_their_own_part() {
     // Новый рисунок без исходной разметки и тот же рисунок, вставленный
     // из другого документа (связь rId9 в новом документе ведёт не туда).
     let fresh = letter_model::Picture {
+        drawing: None,
         width: 127_000,
         height: 254_000,
         image: Some(image.clone()),
@@ -955,6 +957,52 @@ fn notes_get_their_part() {
     let reopened = read_bytes(&write_bytes(&doc).unwrap()).unwrap();
     assert!(reopened.footnotes.iter().all(|n| n.id != "99"));
     assert_eq!(reopened.footnotes.len(), doc.footnotes.len() - 1);
+}
+
+#[test]
+fn resized_smart_art_keeps_its_diagram() {
+    let mut doc = read_bytes(&fixture_bytes("smartart.docx")).unwrap();
+    let mut resized = 0;
+    doc.for_each_picture_mut(|picture: &mut letter_model::Picture| {
+        if picture.drawing.is_some() {
+            picture.width /= 2;
+            picture.height /= 2;
+            resized += 1;
+        }
+    });
+    assert_eq!(resized, 1);
+    let saved = write_bytes(&doc).unwrap();
+    let parts = zip_parts(&saved);
+    for part in ["data1", "layout1", "quickStyle1", "colors1", "drawing1"] {
+        assert!(
+            parts.contains_key(&format!("word/diagrams/{part}.xml")),
+            "{part}"
+        );
+    }
+    // Новых картинок не появилось: у SmartArt их нет.
+    assert!(!parts.keys().any(|k| k.starts_with("word/media/")));
+    let mut reopened = read_bytes(&saved).unwrap();
+    let mut found = None;
+    reopened.for_each_picture_mut(|picture: &mut letter_model::Picture| {
+        found = Some((picture.width, picture.height, picture.drawing.clone()));
+    });
+    let (width, height, drawing) = found.expect("smart art");
+    assert_eq!((width, height), (5_486_400 / 2, 1_600_200 / 2));
+    // Готовый вид остался от большой рамки: оси растут, чтобы фигуры
+    // влезли в уменьшенную, и пропорции рамки сохраняются.
+    let drawing = drawing.expect("drawing");
+    assert_eq!(drawing.shapes.len(), 5);
+    let right = drawing
+        .shapes
+        .iter()
+        .flat_map(|s| &s.contours)
+        .flat_map(|c| &c.points)
+        .map(|p| p.0)
+        .max()
+        .unwrap();
+    assert!(right <= drawing.width, "{right} > {}", drawing.width);
+    let ratio = |w: i64, h: i64| w as f64 / h as f64;
+    assert!((ratio(drawing.width, drawing.height) - ratio(width, height)).abs() < 0.01);
 }
 
 #[test]

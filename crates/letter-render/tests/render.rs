@@ -276,6 +276,7 @@ fn broken_picture_becomes_a_placeholder() {
     let mut cache = GlyphCache::new();
     let mut doc = Document::new();
     let picture = Picture {
+        drawing: None,
         width: 72 * 12_700,
         height: 36 * 12_700,
         image: Some(Arc::new(ImageData {
@@ -342,4 +343,49 @@ fn floating_pictures_are_drawn_in_their_place() {
     let tops: Vec<f32> = page.lines.iter().map(|l| l.top).collect();
     let steps: Vec<f32> = tops.windows(2).map(|w| w[1] - w[0]).collect();
     assert!(steps.iter().all(|s| *s < 30.0), "{steps:?}");
+}
+
+#[test]
+fn smart_art_is_drawn_from_its_shapes() {
+    let library = FontLibrary::embedded_only();
+    let mut cache = GlyphCache::new();
+    let doc = layout("smartart.docx", &library);
+    let page = &doc.pages[0];
+    let scale = SCREEN_PIXELS_PER_POINT;
+    let items = page_scene(page, scale, &library, &mut cache);
+    // Пять фигур с заливкой, заглушки вместо картинки нет.
+    let filled: Vec<_> = items
+        .iter()
+        .filter_map(|i| match i {
+            DrawItem::Path {
+                points,
+                fill: Some(fill),
+                ..
+            } => Some((points.clone(), *fill)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(filled.len(), 5);
+    assert!(!items.iter().any(|i| matches!(i, DrawItem::Picture { .. })));
+    // Белые буквы подписей.
+    let white = items
+        .iter()
+        .filter(|i| {
+            matches!(
+                i,
+                DrawItem::Glyph {
+                    color: [255, 255, 255, 255],
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(white, "ИдеяЧерновикКнига".chars().count());
+    // На картинке страницы середина первого блока — цвет его заливки.
+    let (points, fill) = &filled[0];
+    let x = points.iter().map(|p| p.0).sum::<f32>() / points.len() as f32;
+    let top = points.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+    let image = render_page(page, scale, &library, &mut cache);
+    let pixel = image.pixel(x as u32, top as u32 + 3).unwrap();
+    assert_eq!(pixel, *fill);
 }

@@ -23,7 +23,7 @@ const R_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relati
 /// допускает). Защищает вёрстку от бессмысленных чисел.
 const MAX_EMU: i64 = 20_116_800 * 10;
 
-/// Читает `w:drawing`: рисунок или диаграмму. `None`, если это другое
+/// Читает `w:drawing`: рисунок, диаграмму или SmartArt. `None`, если это другое
 /// (надпись, фигура) или разметка непонятна: тогда элемент сохраняется без
 /// разбора.
 pub(crate) fn read_picture(drawing: &Element) -> Option<Picture> {
@@ -47,20 +47,27 @@ pub(crate) fn read_picture(drawing: &Element) -> Option<Picture> {
     let graphic = inline.elements().find(|e| e.local == "graphic")?;
     let data = graphic.elements().find(|e| e.local == "graphicData")?;
     // Диаграмма (`c:chart r:id`): связь ведёт к её части, а не к картинке.
-    let relationship = match data.elements().find(|e| e.local == "chart") {
-        Some(chart) => attr(chart, "id")?.to_string(),
-        None => {
-            let pic = data.elements().find(|e| e.local == "pic")?;
-            let fill = pic.elements().find(|e| e.local == "blipFill")?;
-            let blip = fill.elements().find(|e| e.local == "blip")?;
-            attr(blip, "embed")?.to_string()
-        }
+    // SmartArt: связи нет, готовый вид диаграммы подставляется после
+    // чтения документа (см. `crate::smartart`).
+    let relationship = if data.elements().any(|e| e.local == "relIds") {
+        None
+    } else {
+        Some(match data.elements().find(|e| e.local == "chart") {
+            Some(chart) => attr(chart, "id")?.to_string(),
+            None => {
+                let pic = data.elements().find(|e| e.local == "pic")?;
+                let fill = pic.elements().find(|e| e.local == "blipFill")?;
+                let blip = fill.elements().find(|e| e.local == "blip")?;
+                attr(blip, "embed")?.to_string()
+            }
+        })
     };
     Some(Picture {
+        drawing: None,
         width,
         height,
         image: None,
-        relationship: Some(relationship),
+        relationship,
         raw: Some(drawing.raw()),
         anchor,
     })
@@ -685,6 +692,7 @@ mod tests {
     #[test]
     fn new_picture_gets_full_markup() {
         let picture = Picture {
+            drawing: None,
             width: 12_700,
             height: 25_400,
             image: None,
@@ -773,6 +781,7 @@ mod tests {
     #[test]
     fn new_floating_picture_is_written() {
         let picture = Picture {
+            drawing: None,
             width: 12_700,
             height: 25_400,
             image: None,
