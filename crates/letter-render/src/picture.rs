@@ -142,6 +142,7 @@ mod tests {
             let data = ImageData {
                 name: name.into(),
                 bytes: png(),
+                chart: None,
             };
             let image = decode(&data).unwrap();
             assert_eq!((image.width, image.height), (2, 1));
@@ -156,12 +157,14 @@ mod tests {
         let emf = ImageData {
             name: "word/media/image1.emf".into(),
             bytes: vec![1, 0, 0, 0, 108, 0, 0, 0],
+            chart: None,
         };
         assert!(decode(&emf).is_none());
         assert!(pixel_size(&emf).is_none());
         let broken = ImageData {
             name: "word/media/image1.png".into(),
             bytes: b"\x89PNG\r\n\x1a\nbroken".to_vec(),
+            chart: None,
         };
         assert!(decode(&broken).is_none());
     }

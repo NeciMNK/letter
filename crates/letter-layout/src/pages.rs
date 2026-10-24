@@ -46,10 +46,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use letter_model::{
-    Alignment, Anchor, AnchorAlign, Block, Border, Document, EMU_PER_POINT, FirstLineIndent,
-    HeaderFooter, HeaderFooterKind, HorizontalFrom, ImageData, LevelSuffix, LineSpacing,
-    ListCounters, ListLabel, NoteKind, Numbering, PageBorderDisplay, PageBorders, PageSize,
-    Paragraph, ParagraphBorders, Placement, ResolvedFonts, ResolvedParagraphProps,
+    Alignment, Anchor, AnchorAlign, Block, Border, Document, Drawing, EMU_PER_POINT,
+    FirstLineIndent, HeaderFooter, HeaderFooterKind, HorizontalFrom, ImageData, LevelSuffix,
+    LineSpacing, ListCounters, ListLabel, NoteKind, Numbering, PageBorderDisplay, PageBorders,
+    PageSize, Paragraph, ParagraphBorders, Placement, ResolvedFonts, ResolvedParagraphProps,
     ResolvedRunProps, RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart,
     Settings, Styles, TabStopKind, Theme, Twips, VerticalAlign, VerticalFrom, Watermark, Wrap,
     find_watermark,
@@ -230,16 +230,24 @@ impl PageStory {
     }
 
     /// Колонтитул, сдвинутый вниз на `dy`.
-    fn moved(mut self, dy: f32) -> PageStory {
+    fn moved(self, dy: f32) -> PageStory {
+        self.shifted(0.0, dy)
+    }
+
+    /// Всё содержимое, сдвинутое вправо на `dx` и вниз на `dy`.
+    pub fn shifted(mut self, dx: f32, dy: f32) -> PageStory {
         for line in &mut self.lines {
+            line.x += dx;
             line.top += dy;
             line.baseline += dy;
-            line.cell = line.cell.map(|c| c.moved(0.0, dy));
+            line.cell = line.cell.map(|c| c.moved(dx, dy));
         }
         for shape in &mut self.shapes {
+            shape.x += dx;
             shape.y += dy;
         }
         for float in &mut self.floats {
+            float.x += dx;
             float.y += dy;
             float.paragraph_top += dy;
         }
@@ -261,6 +269,12 @@ pub struct Float {
     pub height: f32,
     /// Картинка (`None` — заглушка).
     pub image: Option<Arc<ImageData>>,
+    /// Фигура вместо картинки.
+    pub shape: Option<Arc<letter_model::Shape>>,
+    /// Текст надписей фигуры от левого верхнего угла рисунка.
+    pub text: Option<Arc<PageStory>>,
+    /// Рисунок из фигур (SmartArt) — рисуется вместо картинки.
+    pub drawing: Option<Arc<Drawing>>,
     /// Обтекание текстом.
     pub wrap: Wrap,
     /// За текстом (рисуется под ним).
@@ -903,6 +917,112 @@ fn lay_story_with(
     (story, height)
 }
 
+/// Текст надписей фигуры (и фигур её группы) размером `width` ×
+/// `height` пт, свёрстанный от левого верхнего угла фигуры. `None`, если
+/// текста нет. Поворот фигуры к тексту пока не применяется.
+fn text_boxes(
+    doc: &Document,
+    shape: &letter_model::Shape,
+    width: f32,
+    height: f32,
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+) -> Option<Arc<PageStory>> {
+    let mut out = PageStory::default();
+    add_text_box(
+        &mut out,
+        doc,
+        shape,
+        [0.0, 0.0, width, height],
+        shaper,
+        library,
+        0,
+    );
+    (!out.is_empty()).then(|| Arc::new(out))
+}
+
+/// Самая глубокая вложенность групп фигур, в которой ищется текст.
+const MAX_SHAPE_DEPTH: usize = 16;
+
+fn add_text_box(
+    out: &mut PageStory,
+    doc: &Document,
+    shape: &letter_model::Shape,
+    [x, y, w, h]: [f32; 4],
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+    depth: usize,
+) {
+    if depth > MAX_SHAPE_DEPTH || !(w.is_finite() && h.is_finite()) {
+        return;
+    }
+    if let letter_model::Geometry::Group(group) = &shape.geometry {
+        let frame = group.frame;
+        if frame.width <= 0 || frame.height <= 0 {
+            return;
+        }
+        let (sx, sy) = (w / frame.width as f32, h / frame.height as f32);
+        for child in &group.children {
+            let f = child.frame;
+            let rect = [
+                x + (f.x - frame.x) as f32 * sx,
+                y + (f.y - frame.y) as f32 * sy,
+                f.width as f32 * sx,
+                f.height as f32 * sy,
+            ];
+            add_text_box(out, doc, &child.shape, rect, shaper, library, depth + 1);
+        }
+        return;
+    }
+    if shape.text.is_empty() {
+        return;
+    }
+    let [left, top, right, bottom] = shape.text_insets.map(|v| v as f32 / EMU_PER_POINT as f32);
+    let geometry = Geometry {
+        width: w,
+        height: STORY_HEIGHT,
+        margins: Margins {
+            top: 0.0,
+            right,
+            bottom: 0.0,
+            left,
+        },
+    };
+    if geometry.text_width() < 1.0 {
+        return;
+    }
+    let (story, text_height) = lay_story(doc, &shape.text, &geometry, shaper, library);
+    // Текст, который не влез, выходит за фигуру: при выравнивании
+    // посередине — в обе стороны, как в Word.
+    let free = h - top - bottom - text_height;
+    let dy = top
+        + match shape.text_anchor {
+            letter_model::TextAnchor::Top => 0.0,
+            letter_model::TextAnchor::Center => free / 2.0,
+            letter_model::TextAnchor::Bottom => free,
+        };
+    let mut story = story.shifted(x, y + dy);
+    if let Some(color) = &shape.text_color {
+        let [r, g, b, _] = color.rgba(&letter_model::ColorScheme::default());
+        for line in &mut story.lines {
+            line.spans = line
+                .spans
+                .iter()
+                .cloned()
+                .map(|mut props| {
+                    if props.color == letter_model::Color::Auto {
+                        props.color = letter_model::Color::Rgb(r, g, b);
+                    }
+                    props
+                })
+                .collect();
+        }
+    }
+    out.lines.append(&mut story.lines);
+    out.shapes.append(&mut story.shapes);
+    out.floats.append(&mut story.floats);
+}
+
 /// Текст сноски, свёрстанный от своего верха.
 #[derive(Debug, Clone, Default)]
 struct NoteBox {
@@ -1129,6 +1249,9 @@ fn place_float(
         width: spec.width,
         height: spec.height,
         image: spec.image.clone(),
+        shape: spec.shape.clone(),
+        text: spec.text.clone(),
+        drawing: spec.drawing.clone(),
         wrap: anchor.wrap,
         behind: anchor.wrap == Wrap::None && anchor.behind_text,
         distance: Margins {
@@ -1401,11 +1524,41 @@ struct FloatSpec {
     width: f32,
     height: f32,
     image: Option<Arc<ImageData>>,
+    shape: Option<Arc<letter_model::Shape>>,
+    text: Option<Arc<PageStory>>,
+    drawing: Option<Arc<Drawing>>,
     anchor: Anchor,
 }
 
 /// Добавляет кусок текста фрагмента: с учётом «все прописные» и разных
 /// шрифтов для разных видов письменности.
+/// Цвета исправлений разных авторов, как в Word: по очереди.
+const REVISION_COLORS: [(u8, u8, u8); 6] = [
+    (0xC0, 0x00, 0x00),
+    (0x00, 0x52, 0xA3),
+    (0x00, 0x80, 0x00),
+    (0x8E, 0x2E, 0xA4),
+    (0xC0, 0x60, 0x00),
+    (0x00, 0x80, 0x80),
+];
+
+/// Исправление на экране («Все исправления»): вставленное подчёркнуто,
+/// удалённое зачёркнуто, цвет — автора.
+fn show_revision(props: &mut letter_model::ResolvedRunProps, revision: &letter_model::Revision) {
+    let index = revision.author.bytes().fold(0usize, |h, b| {
+        h.wrapping_mul(31).wrapping_add(usize::from(b))
+    });
+    let (r, g, b) = REVISION_COLORS[index % REVISION_COLORS.len()];
+    props.color = letter_model::Color::Rgb(r, g, b);
+    props.underline_color = None;
+    match revision.kind {
+        letter_model::RevisionKind::Insert => {
+            props.underline = letter_model::Underline::Single;
+        }
+        letter_model::RevisionKind::Delete => props.strike = true,
+    }
+}
+
 fn push_text(
     spans: &mut Vec<TextSpan>,
     span_props: &mut Vec<ResolvedRunProps>,
@@ -1442,8 +1595,13 @@ fn prepare(
     let mut span_props = Vec::new();
     let mut floats = Vec::new();
     let mut notes = Vec::new();
+    // Выравнивание отдельной формулы (`m:oMathPara`) в абзаце.
+    let mut display_math = None;
     for run in paragraph.runs() {
-        let resolved = doc.resolve_run_in(&paragraph.props, &run.props, table);
+        let mut resolved = doc.resolve_run_in(&paragraph.props, &run.props, table);
+        if let Some(revision) = &run.props.revision {
+            show_revision(&mut resolved, revision);
+        }
         let mut text = String::new();
         for item in &run.content {
             match item {
@@ -1459,12 +1617,25 @@ fn prepare(
                         &std::mem::take(&mut text),
                         &resolved,
                     );
+                    let boxes = picture.shape.as_deref().and_then(|shape| {
+                        text_boxes(
+                            doc,
+                            shape,
+                            picture.width_points(),
+                            picture.height_points(),
+                            shaper,
+                            library,
+                        )
+                    });
                     if let Some(anchor) = &picture.anchor {
                         floats.push(FloatSpec {
                             at: spans.iter().map(|s: &TextSpan| s.text.len()).sum(),
                             width: picture.width_points(),
                             height: picture.height_points(),
                             image: picture.image.clone(),
+                            shape: picture.shape.clone(),
+                            text: boxes.clone(),
+                            drawing: picture.drawing.clone(),
                             anchor: (**anchor).clone(),
                         });
                     }
@@ -1472,7 +1643,11 @@ fn prepare(
                         width: picture.width_points(),
                         height: picture.height_points(),
                         image: picture.image.clone(),
+                        shape: picture.shape.clone(),
+                        text: boxes,
+                        drawing: picture.drawing.clone(),
                         floating: picture.anchor.is_some(),
+                        ..InlineObject::default()
                     };
                     let style = text_style(&resolved, &resolved.fonts.h_ansi);
                     spans.push(TextSpan::object(object, style));
@@ -1524,6 +1699,30 @@ fn prepare(
                     spans.push(TextSpan::label(symbol.unicode().to_string(), style));
                     span_props.push(resolved.clone());
                 }
+                // Формула — свёрстанная коробка, как рисунок в строке.
+                RunContent::Math(math) => {
+                    push_text(
+                        &mut spans,
+                        &mut span_props,
+                        &std::mem::take(&mut text),
+                        &resolved,
+                    );
+                    if math.display {
+                        display_math = Some(math.align);
+                    }
+                    let size = resolved.size.0 as f32 / 2.0;
+                    let laid = crate::math::layout_math(math, size, shaper, library);
+                    let object = InlineObject {
+                        width: laid.width,
+                        height: laid.ascent.max(0.0),
+                        depth: laid.descent.max(0.0),
+                        math: Some(Arc::new(laid)),
+                        ..InlineObject::default()
+                    };
+                    let style = text_style(&resolved, &resolved.fonts.h_ansi);
+                    spans.push(TextSpan::object(object, style));
+                    span_props.push(resolved.clone());
+                }
                 // Код поля не виден, видно только его результат.
                 RunContent::FieldChar(_)
                 | RunContent::FieldCode(_)
@@ -1550,6 +1749,13 @@ fn prepare(
         Alignment::Right => Align::Right,
         Alignment::Justify => Align::Justify,
         Alignment::Distribute => Align::Distribute,
+    };
+    // Абзац с отдельной формулой Word выравнивает по формуле.
+    format.align = match display_math {
+        Some(letter_model::MathAlign::Center) => Align::Center,
+        Some(letter_model::MathAlign::Left) => Align::Left,
+        Some(letter_model::MathAlign::Right) => Align::Right,
+        None => format.align,
     };
     format.default_tab = points(doc.settings.default_tab_stop);
     let settings = &doc.settings;
@@ -3128,6 +3334,7 @@ mod tests {
         behind_text: bool,
     ) -> RunContent {
         RunContent::Picture(letter_model::Picture {
+            drawing: None,
             width: 20 * EMU_PER_POINT,
             height: 10 * EMU_PER_POINT,
             image: None,
@@ -3140,6 +3347,7 @@ mod tests {
                 behind_text,
                 distance: letter_model::Distance::default(),
             })),
+            shape: None,
         })
     }
 
@@ -3148,6 +3356,7 @@ mod tests {
     fn wrapped(wrap: Wrap, x: i64, y: i64, width: i64, height: i64) -> RunContent {
         let at = |pt: i64| Placement::Offset(pt * EMU_PER_POINT);
         RunContent::Picture(letter_model::Picture {
+            drawing: None,
             width: width * EMU_PER_POINT,
             height: height * EMU_PER_POINT,
             image: None,
@@ -3166,6 +3375,7 @@ mod tests {
                 behind_text: false,
                 distance: letter_model::Distance::default(),
             })),
+            shape: None,
         })
     }
 

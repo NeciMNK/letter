@@ -176,6 +176,9 @@ pub struct Shaper {
     /// Какой шрифт подходит для буквы, если в основном её нет:
     /// (буква, жирный, курсив) → шрифт.
     fallback: HashMap<(char, bool, bool), Option<FontMatch>>,
+    /// Есть ли буква в шрифте: разбирать файл шрифта на каждый вопрос
+    /// дорого, а спрашивают про каждую букву текста.
+    glyphs: HashMap<(FontId, char), bool>,
 }
 
 impl std::fmt::Debug for Shaper {
@@ -253,12 +256,33 @@ impl Shaper {
         })
     }
 
+    /// Границы глифа по вертикали в долях кегля: низ (отрицательный —
+    /// под базовой линией) и верх. `None` у пустого глифа (пробел) или
+    /// если файл шрифта не читается.
+    pub fn glyph_bounds(
+        &mut self,
+        library: &FontLibrary,
+        id: FontId,
+        glyph_id: u16,
+    ) -> Option<(f32, f32)> {
+        let data = self.font_data(library, id)?;
+        let face = ttf_parser::Face::parse(&data.bytes, data.index).ok()?;
+        let em = f32::from(face.units_per_em());
+        let rect = face.glyph_bounding_box(ttf_parser::GlyphId(glyph_id))?;
+        Some((f32::from(rect.y_min) / em, f32::from(rect.y_max) / em))
+    }
+
     /// Есть ли в шрифте буква.
     pub fn has_glyph(&mut self, library: &FontLibrary, id: FontId, c: char) -> bool {
-        self.font_data(library, id).is_some_and(|data| {
+        if let Some(&known) = self.glyphs.get(&(id, c)) {
+            return known;
+        }
+        let found = self.font_data(library, id).is_some_and(|data| {
             ttf_parser::Face::parse(&data.bytes, data.index)
                 .is_ok_and(|face| face.glyph_index(c).is_some())
-        })
+        });
+        self.glyphs.insert((id, c), found);
+        found
     }
 
     /// Шрифт, в котором есть буква `c`. Сначала пробуются известные

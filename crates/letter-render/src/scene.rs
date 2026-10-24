@@ -3,13 +3,16 @@
 //! в пикселях. Список одинаков для экрана и для картинки.
 
 use letter_layout::{
-    Float, FontLibrary, LineItem, Page, PageLine, PageStory, PageWatermark, ShapeKind, TabItem,
-    TabLeader, TextItem, baseline_rise,
+    Float, FontLibrary, LineItem, Margins, MathLayout, Page, PageLine, PageStory, PageWatermark,
+    ShapeKind, ShapedRun, TabItem, TabLeader, TextItem, baseline_rise,
 };
 use std::sync::Arc;
 
-use letter_model::{Color, ImageData, ResolvedRunProps, Underline};
+use letter_model::{
+    Color, Drawing, HeaderFooterKind, ImageData, ResolvedRunProps, Shape, Underline,
+};
 
+use crate::drawing::{DrawingFrame, draw_shapes};
 use crate::glyphs::{GlyphCache, GlyphKey, SUBPIXEL_STEPS};
 
 /// Цвет RGBA без предумножения.
@@ -46,6 +49,28 @@ pub enum DrawItem {
         /// Цвет.
         color: Rgba,
     },
+    /// Отрезок (линии знака корня в формулах).
+    Line {
+        /// Начало по горизонтали.
+        x1: f32,
+        /// Начало по вертикали.
+        y1: f32,
+        /// Конец по горизонтали.
+        x2: f32,
+        /// Конец по вертикали.
+        y2: f32,
+        /// Толщина.
+        width: f32,
+        /// Цвет.
+        color: Rgba,
+    },
+    /// Залитый выпуклый многоугольник (части диаграмм).
+    Polygon {
+        /// Вершины по порядку.
+        points: Vec<(f32, f32)>,
+        /// Цвет.
+        color: Rgba,
+    },
     /// Рисунок: картинка, растянутая на прямоугольник.
     Picture {
         /// Левый край.
@@ -58,6 +83,20 @@ pub enum DrawItem {
         height: f32,
         /// Картинка; `None` — нарисовать заглушку.
         image: Option<Arc<ImageData>>,
+        /// Фигура: рисуется она, а не картинка.
+        shape: Option<Arc<Shape>>,
+    },
+    /// Контур фигуры (SmartArt): многоугольник с заливкой и линией
+    /// или ломаная.
+    Path {
+        /// Точки.
+        points: Vec<(f32, f32)>,
+        /// Замкнутый: от последней точки линия идёт к первой.
+        closed: bool,
+        /// Заливка (только у замкнутого контура).
+        fill: Option<Rgba>,
+        /// Линия: цвет и толщина.
+        stroke: Option<(Rgba, f32)>,
     },
 }
 
@@ -133,15 +172,28 @@ pub fn page_scene(
                         leader(&mut lines, line, tab, props, scale);
                     }
                 }
+                LineItem::Object(object) if object.math.is_some() => {
+                    let color = line.spans.get(object.span).map_or(BLACK, text_color);
+                    if let Some(math) = &object.math {
+                        formula(&mut glyphs, &mut lines, math, line, object.x, scale, color);
+                    }
+                }
                 // Знак привязки плавающего рисунка места не занимает.
                 LineItem::Object(object) if object.width == 0.0 && object.height == 0.0 => {}
-                LineItem::Object(object) => pictures.push(DrawItem::Picture {
-                    x: (line.x + object.x) * scale,
-                    y: (line.baseline - object.height) * scale,
-                    width: object.width * scale,
-                    height: object.height * scale,
-                    image: object.image.clone(),
-                }),
+                LineItem::Object(object) => picture(
+                    &mut pictures,
+                    (line.x + object.x, line.baseline - object.height),
+                    (object.width, object.height),
+                    (
+                        object.image.as_ref(),
+                        object.drawing.as_deref(),
+                        object.shape.as_ref(),
+                        object.text.as_deref(),
+                    ),
+                    scale,
+                    library,
+                    cache,
+                ),
             }
         }
         // Номер или маркер пункта списка.
@@ -163,20 +215,111 @@ pub fn page_scene(
             }
         }
     }
-    let float = |f: &Float| DrawItem::Picture {
-        x: f.x * scale,
-        y: f.y * scale,
-        width: f.width * scale,
-        height: f.height * scale,
-        image: f.image.clone(),
+    let mut float = |out: &mut Vec<DrawItem>, f: &Float| {
+        let (at, size) = ((f.x, f.y), (f.width, f.height));
+        let content = (
+            f.image.as_ref(),
+            f.drawing.as_deref(),
+            f.shape.as_ref(),
+            f.text.as_deref(),
+        );
+        picture(out, at, size, content, scale, library, cache);
     };
     let floats = || stories.iter().flat_map(|s| &s.floats).chain(&page.floats);
-    backgrounds.extend(floats().filter(|f| f.behind).map(float));
+    for f in floats().filter(|f| f.behind) {
+        float(&mut backgrounds, f);
+    }
     backgrounds.extend(pictures);
     backgrounds.extend(glyphs);
     backgrounds.extend(lines);
-    backgrounds.extend(floats().filter(|f| !f.behind).map(float));
+    for f in floats().filter(|f| !f.behind) {
+        float(&mut backgrounds, f);
+    }
     backgrounds
+}
+
+/// Что нарисовать в рамке рисунка: картинка, рисунок из фигур
+/// (SmartArt), фигура и текст её надписей.
+type Content<'a> = (
+    Option<&'a Arc<ImageData>>,
+    Option<&'a Drawing>,
+    Option<&'a Arc<Shape>>,
+    Option<&'a PageStory>,
+);
+
+/// Рисунок в точке `at` размера `size` (пт): картинка, диаграмма,
+/// рисунок из фигур (SmartArt) или фигура с текстом надписи.
+fn picture(
+    out: &mut Vec<DrawItem>,
+    (x, y): (f32, f32),
+    (width, height): (f32, f32),
+    (image, drawing, shape, text): Content<'_>,
+    scale: f32,
+    library: &FontLibrary,
+    cache: &mut GlyphCache,
+) {
+    if let Some(drawing) = drawing {
+        let frame = DrawingFrame {
+            x,
+            y,
+            width,
+            height,
+        };
+        draw_shapes(out, drawing, frame, scale, library, cache);
+        return;
+    }
+    if let Some(chart) = image.and_then(|i| i.chart.as_ref()) {
+        out.extend(crate::chart::chart_items(
+            chart, x, y, width, height, scale, library, cache,
+        ));
+        return;
+    }
+    out.push(DrawItem::Picture {
+        x: x * scale,
+        y: y * scale,
+        width: width * scale,
+        height: height * scale,
+        image: image.cloned(),
+        shape: shape.cloned(),
+    });
+    if let Some(text) = text {
+        text_box(out, text, x, y, scale, library, cache);
+    }
+}
+
+/// Текст надписей фигуры, левый верхний угол которой — в точке `x`,
+/// `y` пт: рисуется сразу после самой фигуры, поверх неё.
+fn text_box(
+    out: &mut Vec<DrawItem>,
+    text: &PageStory,
+    x: f32,
+    y: f32,
+    scale: f32,
+    library: &FontLibrary,
+    cache: &mut GlyphCache,
+) {
+    let story = text.clone().shifted(x, y);
+    let page = Page {
+        width: 0.0,
+        height: 0.0,
+        margins: Margins {
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        },
+        lines: story.lines,
+        shapes: story.shapes,
+        floats: story.floats,
+        section: 0,
+        kind: HeaderFooterKind::Default,
+        header: PageStory::default(),
+        footer: PageStory::default(),
+        notes: Vec::new(),
+        watermark: None,
+        number: 1,
+    };
+    out.extend(page_scene(&page, scale, library, cache));
 }
 
 /// Глифы подложки вдоль повёрнутой базовой линии.
@@ -235,6 +378,49 @@ pub fn text_color(props: &ResolvedRunProps) -> Rgba {
     }
 }
 
+/// Формула: её глифы и линии. `x` — левый край в строке, пт.
+#[allow(clippy::too_many_arguments)]
+fn formula(
+    glyphs: &mut Vec<DrawItem>,
+    lines: &mut Vec<DrawItem>,
+    math: &MathLayout,
+    line: &PageLine,
+    x: f32,
+    scale: f32,
+    color: Rgba,
+) {
+    let left = line.x + x;
+    for piece in &math.glyphs {
+        push_run(
+            glyphs,
+            &piece.run,
+            left + piece.x,
+            line.baseline - piece.rise,
+            scale,
+            color,
+        );
+    }
+    for stroke in &math.strokes {
+        let (x1, y1) = (left + stroke.x1, line.baseline - stroke.y1);
+        let (x2, y2) = (left + stroke.x2, line.baseline - stroke.y2);
+        // Горизонтальная черта — прямоугольником, чтобы была чёткой.
+        if y1 == y2 {
+            let (from, to) = (x1.min(x2), x1.max(x2));
+            let top = y1 - stroke.width / 2.0;
+            lines.push(rect(scale, from, top, to - from, stroke.width, color));
+        } else {
+            lines.push(DrawItem::Line {
+                x1: x1 * scale,
+                y1: y1 * scale,
+                x2: x2 * scale,
+                y2: y2 * scale,
+                width: stroke.width * scale,
+                color,
+            });
+        }
+    }
+}
+
 /// Глифы куска; `rise` — подъём над базовой линией (индексы), пт.
 fn push_glyphs(
     out: &mut Vec<DrawItem>,
@@ -244,12 +430,34 @@ fn push_glyphs(
     scale: f32,
     color: Rgba,
 ) {
-    let run = &text.run;
+    push_run(
+        out,
+        &text.run,
+        line.x + text.x,
+        line.baseline - rise,
+        scale,
+        color,
+    );
+}
+
+/// Глифы куска с левым краем `left` на базовой линии `baseline`
+/// (пт от угла листа).
+fn push_run(
+    out: &mut Vec<DrawItem>,
+    run: &ShapedRun,
+    left: f32,
+    baseline: f32,
+    scale: f32,
+    color: Rgba,
+) {
+    if run.hidden {
+        return;
+    }
     let size_64 = (run.size * scale * 64.0).round().max(1.0) as u32;
-    let mut pen = line.x + text.x;
+    let mut pen = left;
     for glyph in &run.glyphs {
         let x = (pen + glyph.x_offset) * scale;
-        let y = (line.baseline - rise - glyph.y_offset) * scale;
+        let y = (baseline - glyph.y_offset) * scale;
         let whole = x.floor();
         let subpixel =
             (((x - whole) * f32::from(SUBPIXEL_STEPS)).floor() as u8).min(SUBPIXEL_STEPS - 1);

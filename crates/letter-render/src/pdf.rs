@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use letter_layout::{FontId, FontLibrary, LineItem, Page};
-use letter_model::{Hyperlink, ImageData};
+use letter_model::{Hyperlink, ImageData, Shape};
 use pdf_writer::types::{
     ActionType, AnnotationType, CidFontType, FontFlags, SystemInfo, TextRenderingMode,
 };
@@ -24,6 +24,7 @@ use subsetter::GlyphRemapper;
 use crate::glyphs::{GlyphCache, SUBPIXEL_STEPS};
 use crate::picture::decode;
 use crate::scene::{DrawItem, Rgba, page_scene};
+use crate::shape::{Segment, shape_paths};
 
 /// Точек сцены на пункт: положения округляются до 1/100 пункта.
 const SCALE: f32 = 100.0;
@@ -228,6 +229,54 @@ fn page_content(
                 let (x, y, w, h) = (x / SCALE, y / SCALE, width / SCALE, h / SCALE);
                 content.rect(x, height - y - h, w, h).fill_nonzero();
             }
+            DrawItem::Line {
+                x1,
+                y1,
+                x2,
+                y2,
+                width,
+                color,
+            } => {
+                if in_text {
+                    content.end_text();
+                    in_text = false;
+                    current_font = None;
+                }
+                if color[3] != current_alpha {
+                    alpha_state(&mut content, refs, color[3]);
+                    current_alpha = color[3];
+                }
+                let [r, g, b, _] = *color;
+                content
+                    .save_state()
+                    .set_stroke_rgb(unit(r), unit(g), unit(b))
+                    .set_line_width(width / SCALE)
+                    .set_line_cap(pdf_writer::types::LineCapStyle::RoundCap)
+                    .move_to(x1 / SCALE, height - y1 / SCALE)
+                    .line_to(x2 / SCALE, height - y2 / SCALE)
+                    .stroke()
+                    .restore_state();
+            }
+            DrawItem::Polygon { points, color } => {
+                if in_text {
+                    content.end_text();
+                    in_text = false;
+                    current_font = None;
+                }
+                if color[3] != current_alpha {
+                    alpha_state(&mut content, refs, color[3]);
+                    current_alpha = color[3];
+                }
+                set_fill(&mut content, *color, &mut current_color);
+                let mut points = points.iter().map(|&(x, y)| (x / SCALE, height - y / SCALE));
+                if let Some((x, y)) = points.next() {
+                    content.move_to(x, y);
+                    for (x, y) in points {
+                        content.line_to(x, y);
+                    }
+                    content.close_path().fill_nonzero();
+                }
+            }
             DrawItem::Glyph { key, x, y, color } => {
                 let font = embed_font(fonts, refs, key.font);
                 let gid = font.remapper.remap(key.glyph_id);
@@ -282,7 +331,23 @@ fn page_content(
                 y,
                 width,
                 height: h,
+                shape: Some(shape),
+                ..
+            } => {
+                if in_text {
+                    content.end_text();
+                    in_text = false;
+                    current_font = None;
+                }
+                write_shape(&mut content, shape, [*x, *y, *width, *h], height);
+            }
+            DrawItem::Picture {
+                x,
+                y,
+                width,
+                height: h,
                 image,
+                shape: None,
             } => {
                 if in_text {
                     content.end_text();
@@ -312,12 +377,110 @@ fn page_content(
                     .x_object(Name(name.as_bytes()))
                     .restore_state();
             }
+            DrawItem::Path {
+                points,
+                closed,
+                fill,
+                stroke,
+            } => {
+                if in_text {
+                    content.end_text();
+                    in_text = false;
+                    current_font = None;
+                }
+                let Some((&(x0, y0), rest)) = points.split_first() else {
+                    continue;
+                };
+                let point = |x: f32, y: f32| (x / SCALE, height - y / SCALE);
+                // Цвета и толщина линии — внутри q … Q, чтобы не сбить
+                // то, что запомнено для текста.
+                content.save_state();
+                let path = |content: &mut Content| {
+                    let (x, y) = point(x0, y0);
+                    content.move_to(x, y);
+                    for &(px, py) in rest {
+                        let (x, y) = point(px, py);
+                        content.line_to(x, y);
+                    }
+                    if *closed {
+                        content.close_path();
+                    }
+                };
+                if let Some(color) = fill {
+                    if color[3] != current_alpha {
+                        alpha_state(&mut content, refs, color[3]);
+                    }
+                    content.set_fill_rgb(unit(color[0]), unit(color[1]), unit(color[2]));
+                    path(&mut content);
+                    content.fill_nonzero();
+                }
+                if let Some((color, width)) = stroke {
+                    if color[3] != current_alpha {
+                        alpha_state(&mut content, refs, color[3]);
+                    }
+                    content.set_stroke_rgb(unit(color[0]), unit(color[1]), unit(color[2]));
+                    content.set_line_width(width / SCALE);
+                    content.set_line_join(pdf_writer::types::LineJoinStyle::RoundJoin);
+                    path(&mut content);
+                    content.stroke();
+                }
+                content.restore_state();
+            }
         }
     }
     if in_text {
         content.end_text();
     }
     content.finish().to_vec()
+}
+
+/// Фигура линиями PDF: каждая линия — со своими заливкой и обводкой
+/// внутри `q … Q`, чтобы не сбить цвета и толщину линий текста.
+/// Прозрачность фигур пока не передаётся.
+fn write_shape(content: &mut Content, shape: &Shape, [x, y, w, h]: [f32; 4], height: f32) {
+    let point = |[px, py]: [f32; 2]| (px / SCALE, height - py / SCALE);
+    for path in shape_paths(shape, x, y, w, h, SCALE) {
+        if path.fill.is_none() && path.stroke.is_none() {
+            continue;
+        }
+        content.save_state();
+        if let Some([r, g, b, _]) = path.fill {
+            content.set_fill_rgb(unit(r), unit(g), unit(b));
+        }
+        if let Some(stroke) = &path.stroke {
+            let [r, g, b, _] = stroke.color;
+            content.set_stroke_rgb(unit(r), unit(g), unit(b));
+            content.set_line_width(stroke.width / SCALE);
+            if !stroke.dash.is_empty() {
+                content.set_dash_pattern(stroke.dash.iter().map(|d| d / SCALE), 0.0);
+            }
+        }
+        for segment in &path.segments {
+            match *segment {
+                Segment::MoveTo(p) => {
+                    let (x, y) = point(p);
+                    content.move_to(x, y);
+                }
+                Segment::LineTo(p) => {
+                    let (x, y) = point(p);
+                    content.line_to(x, y);
+                }
+                Segment::CubicTo(a, b, c) => {
+                    let ((x1, y1), (x2, y2), (x3, y3)) = (point(a), point(b), point(c));
+                    content.cubic_to(x1, y1, x2, y2, x3, y3);
+                }
+                Segment::Close => {
+                    content.close_path();
+                }
+            }
+        }
+        match (path.fill.is_some(), path.stroke.is_some()) {
+            (true, true) => content.fill_nonzero_and_stroke(),
+            (true, false) => content.fill_nonzero(),
+            _ => content.stroke(),
+        };
+        content.restore_state();
+    }
 }
 
 /// Цвет заливки, если он сменился.

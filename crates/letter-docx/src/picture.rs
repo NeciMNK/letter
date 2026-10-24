@@ -23,9 +23,9 @@ const R_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relati
 /// допускает). Защищает вёрстку от бессмысленных чисел.
 const MAX_EMU: i64 = 20_116_800 * 10;
 
-/// Читает `w:drawing`. `None`, если это не рисунок (надпись, фигура,
-/// диаграмма) или разметка непонятна: тогда элемент сохраняется без
-/// разбора.
+/// Читает `w:drawing`: рисунок, фигуру ([`Picture::shape`]), диаграмму
+/// или SmartArt. `None`, если это что-то другое или разметка непонятна:
+/// тогда элемент сохраняется без разбора.
 pub(crate) fn read_picture(drawing: &Element) -> Option<Picture> {
     let mut children = drawing.elements();
     let frame = children.next()?;
@@ -46,17 +46,43 @@ pub(crate) fn read_picture(drawing: &Element) -> Option<Picture> {
     let (width, height) = (size("cx")?, size("cy")?);
     let graphic = inline.elements().find(|e| e.local == "graphic")?;
     let data = graphic.elements().find(|e| e.local == "graphicData")?;
-    let pic = data.elements().find(|e| e.local == "pic")?;
-    let fill = pic.elements().find(|e| e.local == "blipFill")?;
-    let blip = fill.elements().find(|e| e.local == "blip")?;
-    let relationship = attr(blip, "embed")?.to_string();
+    if let Some(shape) = crate::shape::read_graphic_shape(data) {
+        return Some(Picture {
+            width,
+            height,
+            image: None,
+            relationship: None,
+            raw: Some(drawing.raw()),
+            anchor,
+            drawing: None,
+            shape: Some(std::sync::Arc::new(shape)),
+        });
+    }
+    // Диаграмма (`c:chart r:id`): связь ведёт к её части, а не к картинке.
+    // SmartArt: связи нет, готовый вид диаграммы подставляется после
+    // чтения документа (см. `crate::smartart`).
+    let relationship = if data.elements().any(|e| e.local == "relIds") {
+        None
+    } else {
+        Some(match data.elements().find(|e| e.local == "chart") {
+            Some(chart) => attr(chart, "id")?.to_string(),
+            None => {
+                let pic = data.elements().find(|e| e.local == "pic")?;
+                let fill = pic.elements().find(|e| e.local == "blipFill")?;
+                let blip = fill.elements().find(|e| e.local == "blip")?;
+                attr(blip, "embed")?.to_string()
+            }
+        })
+    };
     Some(Picture {
+        drawing: None,
         width,
         height,
         image: None,
-        relationship: Some(relationship),
+        relationship,
         raw: Some(drawing.raw()),
         anchor,
+        shape: None,
     })
 }
 
@@ -245,12 +271,64 @@ fn patched(raw: &RawXml, picture: &Picture) -> String {
     let Ok(mut root) = xml::parse(raw.as_str().as_bytes()) else {
         return raw.as_str().to_string();
     };
+    if root.local == "AlternateContent" {
+        // Фигура Word 2010 и новее с запасным VML для старых программ:
+        // меняется `w:drawing` из `mc:Choice`, а запасной вид не
+        // записывается — он показывал бы старый размер и место.
+        return match alternate_drawing(&mut root) {
+            Some(drawing) => {
+                if patch_drawing(drawing, picture) {
+                    drawing.to_xml_fragment()
+                } else {
+                    raw.as_str().to_string()
+                }
+            }
+            None => raw.as_str().to_string(),
+        };
+    }
+    if patch_drawing(&mut root, picture) {
+        root.to_xml_fragment()
+    } else {
+        raw.as_str().to_string()
+    }
+}
+
+/// `w:drawing` из `mc:Choice` в `mc:AlternateContent`.
+fn alternate_drawing(root: &mut Element) -> Option<&mut Element> {
+    root.children.iter_mut().find_map(|n| match n {
+        Node::Element(choice) if choice.local == "Choice" => {
+            choice.children.iter_mut().find_map(|n| match n {
+                Node::Element(d) if d.local == "drawing" => Some(d),
+                _ => None,
+            })
+        }
+        _ => None,
+    })
+}
+
+/// Фигура Word 2010 и новее: `mc:AlternateContent`, в `mc:Choice`
+/// которого `w:drawing` с фигурой. `None`, если там не фигура.
+pub(crate) fn read_alternate(element: &Element) -> Option<Picture> {
+    let drawing = element
+        .elements()
+        .filter(|c| c.local == "Choice")
+        .flat_map(Element::elements)
+        .find(|d| d.local == "drawing" && crate::document::is_w_ns(d.ns.as_deref()))?;
+    let mut picture = read_picture(drawing)?;
+    picture.shape.as_ref()?;
+    picture.raw = Some(element.raw());
+    Some(picture)
+}
+
+/// Записывает в `w:drawing` размер, положение и обтекание из модели.
+/// `true`, если что-то поменялось.
+fn patch_drawing(root: &mut Element, picture: &Picture) -> bool {
     let Some(Node::Element(inline)) = root
         .children
         .iter_mut()
         .find(|n| matches!(n, Node::Element(e) if e.local == "inline" || e.local == "anchor"))
     else {
-        return raw.as_str().to_string();
+        return false;
     };
     let mut changed = false;
     match (&picture.anchor, inline.local == "anchor") {
@@ -278,20 +356,20 @@ fn patched(raw: &RawXml, picture: &Picture) -> String {
             changed |= set_size(e, &cx, &cy);
         }
     }
-    // a:graphic/a:graphicData/pic:pic/pic:spPr/a:xfrm/a:ext
-    if let Some(xfrm) = descend(inline, &["graphic", "graphicData", "pic", "spPr", "xfrm"]) {
-        for node in &mut xfrm.children {
-            let Node::Element(e) = node else { continue };
-            if e.local == "ext" {
-                changed |= set_size(e, &cx, &cy);
+    // a:graphic/a:graphicData/pic:pic/pic:spPr/a:xfrm/a:ext у картинки,
+    // wps:wsp/wps:spPr у фигуры и wpg:wgp/wpg:grpSpPr у группы.
+    for path in [["pic", "spPr"], ["wsp", "spPr"], ["wgp", "grpSpPr"]] {
+        let path = ["graphic", "graphicData", path[0], path[1], "xfrm"];
+        if let Some(xfrm) = descend(inline, &path) {
+            for node in &mut xfrm.children {
+                let Node::Element(e) = node else { continue };
+                if e.local == "ext" {
+                    changed |= set_size(e, &cx, &cy);
+                }
             }
         }
     }
-    if changed {
-        root.to_xml_fragment()
-    } else {
-        raw.as_str().to_string()
-    }
+    changed
 }
 
 /// Переименовывает элемент `wp:inline` или `wp:anchor` в `local`.
@@ -679,12 +757,14 @@ mod tests {
     #[test]
     fn new_picture_gets_full_markup() {
         let picture = Picture {
+            drawing: None,
             width: 12_700,
             height: 25_400,
             image: None,
             relationship: Some("rId3".into()),
             raw: None,
             anchor: None,
+            shape: None,
         };
         let xml = picture_xml(&picture, 7);
         let wrapped = format!(
@@ -767,12 +847,14 @@ mod tests {
     #[test]
     fn new_floating_picture_is_written() {
         let picture = Picture {
+            drawing: None,
             width: 12_700,
             height: 25_400,
             image: None,
             relationship: Some("rId3".into()),
             raw: None,
             anchor: Some(Box::new(square_anchor())),
+            shape: None,
         };
         let xml = picture_xml(&picture, 7);
         let wrapped = format!(

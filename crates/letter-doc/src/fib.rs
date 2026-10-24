@@ -13,16 +13,85 @@ const NFIB_WORD97: u16 = 0x00C0;
 pub(crate) mod index {
     /// Таблица стилей (`STSH`).
     pub const STSHF: usize = 1;
+    /// Ссылки на сноски (`PlcffndRef`).
+    pub const PLCFFND_REF: usize = 2;
+    /// Текст сносок (`PlcffndTxt`).
+    pub const PLCFFND_TXT: usize = 3;
+    /// Ссылки на примечания (`PlcfandRef`).
+    pub const PLCFAND_REF: usize = 4;
+    /// Текст примечаний (`PlcfandTxt`).
+    pub const PLCFAND_TXT: usize = 5;
     /// Разделы (`PlcfSed`).
     pub const PLCF_SED: usize = 6;
     /// Страницы оформления знаков (`PlcBteChpx`).
     pub const PLCF_BTE_CHPX: usize = 12;
     /// Страницы оформления абзацев (`PlcBtePapx`).
     pub const PLCF_BTE_PAPX: usize = 13;
+    /// Колонтитулы (`PlcfHdd`).
+    pub const PLCF_HDD: usize = 11;
     /// Шрифты (`SttbfFfn`).
     pub const STTBF_FFN: usize = 15;
+    /// Свойства документа (`Dop`).
+    pub const DOP: usize = 31;
     /// Таблица кусков текста (`Clx`).
     pub const CLX: usize = 33;
+    /// Авторы примечаний (`GrpXstAtnOwners`).
+    pub const GRP_XST_ATN_OWNERS: usize = 36;
+    /// Закладки примечаний: имена (`SttbfAtnBkmk`), начала (`PlcfAtnBkf`)
+    /// и концы (`PlcfAtnBkl`).
+    pub const STTBF_ATN_BKMK: usize = 37;
+    pub const PLCF_ATN_BKF: usize = 42;
+    pub const PLCF_ATN_BKL: usize = 43;
+    /// Ссылки на концевые сноски (`PlcfendRef`) и их текст (`PlcfendTxt`).
+    pub const PLCFEND_REF: usize = 46;
+    pub const PLCFEND_TXT: usize = 47;
+}
+
+/// Части текста документа по порядку (`CP`): основной текст, сноски,
+/// колонтитулы, примечания, концевые сноски.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Stories {
+    /// Знаков в основном тексте.
+    pub text: u32,
+    /// Знаков в сносках.
+    pub footnotes: u32,
+    /// Знаков в колонтитулах.
+    pub headers: u32,
+    /// Знаков в макросах (не используется, но место занимает).
+    pub macros: u32,
+    /// Знаков в примечаниях.
+    pub comments: u32,
+    /// Знаков в концевых сносках.
+    pub endnotes: u32,
+}
+
+impl Stories {
+    /// Начало сносок.
+    pub fn footnotes_start(&self) -> u32 {
+        self.text
+    }
+
+    /// Начало колонтитулов.
+    pub fn headers_start(&self) -> u32 {
+        self.footnotes_start().saturating_add(self.footnotes)
+    }
+
+    /// Начало примечаний.
+    pub fn comments_start(&self) -> u32 {
+        self.headers_start()
+            .saturating_add(self.headers)
+            .saturating_add(self.macros)
+    }
+
+    /// Начало концевых сносок.
+    pub fn endnotes_start(&self) -> u32 {
+        self.comments_start().saturating_add(self.comments)
+    }
+
+    /// Всего знаков во всех этих частях.
+    pub fn total(&self) -> u32 {
+        self.endnotes_start().saturating_add(self.endnotes)
+    }
 }
 
 /// Нужное из заголовка.
@@ -30,8 +99,8 @@ pub(crate) mod index {
 pub(crate) struct Fib {
     /// Таблицы лежат в потоке `1Table` (иначе `0Table`).
     pub table_1: bool,
-    /// Знаков в основном тексте.
-    pub ccp_text: u32,
+    /// Сколько знаков в каждой части текста.
+    pub stories: Stories,
     /// Пары «смещение в табличном потоке — длина».
     pub fc_lcb: Vec<(u32, u32)>,
 }
@@ -55,7 +124,15 @@ impl Fib {
         let at = 34 + csw * 2;
         let cslw = usize::from(u16_at(stream, at).ok_or_else(short)?);
         let rg_lw = at + 2;
-        let ccp_text = u32_at(stream, rg_lw + 3 * 4).ok_or_else(short)?;
+        let ccp = |i: usize| u32_at(stream, rg_lw + i * 4).unwrap_or(0);
+        let stories = Stories {
+            text: u32_at(stream, rg_lw + 3 * 4).ok_or_else(short)?,
+            footnotes: ccp(4),
+            headers: ccp(5),
+            macros: ccp(6),
+            comments: ccp(7),
+            endnotes: ccp(8),
+        };
         let at = rg_lw + cslw * 4;
         let count = usize::from(u16_at(stream, at).ok_or_else(short)?);
         let blob = at + 2;
@@ -70,7 +147,7 @@ impl Fib {
             .ok_or_else(short)?;
         Ok(Fib {
             table_1: flags & 0x0200 != 0,
-            ccp_text,
+            stories,
             fc_lcb,
         })
     }
@@ -130,6 +207,23 @@ mod tests {
         assert_eq!(positions, [0, 10, 20]);
         assert_eq!(entries, [&[1, 2, 3][..], &[4, 5, 6][..]]);
         assert!(plc(&[1, 2], 3).is_none());
+    }
+
+    #[test]
+    fn stories_follow_each_other() {
+        let stories = Stories {
+            text: 100,
+            footnotes: 10,
+            headers: 20,
+            macros: 1,
+            comments: 5,
+            endnotes: 7,
+        };
+        assert_eq!(stories.footnotes_start(), 100);
+        assert_eq!(stories.headers_start(), 110);
+        assert_eq!(stories.comments_start(), 131);
+        assert_eq!(stories.endnotes_start(), 136);
+        assert_eq!(stories.total(), 143);
     }
 
     #[test]

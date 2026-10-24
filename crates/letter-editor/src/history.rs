@@ -8,21 +8,26 @@
 //! Набор текста объединяется в один шаг по словам, как в Word.
 
 use letter_model::{
-    Alignment, Anchor, Block, BreakKind, Color, Comment, Document, HeaderFooter, HeaderFooterKind,
-    Hyperlink, Note, NoteKind, Picture, Section, SectionStart, Settings,
+    Alignment, Anchor, Block, BreakKind, Color, Comment, Document, DocumentProtection,
+    HeaderFooter, HeaderFooterKind, Hyperlink, Note, NoteKind, Picture, RevisionKind, Section,
+    SectionStart, Settings, WriteProtection,
 };
 
+use crate::Position;
 use crate::clipboard::{insert_fragment, insert_plain_text};
 use crate::comments::{
     add_comment, delete_all_comments, delete_comment, reply_to_comment, set_comment_done,
     set_comment_text,
 };
-use crate::edit::paragraph_count;
+use crate::controls::{
+    choose_list_item, editable, placeholder_at, set_control_date, set_control_text, toggle_checkbox,
+};
 use crate::edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, split_paragraph,
     top_level,
 };
-use crate::fields::{FieldContext, update_fields};
+use crate::edit::{paragraph_count, paragraph_ref, text_len};
+use crate::fields::{DateTime, FieldContext, update_fields};
 use crate::format::{
     ParagraphFormat, RunFormat, align_paragraphs, apply_style, format_paragraphs, format_runs,
 };
@@ -34,6 +39,9 @@ use crate::lists::{
 };
 use crate::notes::{insert_note, notes_mut};
 use crate::picture::{insert_picture, resize_picture, set_picture_anchor};
+use crate::revisions::{
+    delete_tracked, grapheme_step, insert_tracked, resolve_revisions, revision_now,
+};
 use crate::search::{SearchOptions, clamp, replace_all};
 use crate::section::{
     PageSetup, insert_break, insert_section_break, set_header_footer, set_page_setup,
@@ -193,6 +201,26 @@ pub enum Command {
     PageColor(Option<Color>),
     /// «Расстановка переносов»: автоматическая (`true`) или нет.
     AutoHyphenation(bool),
+    /// «Ограничить редактирование»: новая защита документа; `None` —
+    /// снять защиту (пароль проверяет вызывающий, см.
+    /// [`crate::protection`]).
+    Protection(Option<DocumentProtection>),
+    /// Пароль на изменение файла и «рекомендовать только чтение»;
+    /// `None` — убрать.
+    WriteProtection(Option<WriteProtection>),
+    /// «Исправления»: записывать правку как исправления (`true`) или нет.
+    TrackChanges(bool),
+    /// «Принять» исправления: во всём документе (`all`) или в абзацах
+    /// выделенного.
+    AcceptRevisions {
+        /// Во всём документе.
+        all: bool,
+    },
+    /// «Отклонить» исправления: во всём документе или в выделенном.
+    RejectRevisions {
+        /// Во всём документе.
+        all: bool,
+    },
     /// «Титульная страница»: вставить в начало документа.
     InsertCoverPage(Box<crate::cover::CoverPage>),
     /// «Пустая страница»: два разрыва страницы у курсора.
@@ -200,6 +228,15 @@ pub enum Command {
     /// «Подложка» с этой надписью во всех верхних колонтитулах; `None` —
     /// «Удалить подложку».
     Watermark(Option<String>),
+    /// Заменить текст элемента управления содержимым у курсора (выбор
+    /// в поле со списком, набор вместо подсказки).
+    ControlText(String),
+    /// Поставить или снять флажок у курсора.
+    ToggleCheckBox,
+    /// Выбрать пункт с этим номером в списке у курсора.
+    ChooseListItem(usize),
+    /// Поставить дату в элемент выбора даты у курсора.
+    ControlDate(DateTime),
     /// Заменить текст сноски `id` вида `kind` (после её правки).
     SetNote {
         /// Обычная или концевая.
@@ -383,9 +420,25 @@ pub struct History {
     sealed: bool,
     /// Последний выданный номер состояния.
     last_id: u64,
+    /// Автор исправлений (см. [`History::set_author`]).
+    author: String,
 }
 
 impl History {
+    /// Имя автора, которым подписываются исправления.
+    pub fn set_author(&mut self, author: impl Into<String>) {
+        self.author = author.into();
+    }
+
+    /// Автор исправлений; если не задан — «letter».
+    fn author(&self) -> &str {
+        if self.author.is_empty() {
+            "letter"
+        } else {
+            &self.author
+        }
+    }
+
     /// Пустая история.
     pub fn new() -> History {
         History::default()
@@ -395,7 +448,25 @@ impl History {
     /// выделение (пустое — курсор).
     pub fn run(&mut self, doc: &mut Document, selection: Selection, command: Command) -> Selection {
         let (start, end) = (selection.start(), selection.end());
+        // Текст в элементе с запретом правки не меняется.
+        let edits_text = matches!(
+            command,
+            Command::Type(_)
+                | Command::SplitParagraph
+                | Command::LineBreak
+                | Command::DeleteBackward
+                | Command::DeleteForward
+                | Command::Paste(_)
+                | Command::PasteText(_)
+        );
+        if edits_text && !editable(doc, start, end) {
+            return selection;
+        }
         let command = match command {
+            // Набранный текст заменяет подсказку элемента целиком.
+            Command::Type(text) if selection.is_empty() && placeholder_at(doc, start) => {
+                Command::ControlText(text)
+            }
             // В таблице Tab переходит в следующую ячейку, а в последней
             // добавляет строку.
             Command::Tab { shift } if in_table(doc, selection.focus.paragraph) => {
@@ -425,12 +496,19 @@ impl History {
                 return selection;
             }
             Command::AutoHyphenation(on) => {
-                if doc.settings.auto_hyphenation != on {
-                    let before = Box::new(doc.settings.clone());
-                    doc.settings.auto_hyphenation = on;
-                    let after = Box::new(doc.settings.clone());
-                    self.push(Patch::Settings { before, after }, selection);
-                }
+                self.change_settings(doc, selection, |s| s.auto_hyphenation = on);
+                return selection;
+            }
+            Command::Protection(protection) => {
+                self.change_settings(doc, selection, |s| s.protection = protection);
+                return selection;
+            }
+            Command::WriteProtection(protection) => {
+                self.change_settings(doc, selection, |s| s.write_protection = protection);
+                return selection;
+            }
+            Command::TrackChanges(on) => {
+                self.change_settings(doc, selection, |s| s.track_revisions = on);
                 return selection;
             }
             Command::EvenOddHeaders(on) => {
@@ -553,8 +631,21 @@ impl History {
                 | Command::AddBookmark(_)
                 | Command::DeleteBookmark(_)
                 | Command::InsertCoverPage(_)
+                | Command::AcceptRevisions { .. }
+                | Command::RejectRevisions { .. }
+                | Command::ControlText(_)
+                | Command::ToggleCheckBox
+                | Command::ChooseListItem(_)
+                | Command::ControlDate(_)
                 | Command::OutlineLevel(_)
         );
+        // Запись исправлений: набор и стирание помечаются, а не меняют
+        // текст сразу.
+        let tracking = doc.settings.track_revisions
+            && matches!(
+                command,
+                Command::Type(_) | Command::DeleteBackward | Command::DeleteForward
+            );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
             Command::DeleteBackward if !erasing => {
@@ -569,6 +660,8 @@ impl History {
             | Command::UpdateToc(_)
             | Command::DeleteToc
             | Command::InsertToc(_)
+            | Command::AcceptRevisions { all: true }
+            | Command::RejectRevisions { all: true }
             | Command::PageSetup(PageSetup::Borders(_)) => {
                 (0, paragraph_count(doc).saturating_sub(1))
             }
@@ -613,7 +706,18 @@ impl History {
             Saved::Sections(doc.sections[from.0..=to.0].to_vec())
         };
 
-        let at = if erasing {
+        let author = self.author().to_string();
+        let at = if erasing && tracking {
+            let revision = revision_now(RevisionKind::Delete, &author);
+            let end = delete_tracked(doc, start, end, &revision);
+            // Набранное встаёт после удалённого, стирание оставляет курсор
+            // в начале.
+            if matches!(command, Command::Type(_)) {
+                end
+            } else {
+                start
+            }
+        } else if erasing {
             delete_range(doc, start, end)
         } else {
             selection.focus
@@ -754,6 +858,15 @@ impl History {
                     focus: clamp(doc, selection.focus),
                 })
             }
+            Command::AcceptRevisions { all } | Command::RejectRevisions { all } => {
+                let range = (!all).then_some((start.paragraph, end.paragraph));
+                let accept = matches!(command, Command::AcceptRevisions { .. });
+                resolve_revisions(doc, range, accept);
+                Some(Selection {
+                    anchor: clamp(doc, selection.anchor),
+                    focus: clamp(doc, selection.focus),
+                })
+            }
             Command::UpdateToc(context) => {
                 let last = paragraph_count(doc).saturating_sub(1);
                 update_tocs(doc, 0, last, context);
@@ -773,6 +886,9 @@ impl History {
         };
         let focus = match &command {
             _ if after.is_some() => at,
+            Command::Type(text) if tracking => {
+                insert_tracked(doc, at, text, &revision_now(RevisionKind::Insert, &author))
+            }
             Command::Type(text) => insert_text(doc, at, text),
             Command::Link {
                 link,
@@ -785,6 +901,29 @@ impl History {
             Command::SplitParagraph => split_paragraph(doc, at),
             Command::LineBreak => insert_line_break(doc, at),
             Command::DeleteBackward | Command::DeleteForward if erasing => at,
+            Command::DeleteBackward | Command::DeleteForward if tracking => {
+                let forward = matches!(command, Command::DeleteForward);
+                let revision = revision_now(RevisionKind::Delete, &author);
+                match grapheme_step(doc, at, forward) {
+                    Some(offset) if forward => {
+                        delete_tracked(doc, at, Position::new(at.paragraph, offset), &revision)
+                    }
+                    Some(offset) => {
+                        let to = Position::new(at.paragraph, offset);
+                        delete_tracked(doc, to, at, &revision);
+                        to
+                    }
+                    // Знак абзаца не стирается: курсор переходит в соседний.
+                    None if forward && at.paragraph + 1 < paragraph_count(doc) => {
+                        Position::new(at.paragraph + 1, 0)
+                    }
+                    None if !forward && at.paragraph > 0 => {
+                        let len = paragraph_ref(doc, at.paragraph - 1).map_or(0, text_len);
+                        Position::new(at.paragraph - 1, len)
+                    }
+                    None => at,
+                }
+            }
             Command::DeleteBackward => delete_backward(doc, at),
             Command::DeleteForward => delete_forward(doc, at),
             Command::Paste(fragment) => insert_fragment(doc, at, fragment),
@@ -799,6 +938,18 @@ impl History {
                 insert_break(doc, at, BreakKind::Page)
             }
             Command::InsertCoverPage(cover) => crate::cover::insert_cover_page(doc, cover),
+            Command::ControlText(text) => {
+                set_control_text(doc, selection.focus, text).unwrap_or(selection.focus)
+            }
+            Command::ToggleCheckBox => {
+                toggle_checkbox(doc, selection.focus).unwrap_or(selection.focus)
+            }
+            Command::ChooseListItem(index) => {
+                choose_list_item(doc, selection.focus, *index).unwrap_or(selection.focus)
+            }
+            Command::ControlDate(date) => {
+                set_control_date(doc, selection.focus, *date).unwrap_or(selection.focus)
+            }
             Command::SectionBreak(start) => insert_section_break(doc, at, *start),
             Command::Format(_)
             | Command::Align(_)
@@ -842,6 +993,11 @@ impl History {
             | Command::PageColor(_)
             | Command::AutoHyphenation(_)
             | Command::EvenOddHeaders(_)
+            | Command::Protection(_)
+            | Command::WriteProtection(_)
+            | Command::TrackChanges(_)
+            | Command::AcceptRevisions { .. }
+            | Command::RejectRevisions { .. }
             | Command::Watermark(_) => at,
         };
         let after = after.unwrap_or(Selection::caret(focus));
@@ -919,6 +1075,22 @@ impl History {
             self.undo.remove(0);
         }
         after
+    }
+
+    /// Меняет настройки документа через `change` и запоминает шаг, если
+    /// они правда изменились.
+    fn change_settings(
+        &mut self,
+        doc: &mut Document,
+        selection: Selection,
+        change: impl FnOnce(&mut Settings),
+    ) {
+        let before = Box::new(doc.settings.clone());
+        change(&mut doc.settings);
+        if doc.settings != *before {
+            let after = Box::new(doc.settings.clone());
+            self.push(Patch::Settings { before, after }, selection);
+        }
     }
 
     /// Запоминает шаг, после которого выделение не изменилось.
@@ -1064,12 +1236,14 @@ mod tests {
         let mut d = doc(&["ab"]);
         let mut h = History::new();
         let picture = Picture {
+            drawing: None,
             width: 127_000,
             height: 254_000,
             image: None,
             relationship: None,
             raw: None,
             anchor: None,
+            shape: None,
         };
         // Вставка заменяет выделенное.
         let picked = Selection::new(Position::new(0, 0), Position::new(0, 1));
@@ -1357,6 +1531,72 @@ mod tests {
     }
 
     #[test]
+    fn tracked_typing_and_deleting() {
+        let mut d = doc(&["abc"]);
+        let mut h = History::new();
+        h.set_author("Аня");
+        h.run(&mut d, caret(0, 0), Command::TrackChanges(true));
+        let s = h.run(&mut d, caret(0, 3), Command::Type("d".into()));
+        assert_eq!(s, caret(0, 4));
+        // Backspace стирает своё вставленное, затем помечает «c».
+        let s = h.run(&mut d, s, Command::DeleteBackward);
+        let s = h.run(&mut d, s, Command::DeleteBackward);
+        assert_eq!(s, caret(0, 2));
+        assert_eq!(d.plain_text(), "abc");
+        let kinds: Vec<_> = crate::edit::paragraph_ref(&d, 0)
+            .map(|p| {
+                p.runs()
+                    .map(|r| {
+                        r.props
+                            .revision
+                            .as_ref()
+                            .map(|r| (r.kind, r.author.clone()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            kinds,
+            [None, Some((RevisionKind::Delete, "Аня".to_string()))]
+        );
+        // Выделение и набор: выделенное удалено, новое — после него.
+        let s = h.run(
+            &mut d,
+            Selection {
+                anchor: Position::new(0, 0),
+                focus: Position::new(0, 1),
+            },
+            Command::Type("X".into()),
+        );
+        assert_eq!(s, caret(0, 2));
+        assert_eq!(d.plain_text(), "aXbc");
+        h.run(&mut d, s, Command::AcceptRevisions { all: true });
+        assert_eq!(d.plain_text(), "Xb");
+        h.undo(&mut d);
+        h.run(&mut d, s, Command::RejectRevisions { all: false });
+        assert_eq!(d.plain_text(), "abc");
+        assert!(!crate::revisions::has_revisions(&d, None));
+    }
+
+    #[test]
+    fn protection_can_be_undone() {
+        let mut d = doc(&["a"]);
+        let mut h = History::new();
+        let p = crate::protection::protect(letter_model::EditRestriction::ReadOnly, "");
+        h.run(&mut d, caret(0, 0), Command::Protection(Some(p.clone())));
+        assert_eq!(d.settings.protection, Some(p));
+        h.run(
+            &mut d,
+            caret(0, 0),
+            Command::WriteProtection(Some(Default::default())),
+        );
+        assert!(d.settings.write_protection.is_some());
+        h.undo(&mut d);
+        h.undo(&mut d);
+        assert_eq!(d.settings, Settings::default());
+    }
+
+    #[test]
     fn auto_hyphenation_can_be_undone() {
         let mut d = doc(&["a"]);
         let mut h = History::new();
@@ -1437,5 +1677,64 @@ mod tests {
         assert!(d.sections[0].props.headers.default.is_some());
         h.undo(&mut d);
         assert_eq!(d, original);
+    }
+
+    fn with_control(props: &str) -> Document {
+        let control = std::sync::Arc::new(letter_model::ContentControl {
+            props: Some(letter_model::RawXml::new(format!(
+                r#"<w:sdtPr xmlns:w="urn:w">{props}</w:sdtPr>"#
+            ))),
+            end_props: None,
+        });
+        let paragraph = Paragraph::from_runs([
+            letter_model::Run::text("Имя: "),
+            letter_model::Run::text("[введите]").with_props(letter_model::RunProps {
+                control: Some(control),
+                ..Default::default()
+            }),
+        ]);
+        let mut d = Document::new();
+        d.sections[0].blocks = vec![paragraph.into()];
+        d
+    }
+
+    #[test]
+    fn typing_into_placeholder_replaces_it_and_undoes() {
+        let mut d = with_control("<w:showingPlcHdr/>");
+        let mut h = History::default();
+        let at = caret(0, "Имя: ".len() + 1);
+        let s = h.run(&mut d, at, Command::Type("И".into()));
+        assert_eq!(d.plain_text(), "Имя: И");
+        assert_eq!(s.focus.offset, "Имя: И".len());
+        // Дальше набор идёт как обычно.
+        h.run(&mut d, s, Command::Type("ван".into()));
+        assert_eq!(d.plain_text(), "Имя: Иван");
+        h.undo(&mut d);
+        h.undo(&mut d);
+        assert_eq!(d.plain_text(), "Имя: [введите]");
+    }
+
+    #[test]
+    fn locked_control_ignores_typing() {
+        let mut d = with_control(r#"<w:lock w:val="sdtContentLocked"/>"#);
+        let mut h = History::default();
+        let inside = caret(0, "Имя: ".len() + 1);
+        assert_eq!(h.run(&mut d, inside, Command::Type("x".into())), inside);
+        h.run(&mut d, inside, Command::DeleteBackward);
+        assert_eq!(d.plain_text(), "Имя: [введите]");
+        h.run(&mut d, caret(0, "И".len()), Command::Type("x".into()));
+        assert_eq!(d.plain_text(), "Иxмя: [введите]");
+    }
+
+    #[test]
+    fn checkbox_command() {
+        let mut d = with_control(
+            r#"<w14:checkbox xmlns:w14="urn:w14"><w14:checked w14:val="0"/></w14:checkbox>"#,
+        );
+        let mut h = History::default();
+        h.run(&mut d, caret(0, "Имя: ".len()), Command::ToggleCheckBox);
+        assert_eq!(d.plain_text(), "Имя: ☒");
+        h.undo(&mut d);
+        assert_eq!(d.plain_text(), "Имя: [введите]");
     }
 }

@@ -290,7 +290,8 @@ pub(crate) fn blocks_mut<'a>(doc: &'a mut Document, path: &Path) -> Option<&'a m
     Some(blocks)
 }
 
-/// Абзац номер `index` (по порядку во всём документе) для чтения.
+/// Абзац номер `index` (по порядку во всём документе, включая абзацы
+/// таблиц) для чтения.
 pub fn paragraph_ref(doc: &Document, index: usize) -> Option<&Paragraph> {
     let path = find(doc, index)?;
     let mut blocks = &doc.sections.get(path.section)?.blocks;
@@ -329,7 +330,10 @@ pub(crate) fn plain_text(paragraph: &Paragraph) -> String {
                 RunContent::Tab => text.push('\t'),
                 RunContent::Break(BreakKind::Line) => text.push('\n'),
                 RunContent::Break(_) => text.push('\u{c}'),
-                RunContent::Picture(_) | RunContent::NoteMark(_) | RunContent::Symbol(_) => {
+                RunContent::Picture(_)
+                | RunContent::NoteMark(_)
+                | RunContent::Symbol(_)
+                | RunContent::Math(_) => {
                     text.push(letter_model::OBJECT_CHAR);
                 }
                 RunContent::NoteReference(r) if !r.custom_mark => {
@@ -535,8 +539,10 @@ fn remove_range(paragraph: &mut Paragraph, start: usize, end: usize) {
     tidy(paragraph);
 }
 
+/// Пустой фрагмент, который можно убрать. Пустой фрагмент элемента
+/// управления содержимым остаётся: без него пропал бы сам элемент.
 fn is_empty_run(inline: &Inline) -> bool {
-    matches!(inline, Inline::Run(r) if r.content.is_empty())
+    matches!(inline, Inline::Run(r) if r.content.is_empty() && r.props.control.is_none())
 }
 
 /// Наводит порядок: соседние тексты одного фрагмента склеены, пустые
@@ -639,12 +645,14 @@ mod tests {
     #[test]
     fn picture_is_one_letter() {
         let picture = letter_model::Picture {
+            drawing: None,
             width: 12_700,
             height: 12_700,
             image: None,
             relationship: Some("rId1".into()),
             raw: None,
             anchor: None,
+            shape: None,
         };
         let mut d = doc(vec![Paragraph::from_runs([Run {
             props: Default::default(),

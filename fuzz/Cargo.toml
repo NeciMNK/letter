@@ -1,0 +1,56 @@
+# Фаззинг читателей форматов (F10.4): `cargo fuzz` подбирает входные
+# файлы, на которых программа падает. Нужен ночной Rust:
+#
+#   cargo install cargo-fuzz
+#   cargo +nightly fuzz run docx -- -max_total_time=600
+#
+# Найденный падающий файл сохраняется в fuzz/artifacts/<цель>/; добавь
+# его в tests/fixtures и почини читатель. Отдельный workspace, чтобы
+# обычный `cargo build` не собирал эти цели (им нужен nightly).
+[package]
+name = "letter-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+letter-docx = { path = "../crates/letter-docx" }
+letter-layout = { path = "../crates/letter-layout" }
+letter-model = { path = "../crates/letter-model" }
+letter-odt = { path = "../crates/letter-odt" }
+letter-rtf = { path = "../crates/letter-rtf" }
+letter-text = { path = "../crates/letter-text" }
+
+[workspace]
+
+[[bin]]
+name = "docx"
+path = "fuzz_targets/docx.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "odt"
+path = "fuzz_targets/odt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtf"
+path = "fuzz_targets/rtf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text"
+path = "fuzz_targets/text.rs"
+test = false
+doc = false
+bench = false
