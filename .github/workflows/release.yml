@@ -1,34 +1,59 @@
-# Сборка установщиков (F10.1): .msi и setup.exe для Windows, .dmg для
-# macOS, .deb и .AppImage для Linux. Запускается при метке версии
-# (`git tag v0.1.0 && git push --tags`) — тогда установщики прикладываются
-# к выпуску на GitHub, — или вручную на вкладке Actions (тогда их можно
-# скачать со страницы запуска, раздел Artifacts).
+# Сборка установщиков и портативных версий, публикация выпусков.
+#
+# - Метка версии (`git tag v0.1.0 && git push --tags`) — выпуск v0.1.0 со
+#   всеми файлами. Метка с дефисом (v0.2.0-beta) — предварительный выпуск.
+# - Каждое слияние в main — «ночная сборка»: предварительный выпуск
+#   `nightly`, который каждый раз заменяется свежим.
+# - Можно запустить вручную на вкладке Actions — тоже обновит `nightly`.
+# - PR, меняющий сборку, проверяет её без публикации (файлы — в Artifacts).
+#
+# Что собирается:
+# - Windows: установщики .msi и setup.exe, портативный .zip;
+# - macOS: образ .dmg, портативный .zip с letter.app;
+# - Linux: пакет .deb, .AppImage (запускается без установки), портативный .tar.gz.
 name: Выпуск
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - packaging/**
+      - crates/letter-app/Cargo.toml
   workflow_dispatch:
 
 permissions:
   contents: write
 
+# Новое слияние в main отменяет недоделанную ночную сборку; выпуски по
+# меткам не отменяются.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
 env:
   CARGO_TERM_COLOR: always
+  # Версия в именах портативных архивов.
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'nightly' }}
 
 jobs:
   package:
-    name: Установщики (${{ matrix.os }})
+    name: Сборка (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
+          - name: Linux
+            os: ubuntu-22.04
             formats: deb,appimage
-          - os: windows-latest
+          - name: Windows
+            os: windows-latest
             formats: wix,nsis
-          - os: macos-latest
-            formats: dmg
+          - name: macOS
+            os: macos-latest
+            formats: app,dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -43,24 +68,77 @@ jobs:
         run: cargo install cargo-packager --version 0.11.8 --locked
       - name: Собрать установщики
         run: cargo packager --release --packages letter-app --formats ${{ matrix.formats }} --out-dir dist
+      # Портативная версия: программа, папка letter-data (включает хранение
+      # настроек рядом с программой) и инструкция.
+      - name: Портативная версия
+        shell: bash
+        run: |
+          mkdir -p release portable/letter/letter-data
+          cp packaging/portable/README.txt portable/letter/
+          cp packaging/portable/README.txt portable/letter/letter-data/
+          case "${{ runner.os }}" in
+            Windows)
+              cp target/release/letter.exe portable/letter/
+              (cd portable && 7z a "../release/letter-$VERSION-windows-x64-portable.zip" letter)
+              cp dist/*.msi dist/*-setup.exe release/
+              ;;
+            macOS)
+              ditto -c -k --keepParent dist/letter.app "release/letter-$VERSION-macos-portable.zip"
+              cp dist/*.dmg release/
+              ;;
+            Linux)
+              cp target/release/letter portable/letter/
+              tar -czf "release/letter-$VERSION-linux-x64-portable.tar.gz" -C portable letter
+              cp dist/*.deb dist/*.AppImage release/
+              ;;
+          esac
+          ls -la release
       - uses: actions/upload-artifact@v4
         with:
-          name: letter-${{ runner.os }}
-          path: |
-            dist/*.deb
-            dist/*.AppImage
-            dist/*.msi
-            dist/*.exe
-            dist/*.dmg
+          name: letter-${{ matrix.name }}
+          path: release/*
           if-no-files-found: error
-      - name: Приложить к выпуску
-        if: startsWith(github.ref, 'refs/tags/')
+
+  publish:
+    name: Публикация выпуска
+    needs: package
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - run: ls -la release
+      - name: Выпуск по метке версии
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          draft: true
-          files: |
-            dist/*.deb
-            dist/*.AppImage
-            dist/*.msi
-            dist/*.exe
-            dist/*.dmg
+          name: letter ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: release/*
+      # Старый ночной выпуск и его метка удаляются, новый ставится на
+      # текущий коммит.
+      - name: Убрать прошлую ночную сборку
+        if: github.ref_type != 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete nightly --cleanup-tag --yes --repo "$GITHUB_REPOSITORY" || true
+      - name: Ночная сборка
+        if: github.ref_type != 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          target_commitish: ${{ github.sha }}
+          name: Ночная сборка
+          prerelease: true
+          make_latest: false
+          body: |
+            Свежая сборка из main (коммит ${{ github.sha }}). Может содержать ошибки:
+            для постоянной работы берите выпуск с номером версии.
+
+            - Windows: `.msi` или `-setup.exe` — установщик, `-portable.zip` — без установки.
+            - macOS: `.dmg` — установка, `-portable.zip` — letter.app без установки.
+            - Linux: `.deb` — пакет, `.AppImage` и `-portable.tar.gz` — без установки.
+          files: release/*
