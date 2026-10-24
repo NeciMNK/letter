@@ -377,12 +377,12 @@ fn apply_tap(marks: &mut TableMarks, sprm: u16, op: &[u8]) {
                 0xD616 => 22,
                 _ => 44,
             };
-            for (i, shd_bytes) in op.chunks_exact(10).enumerate() {
+            for (i, shd_bytes) in op.as_chunks::<10>().0.iter().enumerate() {
                 marks.cell(first + i).shading = shd(shd_bytes);
             }
         }
         0xD609 => {
-            for (i, shd_bytes) in op.chunks_exact(2).enumerate() {
+            for (i, shd_bytes) in op.as_chunks::<2>().0.iter().enumerate() {
                 marks.cell(i).shading80 = shd80(u16_of(shd_bytes));
             }
         }
