@@ -15,11 +15,13 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod chart;
 mod comments;
 mod crypto;
 mod document;
 mod error;
 mod kind;
+mod math;
 mod names;
 mod numbering;
 mod package;
@@ -27,6 +29,8 @@ mod picture;
 mod properties;
 mod serialize;
 mod settings;
+mod shape;
+mod smartart;
 mod styles;
 mod table;
 mod theme;
@@ -40,8 +44,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use letter_model::{
-    Block, Document, HeaderFooterKind, ImageData, Inline, NoteKind, Picture, SourcePackage,
-    SourcePart, for_each_picture_in,
+    Block, ColorScheme, Document, Geometry, HeaderFooterKind, ImageData, Inline, NoteKind, Picture,
+    Shape, SourcePackage, SourcePart, for_each_picture_in,
 };
 
 pub use error::{ReadError, WriteError};
@@ -93,8 +97,13 @@ pub fn read<R: Read + Seek>(mut reader: R) -> Result<Document, ReadError> {
         numbering_part = Some(name);
         numbering_root_attributes = root.root_attributes();
     }
+    // Цвета темы нужны диаграммам и SmartArt.
+    let mut look = Look::default();
     if let Some((_, root)) = read_related_xml(&mut package, &main, "theme") {
         doc.theme = theme::read_theme(&root);
+        look.palette = chart::theme_palette(&root);
+        look.colors = smartart::read_colors(&root);
+        look.theme = doc.theme.clone();
     }
     if let Some((_, root)) = read_related_xml(&mut package, &main, "settings") {
         doc.settings = settings::read_settings(&root);
@@ -157,7 +166,7 @@ pub fn read<R: Read + Seek>(mut reader: R) -> Result<Document, ReadError> {
     rebuilt.extend(note_parts.iter().map(|(_, name, _)| Some(name.clone())));
     rebuilt.extend(comment_parts.iter().map(|(name, _)| Some(name.clone())));
     let mut source = read_source(&mut package, &rebuilt)?;
-    attach_images(|f| doc.for_each_picture_mut(f), &images, &source);
+    attach_images(|f| doc.for_each_picture_mut(f), &images, &source, &look);
     let addresses = package.external_links(&main);
     for section in &mut doc.sections {
         attach_links(&mut section.blocks, &addresses);
@@ -183,6 +192,7 @@ pub fn read<R: Read + Seek>(mut reader: R) -> Result<Document, ReadError> {
                             |f| for_each_picture_in(&mut story.blocks, f),
                             &relationships,
                             &source,
+                            &look,
                         );
                     }
                 }
@@ -203,6 +213,7 @@ pub fn read<R: Read + Seek>(mut reader: R) -> Result<Document, ReadError> {
                 |f| for_each_picture_in(&mut note.blocks, f),
                 &relationships,
                 &source,
+                &look,
             );
         }
         let entry = Some((name, attributes));
@@ -222,6 +233,7 @@ pub fn read<R: Read + Seek>(mut reader: R) -> Result<Document, ReadError> {
                 |f| for_each_picture_in(&mut comment.blocks, f),
                 &relationships,
                 &source,
+                &look,
             );
         }
         source.comments_part = Some((name, attributes));
@@ -363,35 +375,156 @@ fn attach_links(blocks: &mut [Block], addresses: &[(String, String)]) {
     }
 }
 
+/// Находит картинки рисунков (и данные диаграмм) по их связям.
 fn attach_images(
     visit: impl FnOnce(&mut dyn FnMut(&mut Picture)),
     relationships: &[package::Relationship],
     source: &SourcePackage,
+    look: &Look,
 ) {
     let mut loaded: Vec<(&str, Option<Arc<ImageData>>)> = Vec::new();
     visit(&mut |picture: &mut Picture| {
-        let Some(id) = picture.relationship.as_deref() else {
-            return;
-        };
-        if let Some((_, image)) = loaded.iter().find(|(known, _)| *known == id) {
-            picture.image = image.clone();
-            return;
+        attach_image(picture, relationships, source, look, &mut loaded);
+    });
+}
+
+/// Картинка одного рисунка: файл картинки, диаграмма или готовый вид
+/// SmartArt. У фигуры цвета темы заменяются настоящими, а рисунки внутри
+/// надписи получают свои картинки.
+fn attach_image<'a>(
+    picture: &mut Picture,
+    relationships: &'a [package::Relationship],
+    source: &SourcePackage,
+    look: &Look,
+    loaded: &mut Vec<(&'a str, Option<Arc<ImageData>>)>,
+) {
+    if let Some(shape) = &mut picture.shape {
+        let shape = Arc::make_mut(shape);
+        resolve_shape_colors(shape, &look.theme.colors);
+        for_each_shape_text(shape, &mut |blocks| {
+            for_each_picture_in(blocks, |p| {
+                attach_image(p, relationships, source, look, loaded);
+            });
+        });
+        return;
+    }
+    let Some(id) = picture.relationship.as_deref() else {
+        if picture.image.is_none() && picture.drawing.is_none() {
+            picture.drawing = smart_art(picture, relationships, source, look).map(Arc::new);
         }
-        let image = relationships
-            .iter()
-            .find(|r| r.id == id && r.kind.ends_with("/image"))
-            .and_then(|r| source.part(&r.target))
-            .map(|part| {
+        return;
+    };
+    if let Some((_, image)) = loaded.iter().find(|(known, _)| *known == id) {
+        picture.image = image.clone();
+        return;
+    }
+    let relationship = relationships.iter().find(|r| r.id == id);
+    let part = relationship.and_then(|r| source.part(&r.target));
+    let image = match relationship {
+        Some(r) if r.kind.ends_with("/image") => part.map(|part| {
+            Arc::new(ImageData {
+                name: part.name.clone(),
+                bytes: part.data.clone(),
+                chart: None,
+            })
+        }),
+        // Диаграмма рисуется по своим данным; непонятая — заглушкой.
+        Some(r) if r.kind.ends_with("/chart") => part
+            .and_then(|part| {
+                let root = xml::parse(&part.data).ok()?;
+                let chart = chart::read_chart(&root, &look.palette)?;
+                Some((part, chart))
+            })
+            .map(|(part, chart)| {
                 Arc::new(ImageData {
                     name: part.name.clone(),
-                    bytes: part.data.clone(),
+                    bytes: Vec::new(),
+                    chart: Some(Arc::new(chart)),
                 })
-            });
-        picture.image = image.clone();
-        if let Some(r) = relationships.iter().find(|r| r.id == id) {
-            loaded.push((r.id.as_str(), image));
+            }),
+        _ => None,
+    };
+    picture.image = image.clone();
+    if let Some(r) = relationship {
+        loaded.push((r.id.as_str(), image));
+    }
+}
+
+/// Вызывает `f` для текста надписи фигуры и всех фигур её группы.
+fn for_each_shape_text(shape: &mut Shape, f: &mut dyn FnMut(&mut [Block])) {
+    f(&mut shape.text);
+    if let Geometry::Group(group) = &mut shape.geometry {
+        for child in &mut group.children {
+            for_each_shape_text(&mut child.shape, f);
         }
-    });
+    }
+}
+
+/// Заменяет цвета темы в фигуре (и фигурах группы) настоящими цветами.
+fn resolve_shape_colors(shape: &mut Shape, scheme: &ColorScheme) {
+    if let Some(fill) = &mut shape.fill {
+        *fill = fill.resolved(scheme);
+    }
+    if let Some(line) = &mut shape.line {
+        line.color = line.color.resolved(scheme);
+    }
+    if let Some(color) = &mut shape.text_color {
+        *color = color.resolved(scheme);
+    }
+    if let Geometry::Group(group) = &mut shape.geometry {
+        for child in &mut group.children {
+            resolve_shape_colors(&mut child.shape, scheme);
+        }
+    }
+}
+
+/// Тема документа для диаграмм и готового вида SmartArt: цвета и шрифты.
+#[derive(Default)]
+struct Look {
+    /// Цвета рядов диаграмм.
+    palette: Vec<(u8, u8, u8)>,
+    colors: smartart::Colors,
+    theme: letter_model::Theme,
+}
+
+/// Готовый вид SmartArt для рисунка-диаграммы: часть данных по связи
+/// `r:dm`, в ней — связь с готовым видом. `None`, если рисунок не
+/// SmartArt или каких-то частей нет.
+fn smart_art(
+    picture: &Picture,
+    relationships: &[package::Relationship],
+    source: &SourcePackage,
+    look: &Look,
+) -> Option<letter_model::Drawing> {
+    let raw = xml::parse(picture.raw.as_ref()?.as_str().as_bytes()).ok()?;
+    let data_id = smartart::data_relationship(&raw)?;
+    let part = |id: &str| {
+        let target = &relationships.iter().find(|r| r.id == id)?.target;
+        xml::parse(&source.part(target)?.data).ok()
+    };
+    let data = part(data_id)?;
+    // Связь с готовым видом записана в части данных, но сама связь —
+    // у части документа.
+    let drawing = match smartart::drawing_relationship(&data) {
+        Some(id) => part(id)?,
+        None => {
+            let mut drawings = relationships
+                .iter()
+                .filter(|r| r.kind.ends_with(smartart::DRAWING_RELATIONSHIP));
+            let only = drawings.next()?;
+            if drawings.next().is_some() {
+                return None;
+            }
+            part(&only.id)?
+        }
+    };
+    smartart::read_drawing(
+        &drawing,
+        picture.width,
+        picture.height,
+        &look.colors,
+        &look.theme,
+    )
 }
 
 /// Читает и разбирает часть, связанную с `part` связью вида `kind`;

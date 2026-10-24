@@ -296,6 +296,7 @@ impl Writer {
             let _ = write!(out, "\\s{n}");
         }
         let explicit = ParagraphProps {
+            controls: Vec::new(),
             style: None,
             numbering: None,
             alignment: Some(resolved.alignment),
@@ -359,6 +360,8 @@ impl Writer {
                 match item {
                     RunContent::Text(t) => escape(out, t),
                     RunContent::Symbol(s) => escape(out, &s.unicode().to_string()),
+                    // Формулы RTF (`\mmath`) пока не пишем: линейный вид.
+                    RunContent::Math(m) => escape(out, &m.linear_text().replace('\n', " ")),
                     RunContent::Tab => out.push_str("\\tab "),
                     RunContent::Break(BreakKind::Line) => out.push_str("\\line "),
                     RunContent::Break(BreakKind::Page) => out.push_str("\\page "),

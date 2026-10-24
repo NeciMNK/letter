@@ -879,6 +879,7 @@ impl Reader {
     fn paragraph_props(&self) -> ParagraphProps {
         let para = &self.state.para;
         ParagraphProps {
+            controls: Vec::new(),
             // Абзац без `\s` — в стиле 0 («Обычный»).
             style: self.style_id(para.style.unwrap_or(0), StyleKind::Paragraph),
             numbering: None,
@@ -1095,6 +1096,7 @@ impl Reader {
     fn para_diff(&self, para: &Para) -> ParagraphProps {
         let base = Para::default();
         ParagraphProps {
+            controls: Vec::new(),
             style: None,
             numbering: None,
             alignment: (para.alignment != base.alignment).then_some(para.alignment),

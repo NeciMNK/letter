@@ -23,3 +23,10 @@ letter-model.workspace = true
 letter-render.workspace = true
 lopdf = { version = "0.46", default-features = false }
 png = "0.18"
+
+[dev-dependencies]
+# Другие форматы — для проверки битых файлов (tests/robustness.rs).
+letter-odt.workspace = true
+letter-rtf.workspace = true
+letter-text.workspace = true
+zip = { version = "9", default-features = false, features = ["deflate"] }

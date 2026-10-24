@@ -146,6 +146,7 @@ fn paragraph_text(p: &Paragraph) -> String {
         match content {
             RunContent::Text(text) => out.push_str(text),
             RunContent::Symbol(s) => out.push(s.unicode()),
+            RunContent::Math(m) => out.push_str(&m.linear_text().replace('\n', "\r\n")),
             RunContent::Tab => out.push('\t'),
             RunContent::Break(BreakKind::Line) => out.push_str("\r\n"),
             RunContent::Break(_) => out.push('\u{c}'),

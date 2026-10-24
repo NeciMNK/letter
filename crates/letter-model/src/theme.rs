@@ -1,6 +1,6 @@
-//! Тема документа (`word/theme/theme1.xml`): пока только шрифты.
+//! Тема документа (`word/theme/theme1.xml`): шрифты и цвета.
 
-use crate::ThemeFont;
+use crate::{ColorScheme, ThemeFont};
 
 /// Шрифты темы. Стили Word обычно ссылаются не на конкретный шрифт,
 /// а на «шрифт заголовков» и «шрифт текста» темы.
@@ -10,6 +10,8 @@ pub struct Theme {
     pub major: ThemeFontSet,
     /// Дополнительный набор (`a:minorFont`) — для основного текста.
     pub minor: ThemeFontSet,
+    /// Цвета темы (для фигур).
+    pub colors: ColorScheme,
 }
 
 /// Набор шрифтов темы для разных письменностей. Пустая строка в файле
@@ -59,6 +61,7 @@ mod tests {
                 east_asia: None,
                 complex_script: Some("Arial".into()),
             },
+            ..Theme::default()
         };
         assert_eq!(theme.font(ThemeFont::MajorHAnsi), Some("Cambria"));
         assert_eq!(theme.font(ThemeFont::MinorAscii), Some("Calibri"));

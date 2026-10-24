@@ -8,8 +8,9 @@ use std::path::PathBuf;
 
 use letter_docx::{ReadError, read_bytes, read_file};
 use letter_model::{
-    Block, Color, Document, HalfPoints, HeaderFooter, Inline, NoteKind, OBJECT_CHAR, PageSize,
-    Paragraph, RunContent, Underline, VerticalAlign,
+    Block, Color, ColorBase, Document, Geometry, HalfPoints, HeaderFooter, Inline, LineEnd,
+    NoteKind, OBJECT_CHAR, PageSize, Paragraph, Picture, RunContent, Underline, VerticalAlign,
+    Wrap,
 };
 
 fn fixture(name: &str) -> Document {
@@ -149,6 +150,46 @@ fn inline_image_is_read() {
     assert!(raw.as_str().contains("r:embed"));
     assert!(raw.as_str().contains("xmlns:r="));
     assert!(doc.plain_text().contains('\u{fffc}'));
+}
+
+#[test]
+fn charts_are_read_from_their_cache() {
+    use letter_model::{ChartKind, LegendPosition};
+    let doc = fixture("charts.docx");
+    let charts: Vec<_> = paragraphs(&doc)
+        .iter()
+        .flat_map(|p| p.runs())
+        .flat_map(|r| &r.content)
+        .filter_map(|c| match c {
+            RunContent::Picture(picture) => Some(picture),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(charts.len(), 3);
+    // 5 × 3 дюйма.
+    assert_eq!((charts[0].width, charts[0].height), (4_572_000, 2_743_200));
+    let data = charts[0].image.as_ref().expect("chart data");
+    assert_eq!(data.name, "word/charts/chart1.xml");
+    let chart = data.chart.as_ref().expect("chart");
+    assert_eq!(chart.kind, ChartKind::Column);
+    assert_eq!(chart.title.as_deref(), Some("Продажи"));
+    assert_eq!(chart.categories, ["Январь", "Февраль", "Март", "Апрель"]);
+    assert_eq!(chart.series.len(), 2);
+    assert_eq!(chart.series[1].name, "Казань");
+    assert_eq!(chart.series[1].values[1], Some(4.4));
+    assert_eq!(chart.legend, Some(LegendPosition::Bottom));
+    assert_eq!((chart.gap_width, chart.overlap), (219, -27));
+    // Цвета рядов — из темы документа (accent1 и accent2 темы Office 2013).
+    assert_eq!(chart.series[0].color, Some((0x4F, 0x81, 0xBD)));
+    assert_eq!(chart.series[1].color, Some((0xC0, 0x50, 0x4D)));
+    let kinds: Vec<_> = charts
+        .iter()
+        .filter_map(|p| p.image.as_ref()?.chart.as_ref().map(|c| c.kind))
+        .collect();
+    assert_eq!(kinds, [ChartKind::Column, ChartKind::Pie, ChartKind::Line]);
+    let line = charts[2].image.as_ref().unwrap().chart.as_ref().unwrap();
+    assert_eq!(line.title, None, "заголовок удалён");
+    assert_eq!(line.series[0].values[0], Some(-8.0));
 }
 
 #[test]
@@ -451,6 +492,135 @@ fn new_document_with_a_list_gets_a_numbering_part() {
             .numbering,
         Some((1, 0))
     );
+}
+
+/// Все рисунки и фигуры документа по порядку.
+fn pictures(doc: &Document) -> Vec<&Picture> {
+    paragraphs(doc)
+        .into_iter()
+        .flat_map(|p| p.runs())
+        .flat_map(|r| &r.content)
+        .filter_map(|c| match c {
+            RunContent::Picture(p) => Some(p),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn shapes_are_read() {
+    let doc = fixture("shapes.docx");
+    let shapes = pictures(&doc);
+    assert_eq!(shapes.len(), 6);
+    assert!(shapes.iter().all(|p| p.image.is_none() && p.raw.is_some()));
+    let shape = |i: usize| shapes[i].shape.as_deref().unwrap();
+    // Надпись: прямоугольник с текстом, цвета из стиля фигуры и темы.
+    let accent1 = doc.theme.colors.color("accent1");
+    assert_eq!(shape(0).geometry, Geometry::preset("rect"));
+    assert_eq!(
+        shape(0).fill.as_ref().unwrap().base,
+        ColorBase::Rgb(accent1)
+    );
+    assert_eq!(shape(0).text[0].plain_text(), "Надпись в прямоугольнике");
+    assert_eq!(shapes[0].anchor.as_ref().unwrap().wrap, Wrap::Square);
+    // Стрелка со своей заливкой и без линии.
+    assert_eq!(
+        shape(1).fill.as_ref().unwrap().base,
+        ColorBase::Rgb([0xFF, 0xC0, 0])
+    );
+    assert_eq!(shape(1).line, None);
+    // Овал без заливки за текстом.
+    assert_eq!(shape(2).fill, None);
+    assert!(shapes[2].anchor.as_ref().unwrap().behind_text);
+    // Линия со стрелкой в строке.
+    assert!(shapes[3].anchor.is_none());
+    assert_eq!(shape(3).line.as_ref().unwrap().tail, LineEnd::Triangle);
+    assert_eq!(
+        shape(3).line.as_ref().unwrap().color.base,
+        ColorBase::Rgb(doc.theme.colors.color("tx1"))
+    );
+    assert!(matches!(shape(4).geometry, Geometry::Custom(_)));
+    let Geometry::Group(group) = &shape(5).geometry else {
+        panic!("{:?}", shape(5).geometry);
+    };
+    assert_eq!(group.children.len(), 2);
+    assert_eq!(
+        group.children[1].shape.geometry,
+        Geometry::preset("ellipse")
+    );
+}
+
+#[test]
+fn formulas_are_read() {
+    use letter_model::{Inline, RunContent};
+    let doc = fixture("math.docx");
+    let formulas: Vec<_> = paragraphs(&doc)
+        .iter()
+        .flat_map(|p| &p.content)
+        .filter_map(|item| match item {
+            Inline::Run(run) => Some(run),
+            _ => None,
+        })
+        .flat_map(|run| &run.content)
+        .filter_map(|item| match item {
+            RunContent::Math(math) => Some(math),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(formulas.len(), 6);
+    assert!(!formulas[0].display);
+    assert_eq!(formulas[0].linear_text(), "a^2+b^2=c^2");
+    assert!(formulas[1].display);
+    assert_eq!(formulas[1].linear_text(), "x=(-b±√(b^2-4ac))/(2a)");
+    // Формула в тексте абзаца — один знак объекта между словами.
+    let first = paragraphs(&doc)[0].plain_text();
+    assert!(
+        first.starts_with("Теорема Пифагора: \u{fffc} — "),
+        "{first}"
+    );
+}
+
+#[test]
+fn smart_art_is_read_with_its_drawing() {
+    let doc = fixture("smartart.docx");
+    let picture = paragraphs(&doc)
+        .iter()
+        .flat_map(|p| p.runs())
+        .flat_map(|r| &r.content)
+        .find_map(|c| match c {
+            RunContent::Picture(picture) => Some(picture),
+            _ => None,
+        })
+        .expect("smart art");
+    assert_eq!((picture.width, picture.height), (5_486_400, 1_600_200));
+    // Картинки нет: рисуется готовый вид.
+    assert!(picture.image.is_none() && picture.relationship.is_none());
+    assert!(picture.raw.as_ref().unwrap().as_str().contains("relIds"));
+    let drawing = picture.drawing.as_ref().expect("drawing");
+    assert_eq!((drawing.width, drawing.height), (5_486_400, 1_600_200));
+    assert_eq!(drawing.shapes.len(), 5);
+    let first = &drawing.shapes[0];
+    // accent1 темы Office — 4F81BD.
+    assert_eq!(first.fill, Some([0x4F, 0x81, 0xBD, 255]));
+    let line = first.line.expect("line");
+    assert_eq!((line.color, line.width), ([255, 255, 255, 255], 12_700));
+    let text = first.text.as_ref().expect("text");
+    assert_eq!(text.paragraphs[0].runs[0].text, "Идея");
+    assert_eq!(text.paragraphs[0].runs[0].size, 2_000);
+    // Цвет текста — из ссылки на шрифт стиля (lt1, белый).
+    assert_eq!(text.paragraphs[0].runs[0].color, [255, 255, 255, 255]);
+    // Область текста — рамка без внутренних полей (76200 EMU).
+    assert_eq!((text.x, text.width), (76_200, 1_371_600 - 2 * 76_200));
+    // Стрелка светлее блока (tint 60 %), без текста.
+    let arrow = &drawing.shapes[1];
+    let fill = arrow.fill.unwrap();
+    assert!(
+        fill[0] > 0x4F && fill[1] > 0x81 && fill[2] > 0xBD,
+        "{fill:?}"
+    );
+    assert!(arrow.text.is_none());
+    // Скруглённый прямоугольник — много точек на дугах углов.
+    assert!(first.contours[0].points.len() > 8);
 }
 
 #[test]

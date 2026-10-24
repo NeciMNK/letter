@@ -428,6 +428,8 @@ impl<'a> Writer<'a> {
             match item {
                 RunContent::Text(s) => text.push(s),
                 RunContent::Symbol(s) => text.push(&s.unicode().to_string()),
+                // Формулы ODT (MathML-объекты) пока не пишем: линейный вид.
+                RunContent::Math(m) => text.push(&m.linear_text().replace('\n', " ")),
                 RunContent::Tab => text.element("<text:tab/>"),
                 RunContent::Break(_) => text.element("<text:line-break/>"),
                 // Рисунки в ODT пока не записываются.

@@ -10,10 +10,10 @@ use letter_model::{
     TableRow, TableWidth, Twips, VerticalMerge,
 };
 
-use crate::document::{enum_val, is_w_ns, parse_color, read_block, set, string_val, toggle};
+use crate::document::{enum_val, is_w_ns, parse_color, read_blocks, set, string_val, toggle};
 use crate::names::{ALIGNMENTS, name_of};
 use crate::serialize::{
-    Children, block_xml, element, empty, hex_color, raws, toggle as toggle_xml, val,
+    Children, blocks_xml, element, empty, hex_color, raws, toggle as toggle_xml, val,
 };
 use crate::xml::Element;
 
@@ -170,7 +170,7 @@ fn read_cell(tc: &Element) -> TableCell {
         } else if child.is_w("tcPr") {
             cell.raw_props.push(child.raw());
         } else {
-            cell.blocks.push(read_block(child));
+            read_blocks(child, &mut cell.blocks);
         }
     }
     cell
@@ -450,9 +450,7 @@ pub(crate) fn table_xml(table: &Table) -> String {
                 cell_xml.push_str(&element("w:tcPr", &props));
             }
             cell_xml.push_str(&raws(&cell.raw_props));
-            for block in &cell.blocks {
-                cell_xml.push_str(&block_xml(block));
-            }
+            cell_xml.push_str(&blocks_xml(&cell.blocks));
             if cell.blocks.is_empty() {
                 // Word не открывает ячейку без абзаца.
                 cell_xml.push_str("<w:p/>");

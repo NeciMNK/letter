@@ -110,8 +110,24 @@ impl Document {
 fn count_block(block: &Block, stats: &mut Statistics) {
     match block {
         Block::Paragraph(p) => {
-            // Рисунки — не знаки и не слова.
-            let text = p.plain_text().replace(crate::OBJECT_CHAR, "");
+            // Рисунки — не знаки и не слова; формулы считаются по их
+            // линейному виду.
+            let text: String = p
+                .runs()
+                .map(|run| {
+                    let mut text = String::new();
+                    for item in &run.content {
+                        match item {
+                            crate::RunContent::Math(m) => {
+                                text.push_str(&m.linear_text().replace('\n', " "));
+                            }
+                            other => other.push_plain_text(&mut text),
+                        }
+                    }
+                    text
+                })
+                .collect::<String>()
+                .replace(crate::OBJECT_CHAR, "");
             let words = text.split_whitespace().count();
             let characters = text.chars().filter(|c| !c.is_whitespace()).count();
             // Разрывы строк и страниц — не знаки, пробелы и табуляции — знаки.

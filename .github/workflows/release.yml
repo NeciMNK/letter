@@ -1,0 +1,66 @@
+# Сборка установщиков (F10.1): .msi и setup.exe для Windows, .dmg для
+# macOS, .deb и .AppImage для Linux. Запускается при метке версии
+# (`git tag v0.1.0 && git push --tags`) — тогда установщики прикладываются
+# к выпуску на GitHub, — или вручную на вкладке Actions (тогда их можно
+# скачать со страницы запуска, раздел Artifacts).
+name: Выпуск
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: Установщики (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            formats: deb,appimage
+          - os: windows-latest
+            formats: wix,nsis
+          - os: macos-latest
+            formats: dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Системные библиотеки (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libwayland-dev libfuse2
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Установить cargo-packager
+        run: cargo install cargo-packager --version 0.11.8 --locked
+      - name: Собрать установщики
+        run: cargo packager --release --packages letter-app --formats ${{ matrix.formats }} --out-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: letter-${{ runner.os }}
+          path: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.msi
+            dist/*.exe
+            dist/*.dmg
+          if-no-files-found: error
+      - name: Приложить к выпуску
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.msi
+            dist/*.exe
+            dist/*.dmg

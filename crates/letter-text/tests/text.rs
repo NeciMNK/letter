@@ -14,6 +14,8 @@ fn fixtures() -> Vec<PathBuf> {
         .unwrap()
         .map(|e| e.unwrap().path())
         .filter(|p| p.extension().is_some_and(|e| e == "docx"))
+        // Формулы пишутся линейным видом, текст меняется (см. `formulas_become_linear_text`).
+        .filter(|p| !p.ends_with("math.docx"))
         .collect();
     files.sort();
     assert!(files.len() >= 5);
@@ -207,4 +209,13 @@ fn files_by_extension() {
     assert!(letter_text::write_file(&doc, dir.join("a.xyz")).is_err());
     assert!(letter_text::read_file(dir.join("missing.txt")).is_err());
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn formulas_become_linear_text() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/docx/math.docx");
+    let doc = letter_docx::read_file(&path).unwrap();
+    let text = String::from_utf8(letter_text::write_txt(&doc)).unwrap();
+    assert!(text.contains("Теорема Пифагора: a^2+b^2=c^2 — "), "{text}");
+    assert!(text.contains("x=(-b±√(b^2-4ac))/(2a)"), "{text}");
 }
