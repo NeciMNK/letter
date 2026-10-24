@@ -16,8 +16,10 @@
 //! ```
 
 mod comments;
+mod crypto;
 mod document;
 mod error;
+mod kind;
 mod math;
 mod names;
 mod numbering;
@@ -44,6 +46,7 @@ use letter_model::{
 };
 
 pub use error::{ReadError, WriteError};
+pub use kind::{FileKind, has_macros, kind_of};
 
 use package::CONTENT_TYPES_PART;
 
@@ -51,7 +54,22 @@ use package::CONTENT_TYPES_PART;
 /// (файл, буфер в памяти).
 ///
 /// Битый файл никогда не роняет программу: функция возвращает ошибку.
-pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
+///
+/// Зашифрованный документ даёт ошибку [`ReadError::PasswordRequired`];
+/// его открывает [`read_bytes_with_password`].
+pub fn read<R: Read + Seek>(mut reader: R) -> Result<Document, ReadError> {
+    let mut start = [0u8; 8];
+    let start_len = read_up_to(&mut reader, &mut start)?;
+    reader.seek(std::io::SeekFrom::Start(0))?;
+    if crypto::is_ole(&start[..start_len]) {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+        return Err(if crypto::is_encrypted_package(&bytes) {
+            ReadError::PasswordRequired
+        } else {
+            ReadError::NotAWordDocument("составной файл OLE (старый .doc?)".into())
+        });
+    }
     let mut package = package::Package::open(reader)?;
     let main = package.main_document_part()?;
     let bytes = package
@@ -391,6 +409,43 @@ fn read_related_xml<R: Read + Seek>(
     Some((target, root))
 }
 
+/// Читает в `buffer` сколько получится байт (меньше — если файл короче).
+fn read_up_to(reader: &mut impl Read, buffer: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match reader.read(&mut buffer[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    Ok(filled)
+}
+
+/// Зашифрован ли документ паролем на открытие.
+pub fn is_encrypted(bytes: &[u8]) -> bool {
+    crypto::is_encrypted_package(bytes)
+}
+
+/// Читает документ, зашифрованный паролем (ECMA-376: агильное
+/// и стандартное шифрование Word 2007–2024). Незашифрованный документ
+/// читается как обычно, пароль тогда не нужен.
+///
+/// Неверный пароль даёт [`ReadError::WrongPassword`].
+pub fn read_bytes_with_password(bytes: &[u8], password: &str) -> Result<Document, ReadError> {
+    if is_encrypted(bytes) {
+        read_bytes(&crypto::decrypt(bytes, password)?)
+    } else {
+        read_bytes(bytes)
+    }
+}
+
+/// Шифрует готовый файл .docx (байты ZIP-архива, например, из
+/// [`write_bytes_as`]) паролем на открытие так же, как Word 2010 и новее:
+/// AES-256, SHA-512, 100 000 повторов хеша.
+pub fn encrypt_bytes(docx: &[u8], password: &str) -> Result<Vec<u8>, WriteError> {
+    crypto::encrypt(docx, password)
+}
+
 /// Читает документ .docx из байтов в памяти.
 pub fn read_bytes(bytes: &[u8]) -> Result<Document, ReadError> {
     read(Cursor::new(bytes))
@@ -405,20 +460,50 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<Document, ReadError> {
 ///
 /// Части исходного файла, которые программа не понимает (картинки,
 /// колонтитулы, сноски и т. д.), записываются без изменений.
+///
+/// Разновидность файла (.docx, .docm, .dotx, .dotm) остаётся той, из
+/// которой документ был прочитан; чтобы её сменить, есть [`write_as`].
 pub fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), WriteError> {
-    write::write(doc, writer)
+    write::write(doc, None, writer)
+}
+
+/// Записывает документ файлом разновидности `kind`: например, документ
+/// .docm как шаблон .dotx. В файл без макросов (.docx, .dotx) макросы
+/// не попадают — как при таком сохранении в Word.
+pub fn write_as<W: Write + Seek>(
+    doc: &Document,
+    kind: FileKind,
+    writer: W,
+) -> Result<(), WriteError> {
+    write::write(doc, Some(kind), writer)
 }
 
 /// Записывает документ .docx в байты в памяти.
 pub fn write_bytes(doc: &Document) -> Result<Vec<u8>, WriteError> {
     let mut buffer = Cursor::new(Vec::new());
-    write::write(doc, &mut buffer)?;
+    write::write(doc, None, &mut buffer)?;
+    Ok(buffer.into_inner())
+}
+
+/// Записывает документ в байты в памяти файлом разновидности `kind`
+/// (см. [`write_as`]).
+pub fn write_bytes_as(doc: &Document, kind: FileKind) -> Result<Vec<u8>, WriteError> {
+    let mut buffer = Cursor::new(Vec::new());
+    write::write(doc, Some(kind), &mut buffer)?;
     Ok(buffer.into_inner())
 }
 
 /// Записывает документ .docx на диск. Файл сначала целиком собирается
 /// в памяти, поэтому ошибка упаковки не испортит старый файл.
+///
+/// Разновидность файла берётся из расширения пути (.docx, .docm, .dotx,
+/// .dotm); при другом расширении она остаётся прежней.
 pub fn write_file(doc: &Document, path: impl AsRef<Path>) -> Result<(), WriteError> {
-    std::fs::write(path, write_bytes(doc)?)?;
+    let path = path.as_ref();
+    let bytes = match FileKind::from_path(path) {
+        Some(kind) => write_bytes_as(doc, kind)?,
+        None => write_bytes(doc)?,
+    };
+    std::fs::write(path, bytes)?;
     Ok(())
 }
