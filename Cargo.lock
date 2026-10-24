@@ -2105,6 +2105,7 @@ dependencies = [
  "encoding_rs",
  "letter-docx",
  "letter-model",
+ "miniz_oxide 0.8.9",
  "thiserror 2.0.21",
 ]
 

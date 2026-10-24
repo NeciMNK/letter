@@ -27,6 +27,11 @@ pub(crate) mod index {
     pub const PLCF_BTE_CHPX: usize = 12;
     /// Страницы оформления абзацев (`PlcBtePapx`).
     pub const PLCF_BTE_PAPX: usize = 13;
+    /// Закладки: имена (`SttbfBkmk`), начала (`PlcfBkf`) и концы
+    /// (`PlcfBkl`).
+    pub const STTBF_BKMK: usize = 21;
+    pub const PLCF_BKF: usize = 22;
+    pub const PLCF_BKL: usize = 23;
     /// Колонтитулы (`PlcfHdd`).
     pub const PLCF_HDD: usize = 11;
     /// Шрифты (`SttbfFfn`).
@@ -40,11 +45,17 @@ pub(crate) mod index {
     /// Закладки примечаний: имена (`SttbfAtnBkmk`), начала (`PlcfAtnBkf`)
     /// и концы (`PlcfAtnBkl`).
     pub const STTBF_ATN_BKMK: usize = 37;
+    /// Плавающие фигуры основного текста (`PlcSpaMom`) и колонтитулов
+    /// (`PlcSpaHdr`).
+    pub const PLC_SPA_MOM: usize = 40;
+    pub const PLC_SPA_HDR: usize = 41;
     pub const PLCF_ATN_BKF: usize = 42;
     pub const PLCF_ATN_BKL: usize = 43;
     /// Ссылки на концевые сноски (`PlcfendRef`) и их текст (`PlcfendTxt`).
     pub const PLCFEND_REF: usize = 46;
     pub const PLCFEND_TXT: usize = 47;
+    /// Рисунки документа (`OfficeArtContent`).
+    pub const DGG_INFO: usize = 50;
     /// Списки (`PlfLst`, за ним — уровни `LVL`) и их варианты (`PlfLfo`).
     pub const PLF_LST: usize = 73;
     pub const PLF_LFO: usize = 74;
