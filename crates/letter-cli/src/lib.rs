@@ -13,7 +13,9 @@
 //! - `letter-cli compare [--embedded-fonts] [--tolerance пт] файл.docx
 //!   эталон.pdf` — сверяет нашу вёрстку с PDF, сохранённым из Word;
 //! - `letter-cli pdf-lines файл.pdf` — печатает строки текста PDF так, как
-//!   их видит сверка.
+//!   их видит сверка;
+//! - `letter-cli diff исходный.docx изменённый.docx выход.docx` — сравнивает
+//!   два документа и сохраняет изменённый с отличиями в виде исправлений.
 
 pub mod compare;
 pub mod pdf;
@@ -41,7 +43,9 @@ pub const USAGE: &str = "\
   letter-cli pdf [--embedded-fonts] файл.docx выход.pdf  сохранить в PDF
   letter-cli compare [--embedded-fonts] [--tolerance пт] файл.docx эталон.pdf
                                                сверить вёрстку с PDF из Word
-  letter-cli pdf-lines файл.pdf               напечатать строки текста PDF";
+  letter-cli pdf-lines файл.pdf               напечатать строки текста PDF
+  letter-cli diff исходный.docx изменённый.docx выход.docx
+                                               сравнить документы (отличия — исправлениями)";
 
 /// Выполняет команду и возвращает текст для вывода. Ошибка — текст
 /// для вывода в поток ошибок.
@@ -67,6 +71,7 @@ pub fn run(args: &[String]) -> Result<String, String> {
         ),
         ["compare", rest @ ..] => compare_command(rest),
         ["pdf-lines", path] => pdf_lines(Path::new(path)),
+        ["diff", original, revised, output] => diff(original, revised, Path::new(output)),
         _ => Err(USAGE.to_string()),
     }
 }
@@ -203,6 +208,31 @@ fn write_png(image: &RgbaImage, path: &Path) -> Result<(), Box<dyn std::error::E
 
 fn open(path: &str) -> Result<Document, String> {
     letter_docx::read_file(path).map_err(|e| format!("{path}: {e}"))
+}
+
+/// Сравнивает документы `original` и `revised` и сохраняет результат
+/// с исправлениями в `output`.
+pub fn diff(original: &str, revised: &str, output: &Path) -> Result<String, String> {
+    let result = letter_editor::compare_documents(
+        &open(original)?,
+        &open(revised)?,
+        "letter",
+        Some(letter_editor::revisions::now_w3c()),
+    );
+    let changes = result
+        .blocks()
+        .filter_map(|b| match b {
+            Block::Paragraph(p) => Some(p),
+            _ => None,
+        })
+        .flat_map(Paragraph::runs)
+        .filter(|r| r.props.revision.is_some())
+        .count();
+    letter_docx::write_file(&result, output).map_err(|e| format!("{}: {e}", output.display()))?;
+    Ok(format!(
+        "Сохранено в {}. Исправлений: {changes}.\n",
+        output.display()
+    ))
 }
 
 /// Открывает `input`, сохраняет в `output`, открывает сохранённое и
@@ -556,6 +586,13 @@ fn run_props(props: &RunProps) -> String {
     }
     if let Some(link) = &props.link {
         parts.push(format!("ссылка {:?}", link.address()));
+    }
+    if let Some(revision) = &props.revision {
+        let kind = match revision.kind {
+            letter_model::RevisionKind::Insert => "вставлено",
+            letter_model::RevisionKind::Delete => "удалено",
+        };
+        parts.push(format!("{kind} ({})", revision.author));
     }
     let toggles = [
         (props.bold, "ж"),

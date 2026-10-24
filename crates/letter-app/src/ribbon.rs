@@ -159,6 +159,12 @@ pub enum RibbonCommand {
     RestartNumbering,
     /// «Продолжить нумерацию».
     ContinueNumbering,
+    /// Поставить или снять флажок у курсора.
+    ToggleCheckBox,
+    /// Выбрать пункт с этим номером в списке у курсора.
+    ChooseListItem(usize),
+    /// Поставить сегодняшнюю дату в элемент выбора даты у курсора.
+    ControlToday,
     /// Показать или скрыть знаки форматирования.
     ToggleMarks,
     /// Применить стиль с этим идентификатором.
@@ -234,6 +240,32 @@ pub enum RibbonCommand {
     InsertToc,
     /// Перестроить оглавления документа.
     UpdateToc,
+    /// «Рецензирование → Ограничить редактирование».
+    RestrictEditing,
+    /// «Рецензирование → Исправления»: включить или выключить запись
+    /// (Ctrl+Shift+E).
+    ToggleTrackChanges,
+    /// Заменить слово с ошибкой (от `start` до `end`) на `text`.
+    SpellReplace {
+        /// Начало слова.
+        start: letter_editor::Position,
+        /// Конец слова.
+        end: letter_editor::Position,
+        /// Замена.
+        text: String,
+    },
+    /// «Пропустить все»: не подчёркивать это слово.
+    SpellIgnore(String),
+    /// «Добавить в словарь».
+    SpellAdd(String),
+    /// «Рецензирование → Проверять орфографию»: включить или выключить.
+    ToggleSpelling,
+    /// F7: выделить следующее слово с ошибкой.
+    NextSpellingError,
+    /// «Рецензирование → Сравнить»: сравнить два документа.
+    CompareDocuments,
+    /// «Далее» (`true`) или «Назад»: к следующему исправлению.
+    NextRevision(bool),
     /// Вставить поле с этим кодом у курсора (с готовым результатом).
     InsertField(String),
     /// Окно «Ссылка» (Ctrl+K).
@@ -337,6 +369,14 @@ pub struct RibbonInfo {
     pub indent_left: i32,
     /// Отступ справа абзаца с курсором, твипы.
     pub indent_right: i32,
+    /// Включена запись исправлений.
+    pub track_changes: bool,
+    /// Запись исправлений нельзя выключить: так требует защита документа.
+    pub track_changes_forced: bool,
+    /// В документе есть исправления.
+    pub has_revisions: bool,
+    /// Проверка орфографии включена.
+    pub spelling: bool,
 }
 
 /// Состояние ленты.
@@ -421,12 +461,12 @@ impl Ribbon {
                         Tab::Insert => crate::insert::insert(ui, info, &mut out),
                         Tab::Design => crate::design::design(ui, info, &mut out),
                         Tab::References => crate::references::references(ui, info, &mut out),
+                        Tab::Review => crate::review::review(ui, info, &mut out),
                         Tab::Layout => crate::layout::layout(ui, info, &mut out),
                         Tab::TableDesign => crate::insert::table_design(ui, info, &mut out),
                         Tab::TableLayout => crate::insert::table_layout(ui, info, &mut out),
                         Tab::PictureFormat => crate::insert::picture_format(ui, info, &mut out),
                         Tab::HeaderFooter => crate::headers::header_footer(ui, info, &mut out),
-                        Tab::Review => crate::comments::review(ui, info, &mut out),
                         Tab::Outline => crate::outlining::outlining(ui, info, &mut out),
                     });
                 });

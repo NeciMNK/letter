@@ -5,11 +5,14 @@
 //! перемешиваются, поэтому все дочерние элементы сначала собираются
 //! вместе, а потом упорядочиваются по таблицам ниже.
 
+use std::sync::Arc;
+
 use letter_model::{
-    Block, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind, FirstLineIndent,
-    HeaderFooterKind, Hyperlink, Inline, LineSpacing, Note, NoteKind, Orientation,
-    PageBorderDisplay, PageBorders, Paragraph, ParagraphProps, RawXml, Run, RunContent, RunFonts,
-    RunProps, Section, SectionProps, SectionStart, Style, StyleKind, Styles, VerticalAlign,
+    Block, BreakKind, Color, Columns, ContentControl, ContentControlRef, ControlNesting,
+    ControlStep, Document, FieldChar, FieldCharKind, FirstLineIndent, HeaderFooterKind, Hyperlink,
+    Inline, LineSpacing, Note, NoteKind, Orientation, PageBorderDisplay, PageBorders, Paragraph,
+    ParagraphProps, RawXml, RevisionKind, Run, RunContent, RunFonts, RunProps, Section,
+    SectionProps, SectionStart, Style, StyleKind, Styles, VerticalAlign,
 };
 
 use crate::document::{W_NS, is_w_ns};
@@ -192,6 +195,7 @@ pub(crate) fn document_xml(doc: &Document) -> String {
             .map(|s| s.main_root_attributes.as_slice()),
     );
     NEW_PICTURES.with(|n| n.set(0));
+    NEW_REVISIONS.with(|n| n.set(0));
     let mut children = Children::new(DOCUMENT_ORDER);
     if let Some(color) = doc.background {
         children.push(
@@ -212,7 +216,7 @@ pub(crate) fn header_footer_xml(
     root: Option<&[(String, String)]>,
 ) -> String {
     let attrs = root_attributes(root);
-    let mut content: String = blocks.iter().map(block_xml).collect();
+    let mut content = blocks_xml(blocks);
     // Колонтитул обязан содержать хотя бы один абзац.
     if blocks.is_empty() {
         content = paragraph(&Paragraph::default(), None);
@@ -240,7 +244,7 @@ pub(crate) fn notes_xml(
             .as_ref()
             .map(|s| format!(r#" w:type="{}""#, escape_attr(s)))
             .unwrap_or_default();
-        let mut inner: String = note.blocks.iter().map(block_xml).collect();
+        let mut inner = blocks_xml(&note.blocks);
         // Сноска обязана содержать хотя бы один абзац.
         if note.blocks.is_empty() {
             inner = paragraph(&Paragraph::default(), None);
@@ -256,38 +260,105 @@ pub(crate) fn notes_xml(
 /// Тело документа. Параметры каждого раздела, кроме последнего, пишутся
 /// в свойства его последнего абзаца, параметры последнего — в конец тела.
 fn body(sections: &[Section]) -> String {
-    let mut out = String::new();
+    let mut out = BlocksXml::default();
     for (i, section) in sections.iter().enumerate() {
         let is_last = i + 1 == sections.len();
         let blocks = &section.blocks;
         if is_last {
             for block in blocks {
-                out.push_str(&block_xml(block));
+                out.block(block);
             }
-            if section.props != SectionProps::default() || blocks.is_empty() {
+            let props = section.props != SectionProps::default() || blocks.is_empty();
+            let mut out = out.finish();
+            if props {
                 out.push_str(&section_props(&section.props));
             }
-            continue;
+            return element("w:body", &out);
         }
         match blocks.split_last() {
             Some((Block::Paragraph(last), rest)) => {
                 for block in rest {
-                    out.push_str(&block_xml(block));
+                    out.block(block);
                 }
-                out.push_str(&paragraph(last, Some(&section.props)));
+                out.push(&last.props.controls, &paragraph(last, Some(&section.props)));
             }
             // Раздел кончается не абзацем (или пуст): параметры раздела
             // некуда положить, поэтому добавляем пустой абзац, как Word.
             _ => {
                 for block in blocks {
-                    out.push_str(&block_xml(block));
+                    out.block(block);
                 }
-                out.push_str(&paragraph(&Paragraph::default(), Some(&section.props)));
+                out.push(&[], &paragraph(&Paragraph::default(), Some(&section.props)));
             }
         }
     }
-    element("w:body", &out)
+    element("w:body", &out.finish())
 }
+
+/// Блоки подряд, с элементами управления содержимым вокруг них.
+pub(crate) fn blocks_xml(blocks: &[Block]) -> String {
+    let mut out = BlocksXml::default();
+    for block in blocks {
+        out.block(block);
+    }
+    out.finish()
+}
+
+/// Запись блоков подряд: открывает и закрывает `w:sdt` по ссылкам на
+/// элементы управления содержимым у абзацев и таблиц.
+#[derive(Default)]
+pub(crate) struct BlocksXml {
+    nesting: ControlNesting,
+    out: String,
+}
+
+impl BlocksXml {
+    /// Добавляет блок.
+    pub(crate) fn block(&mut self, block: &Block) {
+        let controls: &[ContentControlRef] = match block {
+            Block::Paragraph(p) => &p.props.controls,
+            Block::Table(t) => &t.props.controls,
+            Block::Unknown(_) => &[],
+        };
+        self.push(controls, &block_xml(block));
+    }
+
+    /// Добавляет готовый XML блока, лежащего в элементах `controls`.
+    pub(crate) fn push(&mut self, controls: &[ContentControlRef], xml: &str) {
+        let steps = self.nesting.enter(controls);
+        control_steps(&mut self.out, steps);
+        self.out.push_str(xml);
+    }
+
+    /// Закрывает открытые элементы и возвращает XML.
+    pub(crate) fn finish(mut self) -> String {
+        let steps = self.nesting.finish();
+        control_steps(&mut self.out, steps);
+        self.out
+    }
+}
+
+/// Открывающие и закрывающие теги `w:sdt` по шагам.
+fn control_steps(out: &mut String, steps: Vec<ControlStep<'_>>) {
+    for step in steps {
+        match step {
+            ControlStep::Open(control) => out.push_str(&control_start(control)),
+            ControlStep::Close(_) => out.push_str(CONTROL_END),
+        }
+    }
+}
+
+/// Начало `w:sdt`: свойства и открывающий `w:sdtContent`.
+fn control_start(control: &ContentControl) -> String {
+    let mut out = String::from("<w:sdt>");
+    for raw in [&control.props, &control.end_props].into_iter().flatten() {
+        out.push_str(raw.as_str());
+    }
+    out.push_str("<w:sdtContent>");
+    out
+}
+
+const CONTROL_END: &str = "</w:sdtContent></w:sdt>";
 
 pub(crate) fn block_xml(block: &Block) -> String {
     match block {
@@ -299,22 +370,63 @@ pub(crate) fn block_xml(block: &Block) -> String {
 
 fn paragraph(p: &Paragraph, section: Option<&SectionProps>) -> String {
     let mut out = paragraph_props(&p.props, section);
+    // Соседние фрагменты с одним элементом управления — внутри одного
+    // `w:sdt`.
+    let control = |inline: &Inline| match inline {
+        Inline::Run(run) => run.props.control.clone(),
+        _ => None,
+    };
     let mut i = 0;
     while i < p.content.len() {
-        let link = match &p.content[i] {
+        let current = control(&p.content[i]);
+        let mut end = i + 1;
+        while let Some(next) = p.content.get(end) {
+            let same = match (&current, control(next)) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, &b),
+                (None, None) => true,
+                _ => false,
+            };
+            if !same {
+                break;
+            }
+            end += 1;
+        }
+        let inner = inlines_xml(&p.content[i..end]);
+        match current {
+            Some(control) => {
+                out.push_str(&control_start(&control));
+                out.push_str(&inner);
+                out.push_str(CONTROL_END);
+            }
+            None => out.push_str(&inner),
+        }
+        i = end;
+    }
+    element("w:p", &out)
+}
+
+/// Содержимое абзаца подряд; соседние фрагменты с одной ссылкой
+/// (и закладки между ними) — внутри одного `w:hyperlink`.
+fn inlines_xml(content: &[Inline]) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < content.len() {
+        let link = match &content[i] {
             Inline::Run(run) => run.props.link.as_ref(),
             _ => None,
         };
         let Some(link) = link else {
-            out.push_str(&inline_xml(&p.content[i]));
-            i += 1;
+            // Всё до следующей ссылки — с исправлениями.
+            let end = (i + 1..content.len())
+                .find(|&j| matches!(&content[j], Inline::Run(r) if r.props.link.is_some()))
+                .unwrap_or(content.len());
+            out.push_str(&revisions_xml(&content[i..end]));
+            i = end;
             continue;
         };
-        // Соседние фрагменты с той же ссылкой (и закладки между ними) —
-        // внутри одного `w:hyperlink`.
         let mut end = i + 1;
         let mut last_run = i;
-        while let Some(next) = p.content.get(end) {
+        while let Some(next) = content.get(end) {
             match next {
                 Inline::Run(run) if run.props.link.as_ref() == Some(link) => last_run = end,
                 Inline::BookmarkStart(_)
@@ -325,14 +437,65 @@ fn paragraph(p: &Paragraph, section: Option<&SectionProps>) -> String {
             }
             end += 1;
         }
-        let inner: String = p.content[i..=last_run].iter().map(inline_xml).collect();
+        let inner = revisions_xml(&content[i..=last_run]);
         out.push_str(&format!(
             "<w:hyperlink{}>{inner}</w:hyperlink>",
             hyperlink_attributes(link)
         ));
         i = last_run + 1;
     }
-    element("w:p", &out)
+    out
+}
+
+/// Содержимое абзаца, где соседние фрагменты с одним исправлением
+/// записаны внутри одного `w:ins` или `w:del`.
+fn revisions_xml(items: &[Inline]) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < items.len() {
+        let revision = match &items[i] {
+            Inline::Run(run) => run.props.revision.as_ref(),
+            _ => None,
+        };
+        let Some(revision) = revision else {
+            out.push_str(&inline_xml(&items[i]));
+            i += 1;
+            continue;
+        };
+        let end = (i + 1..items.len())
+            .find(|&j| !matches!(&items[j], Inline::Run(r) if r.props.revision.as_ref() == Some(revision)))
+            .unwrap_or(items.len());
+        let inner: String = items[i..end].iter().map(inline_xml).collect();
+        let name = match revision.kind {
+            RevisionKind::Insert => "w:ins",
+            RevisionKind::Delete => "w:del",
+        };
+        let id = NEW_REVISIONS.with(|n| {
+            n.set(n.get() + 1);
+            n.get()
+        });
+        let date = revision
+            .date
+            .as_ref()
+            .map(|d| format!(r#" w:date="{}""#, escape_attr(d)))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            r#"<{name} w:id="{}" w:author="{}"{date}>{inner}</{name}>"#,
+            REVISION_IDS + id,
+            escape_attr(&revision.author)
+        ));
+        i = end;
+    }
+    out
+}
+
+/// С этого номера раздаются номера исправлений (`w:id`), чтобы не
+/// совпасть с номерами закладок и примечаний из файла.
+const REVISION_IDS: u64 = 100_000;
+
+thread_local! {
+    /// Счётчик номеров исправлений при записи.
+    static NEW_REVISIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 fn inline_xml(inline: &Inline) -> String {
@@ -533,6 +696,20 @@ fn run_xml(run: &Run) -> String {
             )),
             RunContent::Unknown(raw) => out.push_str(raw.as_str()),
         }
+    }
+    if run
+        .props
+        .revision
+        .as_ref()
+        .is_some_and(|r| r.kind == RevisionKind::Delete)
+    {
+        // Удалённый текст пишется в `w:delText` и `w:delInstrText`.
+        out = out
+            .replace("<w:t>", "<w:delText>")
+            .replace("<w:t xml:space", "<w:delText xml:space")
+            .replace("</w:t>", "</w:delText>")
+            .replace("<w:instrText", "<w:delInstrText")
+            .replace("</w:instrText>", "</w:delInstrText>");
     }
     element("w:r", &out)
 }
