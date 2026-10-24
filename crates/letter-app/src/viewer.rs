@@ -2778,6 +2778,16 @@ impl Viewer {
                 RibbonCommand::ContinueNumbering => {
                     actions.push(Action::Edit(Command::ContinueNumbering));
                 }
+                RibbonCommand::ToggleCheckBox => {
+                    actions.push(Action::Edit(Command::ToggleCheckBox))
+                }
+                RibbonCommand::ChooseListItem(index) => {
+                    actions.push(Action::Edit(Command::ChooseListItem(index)));
+                }
+                RibbonCommand::ControlToday => {
+                    let (today, _) = crate::fields::now();
+                    actions.push(Action::Edit(Command::ControlDate(today)));
+                }
                 RibbonCommand::Style(id) => actions.push(Action::Edit(Command::Style(id))),
                 // В колонтитул сноску не вставить.
                 RibbonCommand::Edit(Command::InsertNote(_))
@@ -3543,6 +3553,17 @@ impl Viewer {
             if followed {
                 on_picture = true;
             }
+            // Щелчок по флажку ставит или снимает его, как в Word.
+            if press
+                && !command
+                && !shift
+                && !on_picture
+                && response.hovered()
+                && under_pointer
+                    .is_some_and(|at| crate::context_menu::is_checkbox(&document.doc, at))
+            {
+                menu.push(RibbonCommand::ToggleCheckBox);
+            }
             if let Some(position) = under_pointer.filter(|_| !on_picture) {
                 if press && response.hovered() {
                     document.cursor = position;
@@ -3613,6 +3634,7 @@ impl Viewer {
                 .iter()
                 .find(|(a, b)| key(*a) <= key(document.cursor) && key(document.cursor) <= key(*b))
                 .copied();
+            let control = crate::context_menu::control_menu_for(&document.doc, document.cursor);
             response.context_menu(|ui| {
                 if let Some((a, b)) = misspelled
                     && let Some(word) = letter_editor::paragraph_ref(&document.doc, a.paragraph)
@@ -3621,6 +3643,8 @@ impl Viewer {
                 {
                     let suggestions = spelling.suggestions(&word);
                     crate::context_menu::spelling_items(ui, &word, &suggestions, a, b, &mut menu);
+                } else if let Some(control) = &control {
+                    crate::context_menu::control_menu(ui, control, &mut menu);
                 }
                 crate::context_menu::context_menu(ui, has_selection, numbered, on_link, &mut menu);
             });

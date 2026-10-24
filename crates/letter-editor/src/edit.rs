@@ -536,8 +536,10 @@ fn remove_range(paragraph: &mut Paragraph, start: usize, end: usize) {
     tidy(paragraph);
 }
 
+/// Пустой фрагмент, который можно убрать. Пустой фрагмент элемента
+/// управления содержимым остаётся: без него пропал бы сам элемент.
 fn is_empty_run(inline: &Inline) -> bool {
-    matches!(inline, Inline::Run(r) if r.content.is_empty())
+    matches!(inline, Inline::Run(r) if r.content.is_empty() && r.props.control.is_none())
 }
 
 /// Наводит порядок: соседние тексты одного фрагмента склеены, пустые

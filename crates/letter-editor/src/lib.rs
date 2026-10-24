@@ -16,11 +16,13 @@
 //! - [`revisions`] — исправления: запись, принять и отклонить;
 //! - [`compare`] — сравнение двух документов;
 //! - [`spelling`] — проверка орфографии.
+//! - [`controls`] — элементы управления содержимым: флажки, списки, даты.
 
 pub mod caret;
 pub mod clipboard;
 pub mod comments;
 pub mod compare;
+pub mod controls;
 pub mod cover;
 pub mod edit;
 pub mod fields;
@@ -51,6 +53,10 @@ pub use comments::{
     reply_to_comment, set_comment_done, set_comment_text, thread_root,
 };
 pub use compare::compare_documents;
+pub use controls::{
+    choose_list_item, control_at, editable, placeholder_at, set_control_date, set_control_text,
+    toggle_checkbox,
+};
 pub use cover::{CoverLayout, CoverPage, insert_cover_page};
 pub use edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, paragraph_count,

@@ -118,6 +118,9 @@ pub struct ParagraphProps {
     pub shading: Option<Shading>,
     /// «Запретить автоматический перенос слов» (`w:suppressAutoHyphens`).
     pub suppress_auto_hyphens: Option<bool>,
+    /// Элементы управления содержимым (`w:sdt`), внутри которых лежит
+    /// абзац, от внешнего к внутреннему. В `w:pPr` не пишутся.
+    pub controls: Vec<crate::ContentControlRef>,
     /// Свойства, которые программа пока не понимает, в порядке из файла.
     pub unknown: Vec<RawXml>,
 }
