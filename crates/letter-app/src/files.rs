@@ -210,8 +210,28 @@ pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     result
 }
 
-/// Папка программы для настроек и автосохранений.
+/// Имя папки рядом с программой, которая включает портативный режим.
+pub const PORTABLE_DIR: &str = "letter-data";
+
+/// Папка программы для настроек и автосохранений. В портативной версии
+/// (рядом с программой есть папка [`PORTABLE_DIR`]) — она, чтобы всё
+/// хранилось на флешке вместе с программой.
 pub fn app_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok();
+    if let Some(dir) = exe.as_deref().and_then(portable_dir) {
+        return Some(dir);
+    }
+    system_app_dir()
+}
+
+/// Папка портативного режима рядом с программой `exe`, если она есть.
+fn portable_dir(exe: &Path) -> Option<PathBuf> {
+    let dir = exe.parent()?.join(PORTABLE_DIR);
+    dir.is_dir().then_some(dir)
+}
+
+/// Обычная папка настроек в профиле пользователя.
+fn system_app_dir() -> Option<PathBuf> {
     let env = |name| {
         std::env::var_os(name)
             .filter(|v| !v.is_empty())
@@ -428,6 +448,16 @@ pub mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn portable_dir_is_next_to_the_program() {
+        let dir = temp_dir("portable");
+        let exe = dir.join("letter.exe");
+        assert_eq!(portable_dir(&exe), None);
+        fs::create_dir(dir.join(PORTABLE_DIR)).unwrap();
+        assert_eq!(portable_dir(&exe), Some(dir.join(PORTABLE_DIR)));
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
