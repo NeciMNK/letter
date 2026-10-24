@@ -21,6 +21,7 @@ mod crypto;
 mod document;
 mod error;
 mod kind;
+mod math;
 mod names;
 mod numbering;
 mod package;

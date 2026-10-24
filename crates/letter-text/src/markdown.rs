@@ -404,6 +404,7 @@ fn inline(doc: &Document, p: &Paragraph, skip: usize, cell: bool) -> String {
             let piece = match item {
                 RunContent::Text(text) => text.clone(),
                 RunContent::Symbol(s) => s.unicode().to_string(),
+                RunContent::Math(m) => m.linear_text().replace('\n', " "),
                 RunContent::Tab => "\t".to_owned(),
                 RunContent::Break(BreakKind::Line) => "\n".to_owned(),
                 RunContent::Break(_)

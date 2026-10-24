@@ -71,6 +71,11 @@ pub enum RunContent {
     CommentReference(String),
     /// Знак из шрифта (`w:sym`). В тексте абзаца — знак [`OBJECT_CHAR`].
     Symbol(crate::Symbol),
+    /// Формула (`m:oMath` или `m:oMathPara`). В файле .docx стоит прямо
+    /// в абзаце, а не внутри `w:r`; в модели — в фрагменте, чтобы курсор
+    /// и правка работали с ней как с рисунком. В тексте абзаца — знак
+    /// [`OBJECT_CHAR`].
+    Math(crate::Math),
     /// Непонятый элемент (рисунок, поле, символ и т. п.), сохранённый как есть.
     Unknown(RawXml),
 }
@@ -87,9 +92,10 @@ impl RunContent {
         match self {
             RunContent::Text(text) => text.len(),
             RunContent::Tab | RunContent::Break(_) => 1,
-            RunContent::Picture(_) | RunContent::NoteMark(_) | RunContent::Symbol(_) => {
-                OBJECT_CHAR.len_utf8()
-            }
+            RunContent::Picture(_)
+            | RunContent::NoteMark(_)
+            | RunContent::Symbol(_)
+            | RunContent::Math(_) => OBJECT_CHAR.len_utf8(),
             RunContent::NoteReference(r) if !r.custom_mark => OBJECT_CHAR.len_utf8(),
             RunContent::NoteReference(_)
             | RunContent::Unknown(_)
@@ -99,15 +105,16 @@ impl RunContent {
         }
     }
 
-    fn push_plain_text(&self, out: &mut String) {
+    pub(crate) fn push_plain_text(&self, out: &mut String) {
         match self {
             RunContent::Text(text) => out.push_str(text),
             RunContent::Tab => out.push('\t'),
             RunContent::Break(BreakKind::Line) => out.push('\n'),
             RunContent::Break(BreakKind::Page | BreakKind::Column) => out.push('\u{c}'),
-            RunContent::Picture(_) | RunContent::NoteMark(_) | RunContent::Symbol(_) => {
-                out.push(OBJECT_CHAR)
-            }
+            RunContent::Picture(_)
+            | RunContent::NoteMark(_)
+            | RunContent::Symbol(_)
+            | RunContent::Math(_) => out.push(OBJECT_CHAR),
             RunContent::NoteReference(r) if !r.custom_mark => out.push(OBJECT_CHAR),
             RunContent::NoteReference(_)
             | RunContent::Unknown(_)

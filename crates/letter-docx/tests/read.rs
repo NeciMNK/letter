@@ -551,6 +551,36 @@ fn shapes_are_read() {
 }
 
 #[test]
+fn formulas_are_read() {
+    use letter_model::{Inline, RunContent};
+    let doc = fixture("math.docx");
+    let formulas: Vec<_> = paragraphs(&doc)
+        .iter()
+        .flat_map(|p| &p.content)
+        .filter_map(|item| match item {
+            Inline::Run(run) => Some(run),
+            _ => None,
+        })
+        .flat_map(|run| &run.content)
+        .filter_map(|item| match item {
+            RunContent::Math(math) => Some(math),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(formulas.len(), 6);
+    assert!(!formulas[0].display);
+    assert_eq!(formulas[0].linear_text(), "a^2+b^2=c^2");
+    assert!(formulas[1].display);
+    assert_eq!(formulas[1].linear_text(), "x=(-b±√(b^2-4ac))/(2a)");
+    // Формула в тексте абзаца — один знак объекта между словами.
+    let first = paragraphs(&doc)[0].plain_text();
+    assert!(
+        first.starts_with("Теорема Пифагора: \u{fffc} — "),
+        "{first}"
+    );
+}
+
+#[test]
 fn smart_art_is_read_with_its_drawing() {
     let doc = fixture("smartart.docx");
     let picture = paragraphs(&doc)

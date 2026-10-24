@@ -22,6 +22,7 @@ const EXPECTED: &[&str] = &[
     "charts.docx",
     "header-footer.docx",
     "ru-en.docx",
+    "math.docx",
     "pages.docx",
 ];
 

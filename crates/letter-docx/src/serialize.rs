@@ -647,7 +647,35 @@ thread_local! {
     static NEW_PICTURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// Фрагмент: `w:r`, а формулы в нём — отдельно, прямо в абзаце
+/// (в .docx `m:oMath` не может стоять внутри `w:r`).
 fn run_xml(run: &Run) -> String {
+    if !run.content.iter().any(|c| matches!(c, RunContent::Math(_))) {
+        return plain_run_xml(run);
+    }
+    let mut out = String::new();
+    let mut piece = Run {
+        props: run.props.clone(),
+        content: Vec::new(),
+    };
+    for item in &run.content {
+        if let RunContent::Math(math) = item {
+            if !piece.content.is_empty() {
+                out.push_str(&plain_run_xml(&piece));
+                piece.content.clear();
+            }
+            out.push_str(&crate::math::math_xml(math));
+        } else {
+            piece.content.push(item.clone());
+        }
+    }
+    if !piece.content.is_empty() {
+        out.push_str(&plain_run_xml(&piece));
+    }
+    out
+}
+
+fn plain_run_xml(run: &Run) -> String {
     let mut out = run_props(&run.props);
     for item in &run.content {
         match item {
@@ -695,6 +723,8 @@ fn run_xml(run: &Run) -> String {
                 escape_attr(id)
             )),
             RunContent::Unknown(raw) => out.push_str(raw.as_str()),
+            // Формулы отделяет `run_xml`.
+            RunContent::Math(_) => {}
         }
     }
     if run

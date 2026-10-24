@@ -261,6 +261,12 @@ fn read_paragraph(p: &Element, allow_section: bool) -> (Paragraph, Option<Sectio
             paragraph.content.extend(items);
         } else if let Some(mark) = read_comment_mark(child) {
             paragraph.content.push(mark);
+        } else if let Some(math) = crate::math::read_math(child) {
+            // Формула — отдельный фрагмент без оформления (см. `RunContent::Math`).
+            paragraph.content.push(Inline::Run(Run {
+                props: RunProps::default(),
+                content: vec![RunContent::Math(math)],
+            }));
         } else {
             paragraph.content.push(Inline::Unknown(child.raw()));
         }

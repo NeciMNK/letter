@@ -13,11 +13,13 @@
 //!   и раскладка строк по страницам;
 //! - [`spacing`] — межстрочный и межабзацный интервалы: строки и абзацы
 //!   по вертикали;
+//! - [`math`] — формулы: дроби, степени, корни, скобки, суммы;
 //! - `table` — таблицы: столбцы, ячейки, границы и заливка.
 
 mod fields;
 pub mod fonts;
 pub mod lines;
+pub mod math;
 mod notes;
 pub mod pages;
 pub mod shaping;
@@ -30,6 +32,7 @@ pub use lines::{
     ParagraphFormat, ParagraphLines, TabItem, TabKind, TabLeader, TabStop, TextItem, TextSpan,
     break_lines, break_lines_around,
 };
+pub use math::{MATH_FONT, MathGlyphs, MathLayout, MathStroke, layout_math};
 pub use pages::{
     CellArea, DocumentLayout, Float, LayoutCache, Margins, Page, PageLine, PageNote, PageStory,
     PageWatermark, Shape, ShapeKind, baseline_rise, layout_document, layout_document_cached,

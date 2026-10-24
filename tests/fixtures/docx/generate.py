@@ -873,6 +873,81 @@ def charts() -> Document:
     return doc
 
 
+M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+MATH_RPR = '<w:rPr><w:rFonts w:ascii="Cambria Math" w:hAnsi="Cambria Math"/></w:rPr>'
+CTRL = f"<m:ctrlPr>{MATH_RPR}</m:ctrlPr>"
+
+
+def mr(text: str, plain: bool = False) -> str:
+    """Текст формулы (`m:r`), как его пишет Word."""
+    sty = '<m:rPr><m:sty m:val="p"/></m:rPr>' if plain else ""
+    return f"<m:r>{sty}{MATH_RPR}<m:t>{text}</m:t></m:r>"
+
+
+def frac(num: str, den: str) -> str:
+    return f"<m:f><m:fPr>{CTRL}</m:fPr><m:num>{num}</m:num><m:den>{den}</m:den></m:f>"
+
+
+def sup(base: str, power: str) -> str:
+    return f"<m:sSup><m:sSupPr>{CTRL}</m:sSupPr><m:e>{base}</m:e><m:sup>{power}</m:sup></m:sSup>"
+
+
+def nary(op: str, sub: str, sup_: str, body: str) -> str:
+    chr_ = "" if op == "∫" else f'<m:chr m:val="{op}"/>'
+    return (
+        f'<m:nary><m:naryPr>{chr_}<m:limLoc m:val="{"subSup" if op == "∫" else "undOvr"}"/>'
+        f"{CTRL}</m:naryPr><m:sub>{sub}</m:sub><m:sup>{sup_}</m:sup><m:e>{body}</m:e></m:nary>"
+    )
+
+
+def add_math(paragraph, inner: str, display: bool) -> None:
+    """Добавляет в абзац формулу: в строке (`m:oMath`) или отдельную
+    (`m:oMathPara`)."""
+    xml = f"<m:oMath>{inner}</m:oMath>"
+    if display:
+        xml = f"<m:oMathPara>{xml}</m:oMathPara>"
+    wrapper = etree.fromstring(f'<root xmlns:m="{M_NS}" xmlns:w="{W_NS}">{xml}</root>')
+    paragraph._p.append(wrapper[0])
+
+
+def math() -> Document:
+    """Формулы, как их вставляет Word («Вставка → Уравнение»): в строке
+    текста и отдельные — дробь, степени, корни, сумма, интеграл, предел,
+    матрица в скобках."""
+    doc = new_document("Формулы")
+    p = doc.add_paragraph("Теорема Пифагора: ")
+    add_math(p, sup(mr("a"), mr("2")) + mr("+") + sup(mr("b"), mr("2")) + mr("=") + sup(mr("c"), mr("2")), False)
+    p.add_run(" — для прямоугольного треугольника.")
+    doc.add_paragraph("Корни квадратного уравнения:")
+    root = (
+        f'<m:rad><m:radPr><m:degHide m:val="1"/>{CTRL}</m:radPr><m:deg/>'
+        f"<m:e>{sup(mr('b'), mr('2'))}{mr('-4ac')}</m:e></m:rad>"
+    )
+    add_math(doc.add_paragraph(), mr("x=") + frac(mr("-b±") + root, mr("2a")), True)
+    doc.add_paragraph("Сумма и интеграл:")
+    total = nary("∑", mr("i=1"), mr("n"), mr("i")) + mr("=") + frac(mr("n(n+1)"), mr("2"))
+    add_math(doc.add_paragraph(), total, True)
+    integral = nary("∫", mr("0"), mr("1"), sup(mr("x"), mr("2")) + mr("dx")) + mr("=") + frac(mr("1"), mr("3"))
+    add_math(doc.add_paragraph(), integral, True)
+    doc.add_paragraph("Предел, функция и матрица:")
+    limit = (
+        f"<m:func><m:funcPr>{CTRL}</m:funcPr><m:fName><m:limLow><m:limLowPr>{CTRL}</m:limLowPr>"
+        f"<m:e>{mr('lim', True)}</m:e><m:lim>{mr('x→0')}</m:lim></m:limLow></m:fName>"
+        f"<m:e>{frac(f'<m:func><m:funcPr>{CTRL}</m:funcPr><m:fName>{mr('sin', True)}</m:fName><m:e>{mr('x')}</m:e></m:func>', mr('x'))}</m:e></m:func>"
+        + mr("=1")
+    )
+    add_math(doc.add_paragraph(), limit, True)
+    cell = lambda t: f"<m:e>{mr(t)}</m:e>"
+    matrix = (
+        f"<m:d><m:dPr>{CTRL}</m:dPr><m:e><m:m><m:mPr><m:mcs><m:mc><m:mcPr><m:count m:val=\"2\"/>"
+        f"<m:mcJc m:val=\"center\"/></m:mcPr></m:mc></m:mcs>{CTRL}</m:mPr>"
+        f"<m:mr>{cell('a')}{cell('b')}</m:mr><m:mr>{cell('c')}{cell('d')}</m:mr></m:m></m:e></m:d>"
+    )
+    add_math(doc.add_paragraph(), mr("A=") + matrix, True)
+    return doc
+
+
 NS_SHAPES = (
     'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
     'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
@@ -1024,6 +1099,7 @@ FIXTURES = {
     "comments.docx": comments,
     "borders.docx": borders,
     "watermark.docx": watermark,
+    "math.docx": math,
     "shapes.docx": shapes,
     "smartart.docx": smartart,
     "charts.docx": charts,
