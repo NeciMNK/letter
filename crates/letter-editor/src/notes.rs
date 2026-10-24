@@ -12,7 +12,9 @@ use letter_model::{
     VerticalAlign,
 };
 
-use crate::edit::{clamp_offset, insert_items, item_len, paragraph_mut};
+use crate::edit::{
+    clamp_offset, insert_items, item_len, paragraph_count, paragraph_mut, paragraph_ref,
+};
 use crate::format::apply;
 use crate::position::Position;
 
@@ -180,6 +182,32 @@ fn style_name(id: &str) -> String {
     name
 }
 
+/// Места ссылок на сноски вида `kind` в тексте, по порядку: начало
+/// ссылки и её длина (для «Следующая сноска»).
+pub fn note_places(doc: &Document, kind: NoteKind) -> Vec<(Position, usize)> {
+    let mut places = Vec::new();
+    for index in 0..paragraph_count(doc) {
+        let Some(paragraph) = paragraph_ref(doc, index) else {
+            continue;
+        };
+        let mut offset = 0;
+        for inline in &paragraph.content {
+            let letter_model::Inline::Run(run) = inline else {
+                continue;
+            };
+            for item in &run.content {
+                if let RunContent::NoteReference(r) = item
+                    && r.kind == kind
+                {
+                    places.push((Position::new(index, offset), item_len(item)));
+                }
+                offset += item_len(item);
+            }
+        }
+    }
+    places
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,5 +310,20 @@ mod tests {
         assert_ne!(note(&doc).map(|n| n.blocks), Some(blocks.clone()));
         history.redo(&mut doc);
         assert_eq!(note(&doc).map(|n| n.blocks), Some(blocks));
+    }
+    #[test]
+    fn note_places_are_found_in_order() {
+        let mut doc = doc();
+        insert_note(&mut doc, Position::new(0, 5), NoteKind::Footnote);
+        insert_note(&mut doc, Position::new(0, 2), NoteKind::Footnote);
+        insert_note(&mut doc, Position::new(0, 0), NoteKind::Endnote);
+        let footnotes = note_places(&doc, NoteKind::Footnote);
+        assert_eq!(footnotes.len(), 2);
+        assert!(footnotes[0].0.offset < footnotes[1].0.offset);
+        assert!(footnotes.iter().all(|(_, len)| *len > 0));
+        assert_eq!(
+            note_places(&doc, NoteKind::Endnote),
+            vec![(Position::new(0, 0), footnotes[0].1)]
+        );
     }
 }

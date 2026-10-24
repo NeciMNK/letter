@@ -317,6 +317,7 @@ fn text_box(
         footer: PageStory::default(),
         notes: Vec::new(),
         watermark: None,
+        number: 1,
     };
     out.extend(page_scene(&page, scale, library, cache));
 }

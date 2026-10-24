@@ -52,6 +52,7 @@ use crate::modes::{
     LayoutView, OutlineView, WEB_MARGIN, outline_hidden, outline_indent, outline_levels,
     view_document,
 };
+use crate::page_number_dialog::PageNumberDialog;
 use crate::paragraph_dialog::{ParagraphDialog, ParagraphValues};
 use crate::password_dialog::{PasswordAnswer, PasswordDialog};
 use crate::picture::{Handle, PictureDrag};
@@ -494,13 +495,25 @@ impl OpenDocument {
         self.relayout(shaper, library);
     }
 
-    /// «Особый колонтитул для первой страницы» у раздела страницы `page`:
-    /// открытый колонтитул закрывается, флаг меняется (шаг отмены),
-    /// и колонтитул той же страницы открывается снова.
-    fn set_title_page(
+    /// Раздел основного текста, в котором начинается страница `page`
+    /// (и когда открыт колонтитул).
+    fn page_section(&self, page: usize) -> Option<&letter_model::Section> {
+        let (layout, doc) = match &self.story {
+            Some(story) => (&story.display, &story.body),
+            None => (&self.layout, &self.doc),
+        };
+        doc.sections.get(layout.pages.get(page)?.section)
+    }
+
+    /// Правка колонтитулов раздела страницы `page` («Особый колонтитул
+    /// для первой страницы», «Формат номеров страниц» и т. п.; `command`
+    /// получает номер раздела): открытый колонтитул закрывается,
+    /// правка делается (шаг отмены), и колонтитул той же страницы
+    /// открывается снова.
+    fn section_command(
         &mut self,
         page: usize,
-        on: bool,
+        command: impl FnOnce(usize) -> Command,
         shaper: &mut Shaper,
         library: &FontLibrary,
     ) {
@@ -513,8 +526,7 @@ impl OpenDocument {
             return;
         };
         let selection = self.selection();
-        let command = Command::TitlePage { section, on };
-        let selection = self.history.run(&mut self.doc, selection, command);
+        let selection = self.history.run(&mut self.doc, selection, command(section));
         self.set_selection(selection);
         self.relayout(shaper, library);
         if let Some(header) = header {
@@ -803,6 +815,7 @@ pub struct Viewer {
     link_dialog: LinkDialog,
     /// Окно «Закладка».
     bookmark_dialog: BookmarkDialog,
+    page_number_dialog: PageNumberDialog,
     /// Окно «Ограничить редактирование».
     protect_dialog: ProtectDialog,
     /// Проверка орфографии.
@@ -1026,6 +1039,7 @@ impl Viewer {
             paragraph_dialog: ParagraphDialog::default(),
             link_dialog: LinkDialog::default(),
             bookmark_dialog: BookmarkDialog::default(),
+            page_number_dialog: PageNumberDialog::default(),
             protect_dialog: ProtectDialog::default(),
             spelling: crate::spelling::Spelling::start(dir.clone()),
             password_dialog: PasswordDialog::default(),
@@ -1474,6 +1488,7 @@ impl Viewer {
             && !self.paragraph_dialog.open
             && !self.link_dialog.open
             && !self.bookmark_dialog.open
+            && !self.page_number_dialog.open
             && !self.password_dialog.open
             && !self.symbol_dialog.open
             && (self.ribbon.keytips.active() || !ctx.egui_wants_keyboard_input())
@@ -1570,6 +1585,9 @@ impl Viewer {
             }
             if let Some(action) = self.bookmark_dialog.ui(&ctx) {
                 self.bookmark_action(&ctx, action);
+            }
+            if let Some((page, numbering)) = self.page_number_dialog.ui(&ctx) {
+                self.set_page_numbering(page, numbering);
             }
             if let Some(action) = self.protect_dialog.ui(&ctx) {
                 self.protect_action(action);
@@ -2020,6 +2038,15 @@ impl Viewer {
         match &document.story {
             Some(story) => story.page,
             None => caret(&document.layout, document.cursor).map_or(self.current_page, |c| c.page),
+        }
+    }
+
+    /// Нумерация страниц раздела страницы `page` из окна «Формат номеров
+    /// страниц».
+    fn set_page_numbering(&mut self, page: usize, numbering: Option<letter_model::PageNumbering>) {
+        if let Some(document) = &mut self.document {
+            let command = |section| Command::PageNumbering { section, numbering };
+            document.section_command(page, command, &mut self.shaper, &self.library);
         }
     }
 
@@ -2542,6 +2569,37 @@ impl Viewer {
         }
     }
 
+    /// «Следующая сноска» (`forward`) или «Предыдущая»: выделяет ссылку
+    /// на сноску вида `kind` после курсора или до него, по кругу.
+    fn next_note(&mut self, kind: letter_model::NoteKind, forward: bool) {
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        if document.story.is_some() {
+            return;
+        }
+        let places = letter_editor::note_places(&document.doc, kind);
+        let key = |p: Position| (p.paragraph, p.offset);
+        let start = key(document.cursor).min(key(document.anchor));
+        let found = if forward {
+            places
+                .iter()
+                .find(|(p, _)| key(*p) > start)
+                .or_else(|| places.first())
+        } else {
+            places
+                .iter()
+                .rev()
+                .find(|(p, _)| key(*p) < start)
+                .or_else(|| places.last())
+        };
+        if let Some(&(at, len)) = found {
+            let end = Position::new(at.paragraph, at.offset + len);
+            document.set_selection(Selection::new(at, end));
+            self.reveal_cursor = true;
+        }
+    }
+
     /// Переход из области навигации.
     fn navigation_action(&mut self, action: crate::navigation::NavAction) {
         use crate::navigation::NavAction;
@@ -2597,6 +2655,9 @@ impl Viewer {
         };
         if let Some(document) = &self.document {
             info.has_document = true;
+            info.outline_level =
+                letter_editor::paragraph_ref(&document.doc, document.cursor.paragraph)
+                    .and_then(|p| letter_editor::outline_level(&document.doc, &p.props));
             info.can_undo = document.history.can_undo();
             info.styles = crate::styles::gallery(&document.doc);
             info.can_redo = document.history.can_redo();
@@ -2649,6 +2710,7 @@ impl Viewer {
                 info.title_page = section
                     .and_then(|s| story.body.sections.get(s))
                     .is_some_and(|s| s.props.title_page);
+                info.even_odd = story.body.settings.even_and_odd_headers;
             }
         }
         info
@@ -2742,6 +2804,10 @@ impl Viewer {
                 RibbonCommand::NextComment(forward) => {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
                     self.next_comment(forward);
+                }
+                RibbonCommand::NextNote { kind, forward } => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    self.next_note(kind, forward);
                 }
                 RibbonCommand::NewComment => {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
@@ -2950,7 +3016,26 @@ impl Viewer {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
                     let page = self.story_page();
                     if let Some(document) = &mut self.document {
-                        document.set_title_page(page, on, &mut self.shaper, &self.library);
+                        let command = |section| Command::TitlePage { section, on };
+                        document.section_command(page, command, &mut self.shaper, &self.library);
+                    }
+                }
+                RibbonCommand::EvenOddHeaders(on) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    let page = self.story_page();
+                    if let Some(document) = &mut self.document {
+                        let command = |_| Command::EvenOddHeaders(on);
+                        document.section_command(page, command, &mut self.shaper, &self.library);
+                    }
+                }
+                RibbonCommand::PageNumberFormat => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    let page = self.story_page();
+                    if let Some(document) = &self.document
+                        && let Some(section) = document.page_section(page)
+                    {
+                        let current = section.props.page_numbering.clone();
+                        self.page_number_dialog.show(page, current);
                     }
                 }
                 RibbonCommand::PageNumber(place) => {
@@ -5401,6 +5486,59 @@ mod tests {
     }
 
     #[test]
+    fn toc_is_deleted_and_add_text_sets_levels() {
+        use letter_editor::OutlineChange;
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("headings.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let text = |viewer: &Viewer| viewer.document.as_ref().unwrap().doc.plain_text();
+        let before = text(&viewer);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::InsertToc]);
+        assert_ne!(text(&viewer), before);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Edit(Command::DeleteToc)]);
+        assert_eq!(text(&viewer), before);
+
+        // «Добавить текст → Уровень 2» у обычного текста и обратно.
+        let document = viewer.document.as_mut().unwrap();
+        document.set_selection(Selection::caret(Position::new(2, 0)));
+        assert_eq!(viewer.ribbon_info().outline_level, None);
+        let add = |change| vec![RibbonCommand::Edit(Command::OutlineLevel(change))];
+        viewer.run_ribbon(&ctx, add(OutlineChange::Level(2)));
+        assert_eq!(viewer.ribbon_info().outline_level, Some(2));
+        viewer.run_ribbon(&ctx, add(OutlineChange::Body));
+        assert_eq!(viewer.ribbon_info().outline_level, None);
+    }
+
+    #[test]
+    fn next_footnote_goes_round() {
+        use letter_model::NoteKind;
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("notes.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let next = |kind, forward| vec![RibbonCommand::NextNote { kind, forward }];
+        let start = |viewer: &Viewer| {
+            let document = viewer.document.as_ref().unwrap();
+            assert!(!document.selection().is_empty());
+            document.selection().start()
+        };
+        let first = Position::new(0, "First claim".len());
+        viewer.run_ribbon(&ctx, next(NoteKind::Footnote, true));
+        assert_eq!(start(&viewer), first);
+        viewer.run_ribbon(&ctx, next(NoteKind::Footnote, true));
+        let second = start(&viewer);
+        assert!(second.offset > first.offset && second.paragraph == 0);
+        // По кругу к первой и назад к последней.
+        viewer.run_ribbon(&ctx, next(NoteKind::Footnote, true));
+        assert_eq!(start(&viewer), first);
+        viewer.run_ribbon(&ctx, next(NoteKind::Footnote, false));
+        assert_eq!(start(&viewer), second);
+        viewer.run_ribbon(&ctx, next(NoteKind::Endnote, true));
+        assert_eq!(start(&viewer).paragraph, 1);
+    }
+
+    #[test]
     fn ctrl_alt_f_inserts_a_footnote() {
         let ctx = Context::default();
         let mut viewer = Viewer::new(FontLibrary::embedded_only());
@@ -5548,6 +5686,61 @@ mod tests {
         viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
         let document = viewer.document.as_ref().unwrap();
         assert!(document.layout.pages[0].footer.is_empty());
+    }
+
+    #[test]
+    fn page_number_format_and_even_pages_from_the_ribbon() {
+        use crate::headers::PageNumberPlace;
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::PageNumber(PageNumberPlace::Bottom)],
+        );
+        // «Формат номеров страниц»: начать с 10, римскими.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::PageNumberFormat]);
+        assert!(viewer.page_number_dialog.open);
+        let dialog = &mut viewer.page_number_dialog;
+        dialog.restart = true;
+        dialog.start = 10;
+        dialog.format = 4;
+        let (page, numbering) = (dialog.page, dialog.numbering());
+        viewer.set_page_numbering(page, numbering);
+        // Колонтитул остаётся открытым.
+        assert_eq!(viewer.ribbon_info().story, Some(false));
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::CloseHeaderFooter]);
+        let footer = |viewer: &Viewer, i: usize| {
+            let document = viewer.document.as_ref().unwrap();
+            let line = &document.layout.pages[i].footer.lines.first()?;
+            Some(line.text[line.line.range.clone()].to_string())
+        };
+        assert_eq!(footer(&viewer, 0).as_deref(), Some("X"));
+        assert_eq!(footer(&viewer, 1).as_deref(), Some("XI"));
+
+        // «Разные колонтитулы для чётных и нечётных»: у чётной (10-й)
+        // страницы своего нижнего колонтитула нет.
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::EditHeaderFooter { header: false }],
+        );
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::EvenOddHeaders(true)]);
+        assert!(viewer.ribbon_info().even_odd);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::CloseHeaderFooter]);
+        assert_eq!(footer(&viewer, 0), None);
+        assert_eq!(footer(&viewer, 1).as_deref(), Some("XI"));
+        // Флаг переживает сохранение.
+        let document = viewer.document.as_ref().unwrap();
+        let bytes = letter_docx::write_bytes(&document.doc).unwrap();
+        let reopened = letter_docx::read_bytes(&bytes).unwrap();
+        assert!(reopened.settings.even_and_odd_headers);
+        assert_eq!(
+            reopened.sections[0].props.page_numbering,
+            document.doc.sections[0].props.page_numbering
+        );
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
+        assert_eq!(footer(&viewer, 0).as_deref(), Some("X"));
     }
 
     #[test]

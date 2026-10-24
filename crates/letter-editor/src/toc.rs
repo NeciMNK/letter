@@ -119,6 +119,51 @@ fn toc_fields(doc: &Document) -> Vec<TocField> {
     found
 }
 
+/// «Удалить оглавление»: убирает оглавление, в котором абзац `at`
+/// (если курсор не в оглавлении — первое в документе), вместе с его
+/// заголовком «Оглавление» перед ним. `false` — удалять нечего (нет
+/// оглавления или оно не из целых абзацев верхнего уровня).
+pub fn delete_toc(doc: &mut Document, at: usize) -> bool {
+    let tocs = toc_fields(doc);
+    let Some(toc) = tocs
+        .iter()
+        .find(|t| (t.first..=t.last).contains(&at))
+        .or_else(|| tocs.first())
+    else {
+        return false;
+    };
+    let (Some((section, start)), Some((end_section, end))) =
+        (top_level(doc, toc.first), top_level(doc, toc.last))
+    else {
+        return false;
+    };
+    if section != end_section || end - start != toc.last - toc.first {
+        return false;
+    }
+    // Заголовок оглавления — абзац стиля «Заголовок оглавления» сразу
+    // перед полем.
+    let is_title = |doc: &Document| {
+        let index = toc.first.checked_sub(1)?;
+        let (s, block) = top_level(doc, index)?;
+        let style = doc
+            .styles
+            .get(paragraph_ref(doc, index)?.props.style.as_deref()?)?;
+        let title = style.id.eq_ignore_ascii_case("TOCHeading")
+            || style
+                .name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case("TOC Heading"));
+        (title && s == section && block + 1 == start).then_some(block)
+    };
+    let from = is_title(doc).unwrap_or(start);
+    let blocks = &mut doc.sections[section].blocks;
+    blocks.drain(from..=end);
+    if blocks.is_empty() {
+        blocks.push(Paragraph::default().into());
+    }
+    true
+}
+
 /// Имя поля прописными по коду.
 fn field_name(code: &str) -> String {
     code.split_whitespace()
@@ -679,6 +724,21 @@ mod tests {
         let again = paragraph_ref(&doc, 2).cloned().unwrap_or_default();
         let link = again.runs().find_map(|r| r.props.link.clone());
         assert_eq!(link.and_then(|l| l.anchor), Some(anchor));
+    }
+
+    #[test]
+    fn toc_is_deleted_with_its_title() {
+        let mut doc = doc();
+        let before = doc.plain_text();
+        insert_toc(&mut doc, Position::new(0, 0), &context(vec![1, 1, 2, 3]));
+        assert_eq!(toc_fields(&doc).len(), 1);
+        // Курсор после оглавления: удаляется первое (единственное).
+        let last = paragraph_count(&doc) - 1;
+        assert!(delete_toc(&mut doc, last));
+        assert!(toc_fields(&doc).is_empty());
+        // Остаются только скрытые закладки заголовков, как в Word.
+        assert_eq!(doc.plain_text(), before);
+        assert!(!delete_toc(&mut doc, 0));
     }
 
     #[test]
