@@ -55,6 +55,7 @@ use crate::modes::{
 use crate::paragraph_dialog::{ParagraphDialog, ParagraphValues};
 use crate::password_dialog::{PasswordAnswer, PasswordDialog};
 use crate::picture::{Handle, PictureDrag};
+use crate::protect_dialog::{ProtectAction, ProtectDialog, ProtectMode};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
 use crate::ruler::{self, RULER_SIZE, RulerParagraph, RulerState};
 use crate::settings::Settings;
@@ -195,6 +196,9 @@ struct OpenDocument {
     /// Открытый для правки колонтитул: тогда `doc`, `history` и `layout`
     /// — колонтитула, а сам документ отложен здесь.
     story: Option<Box<StoryEdit>>,
+    /// Открыт только для чтения: у файла пароль на изменение или
+    /// «рекомендовать только чтение», и правку ещё не разрешили.
+    read_only: bool,
     /// Как верстается документ: по листам или по ширине окна
     /// («Веб-документ», «Структура»).
     view: LayoutView,
@@ -220,6 +224,14 @@ struct Counts {
     selected: Option<Statistics>,
 }
 
+/// Имя пользователя системы: им подписываются исправления.
+fn user_name() -> String {
+    ["USERNAME", "USER", "LOGNAME"]
+        .iter()
+        .find_map(|name| std::env::var(name).ok().filter(|v| !v.trim().is_empty()))
+        .unwrap_or_else(|| "letter".to_string())
+}
+
 impl OpenDocument {
     /// Новый открытый документ, курсор в начале.
     fn new(
@@ -234,8 +246,11 @@ impl OpenDocument {
             password: None,
             saved: 0,
             autosaved: 0,
-            doc,
-            history: History::new(),
+            history: {
+                let mut history = History::new();
+                history.set_author(user_name());
+                history
+            },
             layout,
             cursor: Position::default(),
             anchor: Position::default(),
@@ -247,6 +262,12 @@ impl OpenDocument {
             outline: Vec::new(),
             outline_view: OutlineView::default(),
             outline_hidden: Vec::new(),
+            read_only: doc
+                .settings
+                .write_protection
+                .as_ref()
+                .is_some_and(|w| w.recommended || w.password.is_some()),
+            doc,
         }
     }
 
@@ -376,6 +397,18 @@ impl OpenDocument {
         self.story.as_ref().map_or(&self.doc, |s| &s.body)
     }
 
+    /// Править документ нельзя: он открыт только для чтения или защищён
+    /// («Ограничить редактирование»).
+    fn locked(&self) -> bool {
+        self.read_only
+            || self
+                .body()
+                .settings
+                .protection
+                .as_ref()
+                .is_some_and(|p| p.locks_editing())
+    }
+
     /// Открывает для правки верхний (`header`) или нижний колонтитул
     /// страницы `page`.
     fn begin_story(
@@ -385,6 +418,9 @@ impl OpenDocument {
         shaper: &mut Shaper,
         library: &FontLibrary,
     ) {
+        if self.locked() {
+            return;
+        }
         if self.story.is_some() {
             self.end_story(shaper, library);
         }
@@ -423,6 +459,9 @@ impl OpenDocument {
         shaper: &mut Shaper,
         library: &FontLibrary,
     ) {
+        if self.locked() {
+            return;
+        }
         if self.story.is_some() {
             self.end_story(shaper, library);
         }
@@ -465,6 +504,9 @@ impl OpenDocument {
         shaper: &mut Shaper,
         library: &FontLibrary,
     ) {
+        if self.locked() {
+            return;
+        }
         let header = self.story.as_ref().and_then(|s| s.header());
         self.end_story(shaper, library);
         let Some(section) = self.layout.pages.get(page).map(|p| p.section) else {
@@ -656,6 +698,9 @@ enum Intent {
     Recover(usize),
     /// Закрыть программу.
     Close,
+    /// «Сравнить»: выбрать исходный и изменённый документы и показать
+    /// результат сравнения.
+    Compare,
 }
 
 /// Ответ на вопрос «сохранить изменения?».
@@ -758,6 +803,10 @@ pub struct Viewer {
     link_dialog: LinkDialog,
     /// Окно «Закладка».
     bookmark_dialog: BookmarkDialog,
+    /// Окно «Ограничить редактирование».
+    protect_dialog: ProtectDialog,
+    /// Проверка орфографии.
+    spelling: crate::spelling::Spelling,
     password_dialog: PasswordDialog,
     /// Окно «Символ».
     symbol_dialog: SymbolDialog,
@@ -977,6 +1026,8 @@ impl Viewer {
             paragraph_dialog: ParagraphDialog::default(),
             link_dialog: LinkDialog::default(),
             bookmark_dialog: BookmarkDialog::default(),
+            protect_dialog: ProtectDialog::default(),
+            spelling: crate::spelling::Spelling::start(dir.clone()),
             password_dialog: PasswordDialog::default(),
             symbol_dialog: SymbolDialog::default(),
             font_dialog: FontDialog::default(),
@@ -1157,7 +1208,46 @@ impl Viewer {
             Intent::Recover(index) => self.recover(index),
             Intent::Close => self.close_confirmed = true,
             Intent::CloseDocument => self.close_document(),
+            Intent::Compare => self.pick_compare(),
         }
+    }
+
+    /// Окна выбора исходного и изменённого документов для сравнения.
+    fn pick_compare(&mut self) {
+        let pick = |title: &'static str, dir: Option<PathBuf>| {
+            let mut dialog = rfd::FileDialog::new().set_title(tr(title));
+            for (name, extensions) in OPEN_FILTERS {
+                dialog = dialog.add_filter(tr(name), extensions);
+            }
+            if let Some(dir) = dir {
+                dialog = dialog.set_directory(dir);
+            }
+            dialog.pick_file()
+        };
+        let Some(original) = pick("compare-original", self.dialog_dir()) else {
+            return;
+        };
+        let Some(revised) = pick("compare-revised", original.parent().map(Path::to_path_buf))
+        else {
+            return;
+        };
+        if let Err(message) = self.compare_files(&original, &revised) {
+            self.report("error-compare", message);
+        }
+    }
+
+    /// Сравнивает документы и показывает результат новым документом:
+    /// изменённый, где отличия от исходного — исправления.
+    fn compare_files(&mut self, original: &Path, revised: &Path) -> Result<(), String> {
+        let (old, new) = (files::read(original)?, files::read(revised)?);
+        let result = letter_editor::compare_documents(
+            &old,
+            &new,
+            &user_name(),
+            Some(letter_editor::revisions::now_w3c()),
+        );
+        self.show(None, result);
+        Ok(())
     }
 
     /// Сохраняет документ туда, откуда он открыт (Ctrl+S); если
@@ -1481,6 +1571,9 @@ impl Viewer {
             if let Some(action) = self.bookmark_dialog.ui(&ctx) {
                 self.bookmark_action(&ctx, action);
             }
+            if let Some(action) = self.protect_dialog.ui(&ctx) {
+                self.protect_action(action);
+            }
             if let Some(answer) = self.password_dialog.ui(&ctx) {
                 self.password_answer(answer);
             }
@@ -1489,6 +1582,7 @@ impl Viewer {
                 self.run_ribbon(&ctx, vec![RibbonCommand::InsertSymbol(c)]);
             }
             egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+            self.protection_bar(ui);
             if self.navigation.open && self.document.is_some() && self.view_mode != ViewMode::Read {
                 let info = self.navigation_info();
                 let (library, painter, document) =
@@ -1807,7 +1901,18 @@ impl Viewer {
         // Вёрстка устаревает после правки; обновляем её перед следующим
         // движением курсора и в конце.
         let mut stale = false;
+        let locked = document.locked();
         for action in actions {
+            // В защищённом документе можно двигать курсор, выделять
+            // и копировать, но не править.
+            if locked
+                && matches!(
+                    action,
+                    Action::Cut | Action::Paste(..) | Action::Edit(_) | Action::Undo | Action::Redo
+                )
+            {
+                continue;
+            }
             match action.clone() {
                 Action::Move(motion, extend) => {
                     if std::mem::take(&mut stale) {
@@ -1974,6 +2079,96 @@ impl Viewer {
 
     /// Окно «Ссылка»: с текстом выделенного (или ссылки у курсора —
     /// тогда она выделяется целиком) и закладками документа.
+    /// Выполняет ответ окна «Ограничить редактирование»: проверяет
+    /// пароль и меняет защиту (шагом, который можно отменить).
+    fn protect_action(&mut self, action: ProtectAction) {
+        use letter_editor::protection::{can_modify, can_unprotect, new_password, protect};
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        document.end_story(&mut self.shaper, &self.library);
+        let settings = &document.doc.settings;
+        let command = match action {
+            ProtectAction::Protect { edit, password } => {
+                // «Запись исправлений» включает запись.
+                if edit == letter_model::EditRestriction::TrackedChanges {
+                    let selection = document.selection();
+                    document
+                        .history
+                        .run(&mut document.doc, selection, Command::TrackChanges(true));
+                }
+                Command::Protection(Some(protect(edit, &password)))
+            }
+            ProtectAction::Unprotect(password) => match settings.protection.as_ref() {
+                Some(p) if !can_unprotect(p, &password) => {
+                    self.protect_dialog.fail();
+                    return;
+                }
+                _ => Command::Protection(None),
+            },
+            ProtectAction::WriteProtect {
+                password,
+                recommended,
+            } => Command::WriteProtection((recommended || !password.is_empty()).then(|| {
+                letter_model::WriteProtection {
+                    recommended,
+                    password: (!password.is_empty()).then(|| new_password(&password)),
+                    other: Vec::new(),
+                }
+            })),
+            ProtectAction::AllowEditing(password) => {
+                if settings
+                    .write_protection
+                    .as_ref()
+                    .is_some_and(|w| !can_modify(w, &password))
+                {
+                    self.protect_dialog.fail();
+                } else {
+                    document.read_only = false;
+                }
+                return;
+            }
+        };
+        let selection = document.selection();
+        let selection = document.history.run(&mut document.doc, selection, command);
+        document.set_selection(selection);
+        document.relayout(&mut self.shaper, &self.library);
+    }
+
+    /// Полоса над документом, если править его нельзя, с кнопкой, которая
+    /// снимает защиту.
+    fn protection_bar(&mut self, ui: &mut egui::Ui) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        if !document.locked() {
+            return;
+        }
+        let read_only = document.read_only;
+        let clicked = egui::Panel::top("protection-bar")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (text, button) = if read_only {
+                        ("protect-bar-read-only", "protect-allow-editing")
+                    } else {
+                        ("protect-bar-locked", "protect-stop")
+                    };
+                    ui.label(tr(text));
+                    ui.button(tr(button)).clicked()
+                })
+                .inner
+            })
+            .inner;
+        if clicked {
+            let mode = if read_only {
+                ProtectMode::AllowEditing
+            } else {
+                ProtectMode::Unprotect
+            };
+            self.protect_dialog.show(mode, false);
+        }
+    }
+
     fn open_link_dialog(&mut self) {
         let Some(document) = &mut self.document else {
             return;
@@ -2437,6 +2632,13 @@ impl Viewer {
             info.section =
                 letter_editor::section_props(&document.doc, document.cursor.paragraph).cloned();
             info.auto_hyphenation = document.doc.settings.auto_hyphenation;
+            let settings = &document.body().settings;
+            info.track_changes = settings.track_revisions;
+            info.track_changes_forced = settings.protection.as_ref().is_some_and(|p| {
+                p.enforced && p.edit == letter_model::EditRestriction::TrackedChanges
+            });
+            info.has_revisions = letter_editor::revisions::has_revisions(document.body(), None);
+            info.spelling = self.spelling.enabled;
             info.has_comments = !document.doc.comments.is_empty();
             info.in_comment = info.has_comments && self.current_comment().is_some();
             if let Some(story) = &document.story
@@ -2624,6 +2826,88 @@ impl Viewer {
                         document.begin_story(page, header, &mut self.shaper, &self.library);
                         document.cursor_since = ctx.input(|i| i.time);
                         self.reveal_cursor = true;
+                    }
+                }
+                RibbonCommand::ToggleTrackChanges => {
+                    if let Some(document) = &self.document
+                        && document.story.is_none()
+                    {
+                        let settings = &document.doc.settings;
+                        let forced = settings.protection.as_ref().is_some_and(|p| {
+                            p.enforced && p.edit == letter_model::EditRestriction::TrackedChanges
+                        });
+                        if !forced {
+                            let on = !settings.track_revisions;
+                            actions.push(Action::Edit(Command::TrackChanges(on)));
+                        }
+                    }
+                }
+                RibbonCommand::NextRevision(forward) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &mut self.document
+                        && document.story.is_none()
+                        && let Some(at) = letter_editor::revisions::next_revision(
+                            &document.doc,
+                            document.cursor,
+                            forward,
+                        )
+                    {
+                        document.set_selection(Selection::caret(at));
+                        document.history.seal();
+                        self.reveal_cursor = true;
+                    }
+                }
+                RibbonCommand::CompareDocuments => self.request(Intent::Compare),
+                RibbonCommand::SpellReplace { start, end, text } => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &mut self.document {
+                        document.set_selection(Selection::new(start, end));
+                        document.history.seal();
+                    }
+                    actions.push(Action::Edit(Command::Type(text)));
+                }
+                RibbonCommand::SpellIgnore(word) => self.spelling.ignore(&word),
+                RibbonCommand::SpellAdd(word) => self.spelling.add_word(&word),
+                RibbonCommand::ToggleSpelling => {
+                    let on = !self.spelling.enabled;
+                    self.spelling.set_enabled(on);
+                }
+                RibbonCommand::NextSpellingError => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &mut self.document
+                        && document.story.is_none()
+                    {
+                        let errors = self
+                            .spelling
+                            .errors(&document.doc, document.history.state());
+                        let key = |p: Position| (p.paragraph, p.offset);
+                        let here = key(document.selection().end());
+                        let next = errors
+                            .iter()
+                            .find(|(a, _)| key(*a) >= here)
+                            .or_else(|| errors.first());
+                        if let Some(&(a, b)) = next {
+                            document.set_selection(Selection::new(a, b));
+                            document.history.seal();
+                            self.reveal_cursor = true;
+                        }
+                    }
+                }
+                RibbonCommand::RestrictEditing => {
+                    if let Some(document) = &self.document {
+                        let settings = &document.body().settings;
+                        let mode = if document.read_only {
+                            ProtectMode::AllowEditing
+                        } else if settings.protection.as_ref().is_some_and(|p| p.enforced) {
+                            ProtectMode::Unprotect
+                        } else {
+                            ProtectMode::Protect
+                        };
+                        let recommended = settings
+                            .write_protection
+                            .as_ref()
+                            .is_some_and(|w| w.recommended);
+                        self.protect_dialog.show(mode, recommended);
                     }
                 }
                 RibbonCommand::InsertToc | RibbonCommand::UpdateToc => {
@@ -3016,6 +3300,10 @@ impl Viewer {
         }
 
         let zoom = self.zoom();
+        let spelling_errors = match &self.document {
+            Some(d) if d.story.is_none() => self.spelling.errors(&d.doc, d.history.state()),
+            _ => Vec::new(),
+        };
         self.sync_layout_view(area_rect.width(), zoom);
         let mode = self.view_mode;
         let Viewer {
@@ -3024,6 +3312,7 @@ impl Viewer {
             document,
             show_marks,
             picture_drag,
+            spelling,
             ..
         } = self;
         let Some(document) = document else {
@@ -3340,9 +3629,21 @@ impl Viewer {
             let paragraph = document.cursor.paragraph;
             let numbered = (list_kind(&document.doc, paragraph) == Some(ListKind::Numbered))
                 .then(|| can_continue_numbering(&document.doc, paragraph));
+            let key = |p: Position| (p.paragraph, p.offset);
+            let misspelled = spelling_errors
+                .iter()
+                .find(|(a, b)| key(*a) <= key(document.cursor) && key(document.cursor) <= key(*b))
+                .copied();
             let control = crate::context_menu::control_menu_for(&document.doc, document.cursor);
             response.context_menu(|ui| {
-                if let Some(control) = &control {
+                if let Some((a, b)) = misspelled
+                    && let Some(word) = letter_editor::paragraph_ref(&document.doc, a.paragraph)
+                        .map(|p| p.plain_text())
+                        .and_then(|t| t.get(a.offset..b.offset).map(str::to_string))
+                {
+                    let suggestions = spelling.suggestions(&word);
+                    crate::context_menu::spelling_items(ui, &word, &suggestions, a, b, &mut menu);
+                } else if let Some(control) = &control {
                     crate::context_menu::control_menu(ui, control, &mut menu);
                 }
                 crate::context_menu::context_menu(ui, has_selection, numbered, on_link, &mut menu);
@@ -3379,6 +3680,22 @@ impl Viewer {
                     }
                     if let Some(header) = document.story.as_ref().and_then(|s| s.header()) {
                         paint_story_frame(ui, page, screen_rect(i), 1.0 / points, header);
+                    }
+                }
+            }
+
+            // Слова с ошибкой — красная волна.
+            for &(a, b) in &spelling_errors {
+                for r in selection_rects(&document.layout, Selection::new(a, b)) {
+                    if r.page < placement.rects.len() && placement.rects[r.page].intersects(visible)
+                    {
+                        let page = screen_rect(r.page);
+                        let scale = 1.0 / points;
+                        let rect = Rect::from_min_max(
+                            page.min + Vec2::new(r.left, r.top) * scale,
+                            page.min + Vec2::new(r.right, r.bottom) * scale,
+                        );
+                        crate::spelling::paint_wave(ui.painter(), rect, scale);
                     }
                 }
             }
@@ -4504,6 +4821,134 @@ mod tests {
         // Курсор после правки рисуется, IME знает, где он.
         let output = ctx.run_ui(screen(), |ui| viewer.ui(ui));
         assert!(output.platform_output.ime.is_some());
+    }
+
+    #[test]
+    fn track_changes_from_the_keyboard_and_ribbon() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let before = first_text(&mut viewer);
+        frame(
+            &ctx,
+            &mut viewer,
+            key(Key::E, Modifiers::COMMAND | Modifiers::SHIFT),
+        );
+        assert!(viewer.ribbon_info().track_changes);
+        frame(&ctx, &mut viewer, events(vec![Event::Text("a".into())]));
+        assert_eq!(first_text(&mut viewer), format!("a{before}"));
+        assert!(viewer.ribbon_info().has_revisions);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::NextRevision(false)]);
+        assert_eq!(viewer.cursor(), Some(Position::new(0, 0)));
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::Edit(Command::RejectRevisions { all: true })],
+        );
+        assert_eq!(first_text(&mut viewer), before);
+        assert!(!viewer.ribbon_info().has_revisions);
+        // «Запись исправлений» в защите не даёт выключить запись.
+        viewer.protect_action(ProtectAction::Protect {
+            edit: letter_model::EditRestriction::TrackedChanges,
+            password: String::new(),
+        });
+        assert!(viewer.ribbon_info().track_changes_forced);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ToggleTrackChanges]);
+        assert!(viewer.ribbon_info().track_changes);
+    }
+
+    #[test]
+    fn spelling_errors_are_found_and_replaced() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.spelling =
+            crate::spelling::Spelling::with_speller(crate::spelling::tests::speller());
+        viewer.new_document();
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![Event::Text("hello wrld".into())]),
+        );
+        frame(&ctx, &mut viewer, key(Key::Home, Modifiers::NONE));
+        frame(&ctx, &mut viewer, key(Key::F7, Modifiers::NONE));
+        let selection = viewer.selection().unwrap();
+        assert_eq!(
+            (selection.start(), selection.end()),
+            (Position::new(0, 6), Position::new(0, 10))
+        );
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::SpellReplace {
+                start: Position::new(0, 6),
+                end: Position::new(0, 10),
+                text: "world".into(),
+            }],
+        );
+        assert_eq!(first_text(&mut viewer), "hello world");
+        let document = viewer.document.as_ref().unwrap();
+        let state = document.history.state();
+        let doc = document.doc.clone();
+        assert!(viewer.spelling.errors(&doc, state).is_empty());
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ToggleSpelling]);
+        assert!(!viewer.ribbon_info().spelling);
+    }
+
+    #[test]
+    fn compared_documents_show_revisions() {
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer
+            .compare_files(&fixture("plain-text.docx"), &fixture("headings.docx"))
+            .unwrap();
+        assert!(viewer.ribbon_info().has_revisions);
+        assert!(viewer.document.as_ref().unwrap().path.is_none());
+        assert!(
+            viewer
+                .compare_files(&fixture("plain-text.docx"), Path::new("нет.docx"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn protected_document_is_not_edited() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let before = first_text(&mut viewer);
+        viewer.protect_action(ProtectAction::Protect {
+            edit: letter_model::EditRestriction::ReadOnly,
+            password: "пароль".into(),
+        });
+        assert!(viewer.document.as_ref().unwrap().locked());
+        frame(&ctx, &mut viewer, events(vec![Event::Text("a".into())]));
+        assert_eq!(first_text(&mut viewer), before);
+        // Неверный пароль защиту не снимает, верный — снимает.
+        viewer.protect_action(ProtectAction::Unprotect("нет".into()));
+        assert!(viewer.document.as_ref().unwrap().locked());
+        assert!(viewer.protect_dialog.open);
+        viewer.protect_action(ProtectAction::Unprotect("пароль".into()));
+        assert!(!viewer.document.as_ref().unwrap().locked());
+        frame(&ctx, &mut viewer, events(vec![Event::Text("a".into())]));
+        assert_eq!(first_text(&mut viewer), format!("a{before}"));
+
+        // Пароль на изменение: после сохранения и открытия — только
+        // чтение, пока не введён пароль.
+        viewer.protect_action(ProtectAction::WriteProtect {
+            password: "2".into(),
+            recommended: false,
+        });
+        let dir = std::env::temp_dir().join(format!("letter-protect-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.docx");
+        assert!(viewer.save_to(&path));
+        viewer.open(&path).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        assert!(viewer.document.as_ref().unwrap().locked());
+        viewer.protect_action(ProtectAction::AllowEditing("1".into()));
+        assert!(viewer.document.as_ref().unwrap().locked());
+        viewer.protect_action(ProtectAction::AllowEditing("2".into()));
+        assert!(!viewer.document.as_ref().unwrap().locked());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

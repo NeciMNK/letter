@@ -12,11 +12,16 @@
 //! - [`lists`] — списки: маркеры, нумерация, уровни;
 //! - [`search`] — поиск и замена;
 //! - [`table`] — таблицы: вставка, ячейки, строки и столбцы;
+//! - [`protection`] — пароли защиты документа;
+//! - [`revisions`] — исправления: запись, принять и отклонить;
+//! - [`compare`] — сравнение двух документов;
+//! - [`spelling`] — проверка орфографии.
 //! - [`controls`] — элементы управления содержимым: флажки, списки, даты.
 
 pub mod caret;
 pub mod clipboard;
 pub mod comments;
+pub mod compare;
 pub mod controls;
 pub mod cover;
 pub mod edit;
@@ -31,9 +36,12 @@ pub mod notes;
 pub mod outline;
 pub mod picture;
 pub mod position;
+pub mod protection;
+pub mod revisions;
 pub mod search;
 pub mod section;
 pub mod selection;
+pub mod spelling;
 pub mod table;
 pub mod toc;
 pub mod watermark;
@@ -44,6 +52,7 @@ pub use comments::{
     CommentPlace, add_comment, comment_blocks, comment_places, delete_all_comments, delete_comment,
     reply_to_comment, set_comment_done, set_comment_text, thread_root,
 };
+pub use compare::compare_documents;
 pub use controls::{
     choose_list_item, control_at, editable, placeholder_at, set_control_date, set_control_text,
     toggle_checkbox,

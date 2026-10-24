@@ -40,3 +40,4 @@ unic-langid = "0.9"
 [dev-dependencies]
 # Тесты интерфейса: найти кнопку по надписи и нажать (от авторов egui).
 egui_kittest = { version = "0.37", default-features = false }
+spellbook = "0.4"

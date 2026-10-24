@@ -290,7 +290,8 @@ pub(crate) fn blocks_mut<'a>(doc: &'a mut Document, path: &Path) -> Option<&'a m
     Some(blocks)
 }
 
-/// Абзац номер `index` (по порядку во всём документе) для чтения.
+/// Абзац номер `index` (по порядку во всём документе, включая абзацы
+/// таблиц) для чтения.
 pub fn paragraph_ref(doc: &Document, index: usize) -> Option<&Paragraph> {
     let path = find(doc, index)?;
     let mut blocks = &doc.sections.get(path.section)?.blocks;
