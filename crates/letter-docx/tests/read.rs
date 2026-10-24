@@ -153,6 +153,46 @@ fn inline_image_is_read() {
 }
 
 #[test]
+fn charts_are_read_from_their_cache() {
+    use letter_model::{ChartKind, LegendPosition};
+    let doc = fixture("charts.docx");
+    let charts: Vec<_> = paragraphs(&doc)
+        .iter()
+        .flat_map(|p| p.runs())
+        .flat_map(|r| &r.content)
+        .filter_map(|c| match c {
+            RunContent::Picture(picture) => Some(picture),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(charts.len(), 3);
+    // 5 × 3 дюйма.
+    assert_eq!((charts[0].width, charts[0].height), (4_572_000, 2_743_200));
+    let data = charts[0].image.as_ref().expect("chart data");
+    assert_eq!(data.name, "word/charts/chart1.xml");
+    let chart = data.chart.as_ref().expect("chart");
+    assert_eq!(chart.kind, ChartKind::Column);
+    assert_eq!(chart.title.as_deref(), Some("Продажи"));
+    assert_eq!(chart.categories, ["Январь", "Февраль", "Март", "Апрель"]);
+    assert_eq!(chart.series.len(), 2);
+    assert_eq!(chart.series[1].name, "Казань");
+    assert_eq!(chart.series[1].values[1], Some(4.4));
+    assert_eq!(chart.legend, Some(LegendPosition::Bottom));
+    assert_eq!((chart.gap_width, chart.overlap), (219, -27));
+    // Цвета рядов — из темы документа (accent1 и accent2 темы Office 2013).
+    assert_eq!(chart.series[0].color, Some((0x4F, 0x81, 0xBD)));
+    assert_eq!(chart.series[1].color, Some((0xC0, 0x50, 0x4D)));
+    let kinds: Vec<_> = charts
+        .iter()
+        .filter_map(|p| p.image.as_ref()?.chart.as_ref().map(|c| c.kind))
+        .collect();
+    assert_eq!(kinds, [ChartKind::Column, ChartKind::Pie, ChartKind::Line]);
+    let line = charts[2].image.as_ref().unwrap().chart.as_ref().unwrap();
+    assert_eq!(line.title, None, "заголовок удалён");
+    assert_eq!(line.series[0].values[0], Some(-8.0));
+}
+
+#[test]
 fn floating_pictures_are_read() {
     use letter_model::{AnchorAlign, HorizontalFrom, Placement, VerticalFrom, Wrap};
     let doc = fixture("floating.docx");
@@ -508,6 +548,49 @@ fn shapes_are_read() {
         group.children[1].shape.geometry,
         Geometry::preset("ellipse")
     );
+}
+
+#[test]
+fn smart_art_is_read_with_its_drawing() {
+    let doc = fixture("smartart.docx");
+    let picture = paragraphs(&doc)
+        .iter()
+        .flat_map(|p| p.runs())
+        .flat_map(|r| &r.content)
+        .find_map(|c| match c {
+            RunContent::Picture(picture) => Some(picture),
+            _ => None,
+        })
+        .expect("smart art");
+    assert_eq!((picture.width, picture.height), (5_486_400, 1_600_200));
+    // Картинки нет: рисуется готовый вид.
+    assert!(picture.image.is_none() && picture.relationship.is_none());
+    assert!(picture.raw.as_ref().unwrap().as_str().contains("relIds"));
+    let drawing = picture.drawing.as_ref().expect("drawing");
+    assert_eq!((drawing.width, drawing.height), (5_486_400, 1_600_200));
+    assert_eq!(drawing.shapes.len(), 5);
+    let first = &drawing.shapes[0];
+    // accent1 темы Office — 4F81BD.
+    assert_eq!(first.fill, Some([0x4F, 0x81, 0xBD, 255]));
+    let line = first.line.expect("line");
+    assert_eq!((line.color, line.width), ([255, 255, 255, 255], 12_700));
+    let text = first.text.as_ref().expect("text");
+    assert_eq!(text.paragraphs[0].runs[0].text, "Идея");
+    assert_eq!(text.paragraphs[0].runs[0].size, 2_000);
+    // Цвет текста — из ссылки на шрифт стиля (lt1, белый).
+    assert_eq!(text.paragraphs[0].runs[0].color, [255, 255, 255, 255]);
+    // Область текста — рамка без внутренних полей (76200 EMU).
+    assert_eq!((text.x, text.width), (76_200, 1_371_600 - 2 * 76_200));
+    // Стрелка светлее блока (tint 60 %), без текста.
+    let arrow = &drawing.shapes[1];
+    let fill = arrow.fill.unwrap();
+    assert!(
+        fill[0] > 0x4F && fill[1] > 0x81 && fill[2] > 0xBD,
+        "{fill:?}"
+    );
+    assert!(arrow.text.is_none());
+    // Скруглённый прямоугольник — много точек на дугах углов.
+    assert!(first.contours[0].points.len() > 8);
 }
 
 #[test]

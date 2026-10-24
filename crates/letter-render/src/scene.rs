@@ -8,8 +8,11 @@ use letter_layout::{
 };
 use std::sync::Arc;
 
-use letter_model::{Color, HeaderFooterKind, ImageData, ResolvedRunProps, Shape, Underline};
+use letter_model::{
+    Color, Drawing, HeaderFooterKind, ImageData, ResolvedRunProps, Shape, Underline,
+};
 
+use crate::drawing::{DrawingFrame, draw_shapes};
 use crate::glyphs::{GlyphCache, GlyphKey, SUBPIXEL_STEPS};
 
 /// Цвет RGBA без предумножения.
@@ -46,6 +49,13 @@ pub enum DrawItem {
         /// Цвет.
         color: Rgba,
     },
+    /// Залитый выпуклый многоугольник (части диаграмм).
+    Polygon {
+        /// Вершины по порядку.
+        points: Vec<(f32, f32)>,
+        /// Цвет.
+        color: Rgba,
+    },
     /// Рисунок: картинка, растянутая на прямоугольник.
     Picture {
         /// Левый край.
@@ -60,6 +70,18 @@ pub enum DrawItem {
         image: Option<Arc<ImageData>>,
         /// Фигура: рисуется она, а не картинка.
         shape: Option<Arc<Shape>>,
+    },
+    /// Контур фигуры (SmartArt): многоугольник с заливкой и линией
+    /// или ломаная.
+    Path {
+        /// Точки.
+        points: Vec<(f32, f32)>,
+        /// Замкнутый: от последней точки линия идёт к первой.
+        closed: bool,
+        /// Заливка (только у замкнутого контура).
+        fill: Option<Rgba>,
+        /// Линия: цвет и толщина.
+        stroke: Option<(Rgba, f32)>,
     },
 }
 
@@ -137,20 +159,20 @@ pub fn page_scene(
                 }
                 // Знак привязки плавающего рисунка места не занимает.
                 LineItem::Object(object) if object.width == 0.0 && object.height == 0.0 => {}
-                LineItem::Object(object) => {
-                    let (x, y) = (line.x + object.x, line.baseline - object.height);
-                    pictures.push(DrawItem::Picture {
-                        x: x * scale,
-                        y: y * scale,
-                        width: object.width * scale,
-                        height: object.height * scale,
-                        image: object.image.clone(),
-                        shape: object.shape.clone(),
-                    });
-                    if let Some(text) = &object.text {
-                        text_box(&mut pictures, text, x, y, scale, library, cache);
-                    }
-                }
+                LineItem::Object(object) => picture(
+                    &mut pictures,
+                    (line.x + object.x, line.baseline - object.height),
+                    (object.width, object.height),
+                    (
+                        object.image.as_ref(),
+                        object.drawing.as_deref(),
+                        object.shape.as_ref(),
+                        object.text.as_deref(),
+                    ),
+                    scale,
+                    library,
+                    cache,
+                ),
             }
         }
         // Номер или маркер пункта списка.
@@ -173,17 +195,14 @@ pub fn page_scene(
         }
     }
     let mut float = |out: &mut Vec<DrawItem>, f: &Float| {
-        out.push(DrawItem::Picture {
-            x: f.x * scale,
-            y: f.y * scale,
-            width: f.width * scale,
-            height: f.height * scale,
-            image: f.image.clone(),
-            shape: f.shape.clone(),
-        });
-        if let Some(text) = &f.text {
-            text_box(out, text, f.x, f.y, scale, library, cache);
-        }
+        let (at, size) = ((f.x, f.y), (f.width, f.height));
+        let content = (
+            f.image.as_ref(),
+            f.drawing.as_deref(),
+            f.shape.as_ref(),
+            f.text.as_deref(),
+        );
+        picture(out, at, size, content, scale, library, cache);
     };
     let floats = || stories.iter().flat_map(|s| &s.floats).chain(&page.floats);
     for f in floats().filter(|f| f.behind) {
@@ -196,6 +215,55 @@ pub fn page_scene(
         float(&mut backgrounds, f);
     }
     backgrounds
+}
+
+/// Что нарисовать в рамке рисунка: картинка, рисунок из фигур
+/// (SmartArt), фигура и текст её надписей.
+type Content<'a> = (
+    Option<&'a Arc<ImageData>>,
+    Option<&'a Drawing>,
+    Option<&'a Arc<Shape>>,
+    Option<&'a PageStory>,
+);
+
+/// Рисунок в точке `at` размера `size` (пт): картинка, диаграмма,
+/// рисунок из фигур (SmartArt) или фигура с текстом надписи.
+fn picture(
+    out: &mut Vec<DrawItem>,
+    (x, y): (f32, f32),
+    (width, height): (f32, f32),
+    (image, drawing, shape, text): Content<'_>,
+    scale: f32,
+    library: &FontLibrary,
+    cache: &mut GlyphCache,
+) {
+    if let Some(drawing) = drawing {
+        let frame = DrawingFrame {
+            x,
+            y,
+            width,
+            height,
+        };
+        draw_shapes(out, drawing, frame, scale, library, cache);
+        return;
+    }
+    if let Some(chart) = image.and_then(|i| i.chart.as_ref()) {
+        out.extend(crate::chart::chart_items(
+            chart, x, y, width, height, scale, library, cache,
+        ));
+        return;
+    }
+    out.push(DrawItem::Picture {
+        x: x * scale,
+        y: y * scale,
+        width: width * scale,
+        height: height * scale,
+        image: image.cloned(),
+        shape: shape.cloned(),
+    });
+    if let Some(text) = text {
+        text_box(out, text, x, y, scale, library, cache);
+    }
 }
 
 /// Текст надписей фигуры, левый верхний угол которой — в точке `x`,

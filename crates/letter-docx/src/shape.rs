@@ -6,7 +6,7 @@
 //! рисунка при этом хранится как есть ([`letter_model::Picture::raw`]).
 
 use letter_model::{
-    Block, ColorBase, ColorMod, DEFAULT_LINE_WIDTH, DEFAULT_TEXT_INSETS, Frame, Geometry, Group,
+    ColorBase, ColorMod, DEFAULT_LINE_WIDTH, DEFAULT_TEXT_INSETS, Frame, Geometry, Group,
     GroupChild, LineDash, LineEnd, PathCommand, Shape, ShapeColor, ShapeLine, ShapePath,
     TextAnchor,
 };
@@ -93,10 +93,7 @@ fn read_wsp(wsp: &Element) -> Shape {
         }
     }
     if let Some(content) = child(wsp, "txbx").and_then(|t| child(t, "txbxContent")) {
-        shape.text = content
-            .elements()
-            .map(crate::document::read_block)
-            .collect::<Vec<Block>>();
+        shape.text = crate::document::read_child_blocks(content);
     }
     shape
 }

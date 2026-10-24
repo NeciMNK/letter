@@ -144,3 +144,22 @@ fn compare_reports_differences() {
     let missing = run(&args(&["compare", &fixture("table.docx"), "missing.pdf"]));
     assert!(missing.unwrap_err().starts_with("missing.pdf:"));
 }
+
+#[test]
+fn diff_saves_revisions() {
+    let dir = std::env::temp_dir().join(format!("letter-cli-diff-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let output = dir.join("сравнение.docx");
+    let out = run(&args(&[
+        "diff",
+        &fixture("plain-text.docx"),
+        &fixture("headings.docx"),
+        &output.to_string_lossy(),
+    ]))
+    .unwrap();
+    assert!(out.contains("Исправлений:"), "{out}");
+    let tree = run(&args(&["dump", &output.to_string_lossy()])).unwrap();
+    assert!(tree.contains("вставлено (letter)"), "{tree}");
+    assert!(tree.contains("удалено (letter)"), "{tree}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
