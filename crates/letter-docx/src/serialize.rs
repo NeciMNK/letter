@@ -424,7 +424,10 @@ fn inlines_xml(content: &[Inline]) -> String {
         while let Some(next) = content.get(end) {
             match next {
                 Inline::Run(run) if run.props.link.as_ref() == Some(link) => last_run = end,
-                Inline::BookmarkStart(_) | Inline::BookmarkEnd(_) => {}
+                Inline::BookmarkStart(_)
+                | Inline::BookmarkEnd(_)
+                | Inline::CommentStart(_)
+                | Inline::CommentEnd(_) => {}
                 _ => break,
             }
             end += 1;
@@ -448,6 +451,10 @@ fn inline_xml(inline: &Inline) -> String {
             escape_attr(&bookmark.name)
         ),
         Inline::BookmarkEnd(id) => format!(r#"<w:bookmarkEnd w:id="{}"/>"#, escape_attr(id)),
+        Inline::CommentStart(id) => {
+            format!(r#"<w:commentRangeStart w:id="{}"/>"#, escape_attr(id))
+        }
+        Inline::CommentEnd(id) => format!(r#"<w:commentRangeEnd w:id="{}"/>"#, escape_attr(id)),
         Inline::Unknown(raw) => raw.as_str().to_string(),
     }
 }
@@ -626,6 +633,10 @@ fn run_xml(run: &Run) -> String {
             RunContent::FieldCode(code) => out.push_str(&format!(
                 r#"<w:instrText xml:space="preserve">{}</w:instrText>"#,
                 escape_text(code)
+            )),
+            RunContent::CommentReference(id) => out.push_str(&format!(
+                r#"<w:commentReference w:id="{}"/>"#,
+                escape_attr(id)
             )),
             RunContent::Unknown(raw) => out.push_str(raw.as_str()),
         }

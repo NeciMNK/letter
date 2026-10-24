@@ -16,6 +16,7 @@
 | `floating.docx` | Плавающие рисунки: «вокруг рамки» и «за текстом» |
 | `sections.docx` | Разделы: на текущей странице с двумя колонками, альбомный, с нечётной страницы |
 | `notes.docx` | Две сноски и концевая сноска (с чертами-разделителями) |
+| `comments.docx` | Два примечания: на первое есть ответ, второе отмечено «решено» (части `comments.xml` и `commentsExtended.xml`, как у Word) |
 | `borders.docx` | Границы и заливка абзацев (рамка вокруг двух абзацев, линия снизу, заливка), цвет и рамка страницы |
 | `watermark.docx` | Подложка «ОБРАЗЕЦ» (фигура VML с текстом в верхнем колонтитуле), как её вставляет Word |
 | `links.docx` | Гиперссылки на сайт и на закладку, закладка вокруг слова |
@@ -70,3 +71,29 @@ soffice --headless --convert-to rtf ../docx/имя.docx
 cd tests/fixtures/odt
 soffice --headless --convert-to odt ../docx/имя.docx
 ```
+
+## Шифрованные документы (`encrypted/`)
+
+Лежат отдельно: это не ZIP-архивы, а составные файлы OLE, и общие тесты
+папки `docx/` их не открывают.
+
+| Файл | Что проверяет |
+|---|---|
+| `ru-en.docx` | `docx/ru-en.docx`, зашифрованный паролем `пароль` (агильное шифрование, AES-256, SHA-512) |
+
+**Источник:** зашифрован программой
+[msoffcrypto-tool](https://github.com/nolze/msoffcrypto-tool) (лицензия MIT)
+из нашего `docx/ru-en.docx`; распространяется по лицензии проекта (MIT).
+
+## Word 97–2003 (`doc/`)
+
+`plain-text`, `bold-italic`, `headings`, `lists`, `table`, `ru-en`, `pages`,
+`header-footer` — наши файлы из `docx/`, сохранённые LibreOffice в формате
+Word 97–2003:
+
+```sh
+cd tests/fixtures/doc
+soffice --headless --convert-to doc:"MS Word 97" ../docx/имя.docx
+```
+
+Распространяются по лицензии проекта (MIT).

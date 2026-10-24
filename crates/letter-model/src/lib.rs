@@ -18,6 +18,7 @@
 //! сохранении записывается обратно без изменений.
 
 mod border;
+mod comment;
 mod control;
 mod document;
 mod field;
@@ -39,6 +40,7 @@ mod units;
 mod watermark;
 
 pub use border::{Border, Borders, ParagraphBorders, Shading};
+pub use comment::Comment;
 pub use control::{
     CheckBoxSymbols, ContentControl, ContentControlRef, ControlKind, ControlLock, ControlNesting,
     ControlStep, ListItem,
