@@ -18,6 +18,7 @@
 //! сохранении записывается обратно без изменений.
 
 mod border;
+mod chart;
 mod comment;
 mod control;
 mod document;
@@ -41,6 +42,7 @@ mod units;
 mod watermark;
 
 pub use border::{Border, Borders, ParagraphBorders, Shading};
+pub use chart::{Chart, ChartGrouping, ChartKind, ChartSeries, DEFAULT_PALETTE, LegendPosition};
 pub use comment::Comment;
 pub use control::{
     CheckBoxSymbols, ContentControl, ContentControlRef, ControlKind, ControlLock, ControlNesting,

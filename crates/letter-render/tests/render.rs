@@ -246,6 +246,28 @@ fn inline_picture_is_drawn() {
 }
 
 #[test]
+fn charts_are_drawn_from_their_data() {
+    let library = FontLibrary::embedded_only();
+    let mut cache = GlyphCache::new();
+    let doc = layout("charts.docx", &library);
+    let page = &doc.pages[0];
+    let scale = 1.0;
+    let items = page_scene(page, scale, &library, &mut cache);
+    // Диаграммы рисуются сами, а не картинкой или заглушкой.
+    assert!(!items.iter().any(|i| matches!(i, DrawItem::Picture { .. })));
+    assert!(items.iter().any(|i| matches!(i, DrawItem::Polygon { .. })));
+    let image = render_page(page, scale, &library, &mut cache);
+    // Столбцы первого ряда — цвет accent1 темы документа (4F81BD).
+    let blue = |p: [u8; 4]| p[2] > 150 && p[0] < 110 && p[1] > 100 && p[1] < 150;
+    let pixels = image.pixels.as_chunks::<4>().0;
+    let count = pixels.iter().filter(|p| blue(**p)).count();
+    assert!(count > 1000, "{count}");
+    // Круговая: красный сектор (accent2, C0504D) есть.
+    let red = |p: &[u8; 4]| p[0] > 170 && p[1] < 110 && p[2] < 110;
+    assert!(pixels.iter().filter(|p| red(p)).count() > 1000);
+}
+
+#[test]
 fn broken_picture_becomes_a_placeholder() {
     use std::sync::Arc;
 
@@ -259,6 +281,7 @@ fn broken_picture_becomes_a_placeholder() {
         image: Some(Arc::new(ImageData {
             name: "word/media/image1.emf".into(),
             bytes: vec![1, 2, 3],
+            chart: None,
         })),
         relationship: None,
         raw: None,

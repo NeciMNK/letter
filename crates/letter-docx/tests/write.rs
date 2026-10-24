@@ -35,6 +35,7 @@ const FIXTURES: &[&str] = &[
     "comments.docx",
     "borders.docx",
     "watermark.docx",
+    "charts.docx",
     "header-footer.docx",
     "ru-en.docx",
 ];
@@ -734,6 +735,38 @@ fn resized_image_keeps_its_new_size() {
         sizes.push((picture.width, picture.height, picture.image.is_some()));
     });
     assert_eq!(sizes, [(914_400, 548_640, true)]);
+}
+
+#[test]
+fn resized_chart_keeps_its_part() {
+    let mut doc = read_bytes(&fixture_bytes("charts.docx")).unwrap();
+    doc.for_each_picture_mut(|picture| {
+        picture.width /= 2;
+        picture.height /= 2;
+    });
+    let saved = write_bytes(&doc).unwrap();
+    let before = zip_parts(&fixture_bytes("charts.docx"));
+    let after = zip_parts(&saved);
+    for n in 1..=3 {
+        let name = format!("word/charts/chart{n}.xml");
+        assert_eq!(before.get(&name), after.get(&name), "{name}");
+    }
+    // Новых картинок для диаграмм не появилось.
+    assert!(!after.keys().any(|k| k.contains("media/")));
+    let mut reopened = read_bytes(&saved).unwrap();
+    let mut found = Vec::new();
+    reopened.for_each_picture_mut(|picture| {
+        let chart = picture.image.as_ref().and_then(|i| i.chart.as_ref());
+        found.push((picture.width, chart.map(|c| c.series.len())));
+    });
+    assert_eq!(
+        found,
+        [
+            (2_286_000, Some(2)),
+            (2_286_000, Some(1)),
+            (2_286_000, Some(1))
+        ]
+    );
 }
 
 #[test]
