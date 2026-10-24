@@ -172,6 +172,7 @@ fn new_document_is_a_valid_package() {
 /// Документ, в котором задано всё, что понимает модель.
 fn everything() -> Document {
     let run_props = RunProps {
+        control: None,
         style: Some("Strong".into()),
         fonts: RunFonts {
             ascii: Some("Arial".into()),
@@ -218,6 +219,7 @@ fn everything() -> Document {
         ],
     };
     let paragraph_props = ParagraphProps {
+        controls: Vec::new(),
         style: Some("Heading1".into()),
         numbering: Some(letter_model::NumberingRef {
             id: Some(3),
@@ -303,6 +305,7 @@ fn everything() -> Document {
             .into(),
             Table {
                 props: Box::new(TableProps {
+                    controls: Vec::new(),
                     style: Some("TableGrid".into()),
                     width: Some(TableWidth::Percent(5000)),
                     alignment: Some(Alignment::Center),

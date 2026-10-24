@@ -3,6 +3,8 @@
 
 use crate::i18n::tr;
 use eframe::egui::{Ui, vec2};
+use letter_editor::{Position, control_at};
+use letter_model::{ControlKind, Document};
 
 use crate::clipboard::PasteMode;
 use crate::icons::{Icon, icon_button, icon_text_button};
@@ -96,6 +98,58 @@ pub fn context_menu(
     }
 }
 
+/// Пункты меню элемента управления содержимым у курсора: пункты списка
+/// и «Сегодня» у выбора даты.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlMenu {
+    /// Пункты списка.
+    pub items: Vec<String>,
+    /// Элемент выбора даты.
+    pub date: bool,
+}
+
+/// Меню элемента у места `at`; `None`, если там нет списка или даты.
+pub fn control_menu_for(doc: &Document, at: Position) -> Option<ControlMenu> {
+    let (control, _, _) = control_at(doc, at)?;
+    if !control.content_editable() {
+        return None;
+    }
+    match control.kind() {
+        ControlKind::List { items, .. } => Some(ControlMenu {
+            items: items.into_iter().map(|i| i.text).collect(),
+            date: false,
+        }),
+        ControlKind::Date { .. } => Some(ControlMenu {
+            items: Vec::new(),
+            date: true,
+        }),
+        _ => None,
+    }
+}
+
+/// Флажок ли у места `at`.
+pub fn is_checkbox(doc: &Document, at: Position) -> bool {
+    control_at(doc, at).is_some_and(|(c, _, _)| {
+        c.content_editable() && matches!(c.kind(), ControlKind::CheckBox { .. })
+    })
+}
+
+/// Пункты элемента в начале меню; выбранное добавляется в `out`.
+pub fn control_menu(ui: &mut Ui, menu: &ControlMenu, out: &mut Vec<RibbonCommand>) {
+    ui.set_min_width(200.0);
+    for (index, item) in menu.items.iter().enumerate() {
+        if ui.button(item).clicked() {
+            out.push(RibbonCommand::ChooseListItem(index));
+            ui.close();
+        }
+    }
+    if menu.date && ui.button(tr("control-today")).clicked() {
+        out.push(RibbonCommand::ControlToday);
+        ui.close();
+    }
+    ui.separator();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,5 +191,62 @@ mod tests {
                 RibbonCommand::RestartNumbering,
             ]
         );
+    }
+
+    #[test]
+    fn control_items_give_commands() {
+        let menu = ControlMenu {
+            items: vec!["Да".into(), "Нет".into()],
+            date: true,
+        };
+        let mut h = Harness::new_ui_state(
+            move |ui, out: &mut Vec<RibbonCommand>| control_menu(ui, &menu, out),
+            Vec::new(),
+        );
+        h.run();
+        h.get_by_label("Нет").click();
+        h.run();
+        h.get_by_label("Сегодня").click();
+        h.run();
+        assert_eq!(
+            *h.state(),
+            [
+                RibbonCommand::ChooseListItem(1),
+                RibbonCommand::ControlToday
+            ]
+        );
+    }
+
+    #[test]
+    fn control_menu_only_for_lists_and_dates() {
+        use letter_model::{ContentControl, Paragraph, RawXml, Run, RunProps};
+        use std::sync::Arc;
+        let doc = |props: &str| {
+            let control = Arc::new(ContentControl {
+                props: Some(RawXml::new(format!(
+                    r#"<w:sdtPr xmlns:w="urn:w" xmlns:w14="urn:w14">{props}</w:sdtPr>"#
+                ))),
+                end_props: None,
+            });
+            let mut doc = Document::new();
+            doc.sections[0].blocks = vec![
+                Paragraph::from_runs([Run::text("x").with_props(RunProps {
+                    control: Some(control),
+                    ..RunProps::default()
+                })])
+                .into(),
+            ];
+            doc
+        };
+        let at = Position::new(0, 0);
+        let list = doc(r#"<w:comboBox><w:listItem w:displayText="A" w:value="a"/></w:comboBox>"#);
+        assert_eq!(
+            control_menu_for(&list, at).map(|m| m.items),
+            Some(vec!["A".to_string()])
+        );
+        assert!(control_menu_for(&doc("<w:date/>"), at).is_some_and(|m| m.date));
+        assert!(control_menu_for(&doc("<w:text/>"), at).is_none());
+        assert!(is_checkbox(&doc("<w14:checkbox/>"), at));
+        assert!(!is_checkbox(&doc("<w:text/>"), at));
     }
 }

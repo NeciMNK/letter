@@ -19,6 +19,7 @@
 
 mod border;
 mod comment;
+mod control;
 mod document;
 mod field;
 mod note;
@@ -40,6 +41,10 @@ mod watermark;
 
 pub use border::{Border, Borders, ParagraphBorders, Shading};
 pub use comment::Comment;
+pub use control::{
+    CheckBoxSymbols, ContentControl, ContentControlRef, ControlKind, ControlLock, ControlNesting,
+    ControlStep, ListItem,
+};
 pub use document::{Document, Settings, for_each_picture_in};
 pub use field::{Field, alphabetic, fields, roman, set_field_result};
 pub use note::{Note, NoteKind, NoteReference};

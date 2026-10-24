@@ -174,6 +174,9 @@ pub struct TableProps {
     pub layout: Option<TableLayout>,
     /// Поля ячеек по умолчанию.
     pub cell_margins: Option<CellMargins>,
+    /// Элементы управления содержимым (`w:sdt`), внутри которых лежит
+    /// таблица, от внешнего к внутреннему. В `w:tblPr` не пишутся.
+    pub controls: Vec<crate::ContentControlRef>,
     /// Непонятые свойства как есть.
     pub unknown: Vec<RawXml>,
 }

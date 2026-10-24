@@ -11,11 +11,13 @@
 //! - [`format`] — оформление выделенного;
 //! - [`lists`] — списки: маркеры, нумерация, уровни;
 //! - [`search`] — поиск и замена;
-//! - [`table`] — таблицы: вставка, ячейки, строки и столбцы.
+//! - [`table`] — таблицы: вставка, ячейки, строки и столбцы;
+//! - [`controls`] — элементы управления содержимым: флажки, списки, даты.
 
 pub mod caret;
 pub mod clipboard;
 pub mod comments;
+pub mod controls;
 pub mod cover;
 pub mod edit;
 pub mod fields;
@@ -41,6 +43,10 @@ pub use clipboard::{copy_range, insert_fragment, insert_plain_text};
 pub use comments::{
     CommentPlace, add_comment, comment_blocks, comment_places, delete_all_comments, delete_comment,
     reply_to_comment, set_comment_done, set_comment_text, thread_root,
+};
+pub use controls::{
+    choose_list_item, control_at, editable, placeholder_at, set_control_date, set_control_text,
+    toggle_checkbox,
 };
 pub use cover::{CoverLayout, CoverPage, insert_cover_page};
 pub use edit::{
