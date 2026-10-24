@@ -296,6 +296,7 @@ impl Writer {
             let _ = write!(out, "\\s{n}");
         }
         let explicit = ParagraphProps {
+            controls: Vec::new(),
             style: None,
             numbering: None,
             alignment: Some(resolved.alignment),

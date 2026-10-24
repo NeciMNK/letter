@@ -256,6 +256,26 @@ fn page_content(
                     .stroke()
                     .restore_state();
             }
+            DrawItem::Polygon { points, color } => {
+                if in_text {
+                    content.end_text();
+                    in_text = false;
+                    current_font = None;
+                }
+                if color[3] != current_alpha {
+                    alpha_state(&mut content, refs, color[3]);
+                    current_alpha = color[3];
+                }
+                set_fill(&mut content, *color, &mut current_color);
+                let mut points = points.iter().map(|&(x, y)| (x / SCALE, height - y / SCALE));
+                if let Some((x, y)) = points.next() {
+                    content.move_to(x, y);
+                    for (x, y) in points {
+                        content.line_to(x, y);
+                    }
+                    content.close_path().fill_nonzero();
+                }
+            }
             DrawItem::Glyph { key, x, y, color } => {
                 let font = embed_font(fonts, refs, key.font);
                 let gid = font.remapper.remap(key.glyph_id);
@@ -339,6 +359,55 @@ fn page_content(
                     .transform([w, 0.0, 0.0, h, x, height - y - h])
                     .x_object(Name(name.as_bytes()))
                     .restore_state();
+            }
+            DrawItem::Path {
+                points,
+                closed,
+                fill,
+                stroke,
+            } => {
+                if in_text {
+                    content.end_text();
+                    in_text = false;
+                    current_font = None;
+                }
+                let Some((&(x0, y0), rest)) = points.split_first() else {
+                    continue;
+                };
+                let point = |x: f32, y: f32| (x / SCALE, height - y / SCALE);
+                // Цвета и толщина линии — внутри q … Q, чтобы не сбить
+                // то, что запомнено для текста.
+                content.save_state();
+                let path = |content: &mut Content| {
+                    let (x, y) = point(x0, y0);
+                    content.move_to(x, y);
+                    for &(px, py) in rest {
+                        let (x, y) = point(px, py);
+                        content.line_to(x, y);
+                    }
+                    if *closed {
+                        content.close_path();
+                    }
+                };
+                if let Some(color) = fill {
+                    if color[3] != current_alpha {
+                        alpha_state(&mut content, refs, color[3]);
+                    }
+                    content.set_fill_rgb(unit(color[0]), unit(color[1]), unit(color[2]));
+                    path(&mut content);
+                    content.fill_nonzero();
+                }
+                if let Some((color, width)) = stroke {
+                    if color[3] != current_alpha {
+                        alpha_state(&mut content, refs, color[3]);
+                    }
+                    content.set_stroke_rgb(unit(color[0]), unit(color[1]), unit(color[2]));
+                    content.set_line_width(width / SCALE);
+                    content.set_line_join(pdf_writer::types::LineJoinStyle::RoundJoin);
+                    path(&mut content);
+                    content.stroke();
+                }
+                content.restore_state();
             }
         }
     }

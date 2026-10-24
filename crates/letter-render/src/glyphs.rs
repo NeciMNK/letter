@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use letter_layout::{FontId, FontLibrary, FontMetrics, Shaper};
+use letter_layout::{FontId, FontLibrary, FontMetrics, ShapedRun, Shaper, TextStyle};
 use swash::FontRef;
 use swash::scale::image::Content;
 use swash::scale::{Render, ScaleContext, Source, StrikeWith};
@@ -112,9 +112,26 @@ impl GlyphCache {
         self.glyphs.is_empty()
     }
 
+    /// Шейпер для надписей, которые свёрстаны не заранее (текст фигур
+    /// SmartArt).
+    pub(crate) fn shaper(&mut self) -> &mut Shaper {
+        &mut self.shaper
+    }
+
     /// Размеры шрифта (подчёркивание, зачёркивание).
     pub fn metrics(&mut self, library: &FontLibrary, font: FontId) -> Option<FontMetrics> {
         self.shaper.metrics(library, font)
+    }
+
+    /// Превращает текст в глифы (для подписей, которых нет в вёрстке:
+    /// диаграммы).
+    pub fn shape(
+        &mut self,
+        library: &FontLibrary,
+        text: &str,
+        style: &TextStyle,
+    ) -> Vec<ShapedRun> {
+        self.shaper.shape(library, text, style)
     }
 
     /// Изображение глифа. `None`, если рисовать нечего (пробел) или

@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
-use letter_model::{ImageData, OBJECT_CHAR};
+use letter_model::{Drawing, ImageData, OBJECT_CHAR};
 
 use unicode_bidi::{BidiInfo, Level};
 use unicode_linebreak::{BreakOpportunity, linebreaks};
@@ -99,6 +99,8 @@ pub struct InlineObject {
     pub image: Option<Arc<ImageData>>,
     /// Свёрстанная формула: тогда рисуется она, а не картинка.
     pub math: Option<Arc<MathLayout>>,
+    /// Рисунок из фигур (SmartArt) — рисуется вместо картинки.
+    pub drawing: Option<Arc<Drawing>>,
     /// Плавающий объект: в строке от него только знак привязки без
     /// ширины и высоты, сам объект ставит раскладка по страницам.
     pub floating: bool,
@@ -342,6 +344,8 @@ pub struct ObjectItem {
     pub image: Option<Arc<ImageData>>,
     /// Формула (рисуется вместо картинки).
     pub math: Option<Arc<MathLayout>>,
+    /// Рисунок из фигур (SmartArt).
+    pub drawing: Option<Arc<Drawing>>,
 }
 
 /// Одна строка абзаца.
@@ -746,15 +750,21 @@ impl<'a> Builder<'a> {
             };
             *first = run.range.start;
             let index = self.runs.len();
+            // Ширины кластеров за один проход по глифам (искать глифы
+            // каждого кластера по всему куску — квадрат от длины абзаца).
+            let mut widths = vec![0.0_f32; starts.len()];
+            for g in &run.glyphs {
+                let k = starts
+                    .partition_point(|&s| s <= g.cluster)
+                    .saturating_sub(1);
+                if k + 1 < starts.len() || g.cluster < run.range.end {
+                    widths[k] += g.x_advance;
+                }
+            }
             for (k, &start) in starts.iter().enumerate() {
                 let end = starts.get(k + 1).copied().unwrap_or(run.range.end);
                 let range = start..end;
-                let width = run
-                    .glyphs
-                    .iter()
-                    .filter(|g| range.contains(&g.cluster) || (k == 0 && g.cluster < start))
-                    .map(|g| g.x_advance)
-                    .sum();
+                let width = widths[k];
                 let space = self.text[range.clone()].chars().all(is_hanging_space);
                 let soft = self.text[range.clone()].ends_with(SOFT_HYPHEN);
                 let auto = !soft && self.auto_points.get(range.end).copied().unwrap_or(false);
@@ -1103,7 +1113,8 @@ impl<'a> Builder<'a> {
                         depth: object.as_ref().map_or(0.0, |o| o.depth),
                         span: cluster.span,
                         math: object.as_ref().and_then(|o| o.math.clone()),
-                        image: object.and_then(|o| o.image),
+                        image: object.as_ref().and_then(|o| o.image.clone()),
+                        drawing: object.and_then(|o| o.drawing),
                     }));
                 }
                 Kind::Break(_) => {}
@@ -1166,11 +1177,24 @@ impl<'a> Builder<'a> {
         let mut glyphs = Vec::new();
         let from = group.iter().map(|&i| clusters[i].range.start).min()?;
         let end = group.iter().map(|&i| clusters[i].range.end).max()?;
+        // Кластеры группы по началу, чтобы находить владельца глифа
+        // двоичным поиском: кусок бывает длиной в целый абзац.
+        let mut owners: Vec<(Range<usize>, usize)> = group
+            .iter()
+            .map(|&i| (clusters[i].range.clone(), i))
+            .filter(|(range, _)| !range.is_empty())
+            .collect();
+        owners.sort_by_key(|(range, _)| range.start);
         for glyph in &source.glyphs {
-            let owner = group
-                .iter()
-                .find(|&&i| clusters[i].range.contains(&glyph.cluster))
-                .copied();
+            if glyph.cluster < from || glyph.cluster >= end {
+                continue;
+            }
+            let k = owners.partition_point(|(range, _)| range.start <= glyph.cluster);
+            let owner = k
+                .checked_sub(1)
+                .and_then(|k| owners.get(k))
+                .filter(|(range, _)| range.contains(&glyph.cluster))
+                .map(|&(_, i)| i);
             if owner.is_some() {
                 glyphs.push((owner, *glyph));
             }

@@ -83,6 +83,104 @@ impl RgbaImage {
         }
     }
 
+    /// Заливает выпуклый многоугольник; покрытие пикселя на краях
+    /// считается по 4×4 точкам внутри него.
+    fn fill_polygon(&mut self, points: &[(f32, f32)], color: Rgba) {
+        if points.len() < 3 {
+            return;
+        }
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for &(x, y) in points {
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+        }
+        if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
+            return;
+        }
+        let x0 = x0.floor().max(0.0) as i64;
+        let y0 = y0.floor().max(0.0) as i64;
+        let x1 = (x1.ceil() as i64).min(i64::from(self.width));
+        let y1 = (y1.ceil() as i64).min(i64::from(self.height));
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let mut hits = 0u32;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let x = px as f32 + (sx as f32 + 0.5) / 4.0;
+                        let y = py as f32 + (sy as f32 + 0.5) / 4.0;
+                        if inside_convex(points, x, y) {
+                            hits += 1;
+                        }
+                    }
+                }
+                if hits > 0 {
+                    self.blend(px, py, color, (hits * 255 / 16) as u8);
+                }
+            }
+        }
+    }
+
+    /// Заливает любой многоугольник, и невыпуклый (правило «чёт-нечет»,
+    /// по центрам пикселей).
+    fn fill_shape(&mut self, points: &[(f32, f32)], color: Rgba) {
+        if points.len() < 3 {
+            return;
+        }
+        let top = points.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+        let bottom = points.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max);
+        if !(top.is_finite() && bottom.is_finite()) {
+            return;
+        }
+        let first = top.floor().max(0.0) as i64;
+        let last = (bottom.ceil() as i64).min(i64::from(self.height));
+        let mut crossings = Vec::new();
+        for py in first..last {
+            let y = py as f32 + 0.5;
+            crossings.clear();
+            for (i, &(x0, y0)) in points.iter().enumerate() {
+                let (x1, y1) = points[(i + 1) % points.len()];
+                if (y0 <= y) != (y1 <= y) {
+                    crossings.push(x0 + (y - y0) / (y1 - y0) * (x1 - x0));
+                }
+            }
+            crossings.sort_by(f32::total_cmp);
+            for &[left, right] in crossings.as_chunks::<2>().0 {
+                let from = (left - 0.5).ceil().max(0.0) as i64;
+                let to = ((right - 0.5).floor() as i64).min(i64::from(self.width) - 1);
+                for px in from..=to {
+                    self.blend(px, py, color, 255);
+                }
+            }
+        }
+    }
+
+    /// Линия по точкам толщиной `width`.
+    fn stroke_polyline(&mut self, points: &[(f32, f32)], closed: bool, color: Rgba, width: f32) {
+        let half = width.max(1.0) / 2.0;
+        let count = if closed {
+            points.len()
+        } else {
+            points.len().saturating_sub(1)
+        };
+        for i in 0..count {
+            let (a, b) = (points[i], points[(i + 1) % points.len()]);
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let length = (dx * dx + dy * dy).sqrt();
+            if length < 1e-3 {
+                continue;
+            }
+            let (nx, ny) = (-dy / length * half, dx / length * half);
+            // Отрезок чуть длиннее, чтобы углы не щербились.
+            let (ex, ey) = (dx / length * half, dy / length * half);
+            let quad = [
+                (a.0 - ex + nx, a.1 - ey + ny),
+                (b.0 + ex + nx, b.1 + ey + ny),
+                (b.0 + ex - nx, b.1 + ey - ny),
+                (a.0 - ex - nx, a.1 - ey - ny),
+            ];
+            self.fill_polygon(&quad, color);
+        }
+    }
+
     fn fill_rect(&mut self, x: f32, y: f32, width: f32, height: f32, color: Rgba) {
         // Покрытие края пикселя учитывается, чтобы тонкие линии не
         // пропадали и не толстели.
@@ -125,6 +223,23 @@ impl RgbaImage {
     }
 }
 
+/// Точка внутри выпуклого многоугольника (вершины в любом направлении
+/// обхода).
+fn inside_convex(points: &[(f32, f32)], x: f32, y: f32) -> bool {
+    let mut sign = 0.0f32;
+    for (i, &(ax, ay)) in points.iter().enumerate() {
+        let (bx, by) = points[(i + 1) % points.len()];
+        let cross = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+        if cross != 0.0 {
+            if sign != 0.0 && cross.signum() != sign {
+                return false;
+            }
+            sign = cross.signum();
+        }
+    }
+    sign != 0.0
+}
+
 /// Какая доля пикселя `[p, p + 1)` попадает в отрезок `[a, b)`.
 fn coverage(p: f32, a: f32, b: f32) -> f32 {
     ((p + 1.0).min(b) - p.max(a)).clamp(0.0, 1.0)
@@ -159,6 +274,7 @@ pub fn render_page(
                 width,
                 color,
             } => image.draw_line((x1, y1), (x2, y2), width, color),
+            DrawItem::Polygon { points, color } => image.fill_polygon(&points, color),
             DrawItem::Picture {
                 x,
                 y,
@@ -183,6 +299,19 @@ pub fn render_page(
                         let stub = placeholder(width.round() as u32, height.round() as u32);
                         image.draw_image(x, y, width, height, &stub);
                     }
+                }
+            }
+            DrawItem::Path {
+                points,
+                closed,
+                fill,
+                stroke,
+            } => {
+                if let Some(color) = fill {
+                    image.fill_shape(&points, color);
+                }
+                if let Some((color, width)) = stroke {
+                    image.stroke_polyline(&points, closed, color, width);
                 }
             }
             DrawItem::Glyph { key, x, y, color } => {

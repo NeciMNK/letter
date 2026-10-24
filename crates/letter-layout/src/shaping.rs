@@ -176,6 +176,9 @@ pub struct Shaper {
     /// Какой шрифт подходит для буквы, если в основном её нет:
     /// (буква, жирный, курсив) → шрифт.
     fallback: HashMap<(char, bool, bool), Option<FontMatch>>,
+    /// Есть ли буква в шрифте: разбирать файл шрифта на каждый вопрос
+    /// дорого, а спрашивают про каждую букву текста.
+    glyphs: HashMap<(FontId, char), bool>,
 }
 
 impl std::fmt::Debug for Shaper {
@@ -271,10 +274,15 @@ impl Shaper {
 
     /// Есть ли в шрифте буква.
     pub fn has_glyph(&mut self, library: &FontLibrary, id: FontId, c: char) -> bool {
-        self.font_data(library, id).is_some_and(|data| {
+        if let Some(&known) = self.glyphs.get(&(id, c)) {
+            return known;
+        }
+        let found = self.font_data(library, id).is_some_and(|data| {
             ttf_parser::Face::parse(&data.bytes, data.index)
                 .is_ok_and(|face| face.glyph_index(c).is_some())
-        })
+        });
+        self.glyphs.insert((id, c), found);
+        found
     }
 
     /// Шрифт, в котором есть буква `c`. Сначала пробуются известные

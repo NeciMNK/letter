@@ -15,6 +15,7 @@ use egui::{
 use letter_layout::{FontLibrary, Page};
 use letter_model::ImageData;
 
+use crate::drawing::triangulate;
 use crate::glyphs::{GlyphCache, GlyphImage, GlyphKey, GlyphPixels};
 use crate::picture::{PLACEHOLDER_BORDER, PLACEHOLDER_FILL, decode, fit_within};
 use crate::scene::{DrawItem, Rgba, page_scene};
@@ -158,6 +159,14 @@ impl PagePainter {
                     let stroke = egui::Stroke::new(width / pixels_per_point, color32(color));
                     painter.line_segment([to_screen(x1, y1), to_screen(x2, y2)], stroke);
                 }
+                DrawItem::Polygon { points, color } => {
+                    let points = points.iter().map(|&(x, y)| to_screen(x, y)).collect();
+                    painter.add(egui::Shape::convex_polygon(
+                        points,
+                        color32(color),
+                        egui::Stroke::NONE,
+                    ));
+                }
                 DrawItem::Glyph { key, x, y, color } => {
                     let Some((slot, glyph)) = self.slot(&ctx, library, key) else {
                         continue;
@@ -198,6 +207,34 @@ impl PagePainter {
                             painter.image(texture, r, uv, Color32::WHITE);
                         }
                         None => paint_placeholder(painter, r),
+                    }
+                }
+                DrawItem::Path {
+                    points,
+                    closed,
+                    fill,
+                    stroke,
+                } => {
+                    let points: Vec<Pos2> = points.iter().map(|&(x, y)| to_screen(x, y)).collect();
+                    if let Some(color) = fill {
+                        let mut shape = Mesh::default();
+                        let color = color32(color);
+                        for &p in &points {
+                            shape.colored_vertex(p, color);
+                        }
+                        let flat: Vec<(f32, f32)> = points.iter().map(|p| (p.x, p.y)).collect();
+                        for [a, b, c] in triangulate(&flat) {
+                            shape.add_triangle(a as u32, b as u32, c as u32);
+                        }
+                        painter.add(shape);
+                    }
+                    if let Some((color, width)) = stroke {
+                        let stroke = egui::Stroke::new(width / pixels_per_point, color32(color));
+                        if closed {
+                            painter.add(egui::Shape::closed_line(points, stroke));
+                        } else {
+                            painter.add(egui::Shape::line(points, stroke));
+                        }
                     }
                 }
             }

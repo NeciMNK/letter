@@ -4,13 +4,16 @@
 //! превращается в поля модели. Всё остальное сохраняется целиком как
 //! [`RawXml`], чтобы при записи вернуть его на место без потерь.
 
+use std::sync::Arc;
+
 use letter_model::{
-    Block, Bookmark, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind,
-    FirstLineIndent, HalfPoints, HeaderFooter, HeaderFooterKind, HeaderFooters, Hyperlink,
-    Indentation, Inline, LineSpacing, Note, NoteKind, NoteReference, NumberingRef, Orientation,
-    PageBorderDisplay, PageBorders, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run,
-    RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Spacing, Symbol, TabStop,
-    ThemeColor, Twips, Underline, VerticalAlign,
+    Block, Bookmark, BreakKind, Color, Columns, ContentControl, ContentControlRef, Document,
+    FieldChar, FieldCharKind, FirstLineIndent, HalfPoints, HeaderFooter, HeaderFooterKind,
+    HeaderFooters, Hyperlink, Indentation, Inline, LineSpacing, Note, NoteKind, NoteReference,
+    NumberingRef, Orientation, PageBorderDisplay, PageBorders, PageMargins, PageSize, Paragraph,
+    ParagraphProps, RawXml, Revision, RevisionKind, Run, RunContent, RunFonts, RunProps, Section,
+    SectionProps, SectionStart, Spacing, Symbol, TabStop, ThemeColor, Twips, Underline,
+    VerticalAlign,
 };
 
 use crate::ReadError;
@@ -93,9 +96,14 @@ fn read_body(body: &Element) -> Vec<Section> {
     let mut sections = Vec::new();
     let mut current = Section::default();
     let mut has_final_props = false;
+    let mut children = Vec::new();
     for child in body.elements() {
+        flatten_block_controls(child, &[], &mut children);
+    }
+    for (child, controls) in children {
         if child.is_w("p") {
-            let (paragraph, section_props) = read_paragraph(child, true);
+            let (mut paragraph, section_props) = read_paragraph(child, true);
+            paragraph.props.controls = controls;
             current.blocks.push(paragraph.into());
             if let Some(props) = section_props {
                 current.props = props;
@@ -105,7 +113,9 @@ fn read_body(body: &Element) -> Vec<Section> {
             current.props = read_section_props(child);
             has_final_props = true;
         } else {
-            current.blocks.push(read_block(child));
+            current
+                .blocks
+                .push(with_controls(read_block(child), controls));
         }
     }
     if has_final_props || !current.blocks.is_empty() || sections.is_empty() {
@@ -114,8 +124,110 @@ fn read_body(body: &Element) -> Vec<Section> {
     sections
 }
 
+/// Блоки из элемента содержимого (ячейки, колонтитула, сноски): обычно
+/// один блок, а у элемента управления содержимым — все блоки внутри него.
+pub(crate) fn read_blocks(element: &Element, out: &mut Vec<Block>) {
+    let mut children = Vec::new();
+    flatten_block_controls(element, &[], &mut children);
+    for (child, controls) in children {
+        out.push(with_controls(read_block(child), controls));
+    }
+}
+
+/// Все блоки дочерних элементов `parent` (см. [`read_blocks`]).
+pub(crate) fn read_child_blocks(parent: &Element) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    for child in parent.elements() {
+        read_blocks(child, &mut blocks);
+    }
+    blocks
+}
+
+/// Ставит абзацу или таблице ссылки на элементы управления содержимым.
+fn with_controls(mut block: Block, controls: Vec<ContentControlRef>) -> Block {
+    match &mut block {
+        Block::Paragraph(p) => p.props.controls = controls,
+        Block::Table(t) => t.props.controls = controls,
+        Block::Unknown(_) => {}
+    }
+    block
+}
+
+/// Раскрывает блочный элемент управления содержимым (`w:sdt`): кладёт
+/// в `out` его абзацы и таблицы со ссылками на элемент (и на внешние
+/// элементы `outer`). Остальные элементы и `w:sdt`, которые нельзя
+/// раскрыть без потерь, кладутся как есть.
+fn flatten_block_controls<'e>(
+    element: &'e Element,
+    outer: &[ContentControlRef],
+    out: &mut Vec<(&'e Element, Vec<ContentControlRef>)>,
+) {
+    let Some((control, content)) = block_control(element) else {
+        out.push((element, outer.to_vec()));
+        return;
+    };
+    let mut controls = outer.to_vec();
+    controls.push(control);
+    for child in content.elements() {
+        flatten_block_controls(child, &controls, out);
+    }
+}
+
+/// Блочный `w:sdt`, который можно раскрыть: свойства и `w:sdtContent`,
+/// внутри только абзацы, таблицы и такие же `w:sdt`, и хотя бы один из них.
+fn block_control(sdt: &Element) -> Option<(ContentControlRef, &Element)> {
+    let (control, content) = control_parts(sdt)?;
+    let mut any = false;
+    for child in content.elements() {
+        if !(child.is_w("p") || child.is_w("tbl") || block_control(child).is_some()) {
+            return None;
+        }
+        any = true;
+    }
+    any.then_some((control, content))
+}
+
+/// Части `w:sdt`: свойства элемента и `w:sdtContent`. `None`, если
+/// у `w:sdt` атрибуты, лишние или повторённые части.
+fn control_parts(sdt: &Element) -> Option<(ContentControlRef, &Element)> {
+    if !sdt.is_w("sdt") || !sdt.attrs.is_empty() {
+        return None;
+    }
+    let mut control = ContentControl::default();
+    let mut content = None;
+    for child in sdt.elements() {
+        if child.is_w("sdtPr") && control.props.is_none() && content.is_none() {
+            control.props = Some(child.raw());
+        } else if child.is_w("sdtEndPr") && control.end_props.is_none() && content.is_none() {
+            control.end_props = Some(child.raw());
+        } else if child.is_w("sdtContent") && content.is_none() && child.attrs.is_empty() {
+            content = Some(child);
+        } else {
+            return None;
+        }
+    }
+    Some((Arc::new(control), content?))
+}
+
+/// Элемент управления содержимым внутри абзаца (`w:sdt` с фрагментами
+/// текста): фрагменты со ссылкой на элемент. `None`, если внутри есть
+/// что-то, кроме фрагментов, или он пуст.
+fn read_inline_control(sdt: &Element) -> Option<Vec<Inline>> {
+    let (control, content) = control_parts(sdt)?;
+    let mut items = Vec::new();
+    for child in content.elements() {
+        if !child.is_w("r") {
+            return None;
+        }
+        let mut run = read_run(child);
+        run.props.control = Some(control.clone());
+        items.push(Inline::Run(run));
+    }
+    (!items.is_empty()).then_some(items)
+}
+
 /// Блок внутри ячейки таблицы или любой блок, кроме абзаца, в теле.
-pub(crate) fn read_block(element: &Element) -> Block {
+fn read_block(element: &Element) -> Block {
     if element.is_w("p") {
         read_paragraph(element, false).0.into()
     } else if element.is_w("tbl") {
@@ -141,8 +253,12 @@ fn read_paragraph(p: &Element, allow_section: bool) -> (Paragraph, Option<Sectio
             paragraph.content.extend(runs.into_iter().map(Inline::Run));
         } else if let Some(items) = read_hyperlink(child) {
             paragraph.content.extend(items);
+        } else if let Some(items) = read_revision(child) {
+            paragraph.content.extend(items);
         } else if let Some(mark) = read_bookmark(child) {
             paragraph.content.push(mark);
+        } else if let Some(items) = read_inline_control(child) {
+            paragraph.content.extend(items);
         } else if let Some(mark) = read_comment_mark(child) {
             paragraph.content.push(mark);
         } else if let Some(math) = crate::math::read_math(child) {
@@ -156,6 +272,52 @@ fn read_paragraph(p: &Element, allow_section: bool) -> (Paragraph, Option<Sectio
         }
     }
     (paragraph, section)
+}
+
+/// Исправление `w:ins` или `w:del` вокруг фрагментов: фрагменты получают
+/// исправление в оформлении. С чем-то, кроме фрагментов, простых полей,
+/// ссылок и закладок, — `None` (остаётся как есть). Номер исправления
+/// (`w:id`) не хранится: при записи номера раздаются заново.
+fn read_revision(element: &Element) -> Option<Vec<Inline>> {
+    let kind = match element.local.as_str() {
+        "ins" if element.is_w("ins") => RevisionKind::Insert,
+        "del" if element.is_w("del") => RevisionKind::Delete,
+        _ => return None,
+    };
+    // Атрибуты других пространств (например, `w16du:dateUtc`, то же
+    // время в UTC) не нужны.
+    if element
+        .attrs
+        .iter()
+        .any(|a| is_w_ns(a.ns.as_deref()) && !["id", "author", "date"].contains(&a.local.as_str()))
+    {
+        return None;
+    }
+    let revision = Revision {
+        kind,
+        author: element.w_attr("author").unwrap_or_default().to_string(),
+        date: element.w_attr("date").map(str::to_string),
+    };
+    let mark = |item: Inline| match item {
+        Inline::Run(mut run) => {
+            run.props.revision = Some(revision.clone());
+            Inline::Run(run)
+        }
+        other => other,
+    };
+    let mut items = Vec::new();
+    for child in element.elements() {
+        if child.is_w("r") {
+            items.push(mark(Inline::Run(read_run(child))));
+        } else if let Some(runs) = simple_field(child) {
+            items.extend(runs.into_iter().map(|r| mark(Inline::Run(r))));
+        } else if let Some(links) = read_hyperlink(child) {
+            items.extend(links.into_iter().map(mark));
+        } else {
+            items.push(read_bookmark(child)?);
+        }
+    }
+    Some(items)
 }
 
 /// Начало или конец закладки; с другими атрибутами (закладка столбцов
@@ -232,6 +394,13 @@ fn read_hyperlink(element: &Element) -> Option<Vec<Inline>> {
             items.push(with_link(read_run(child)));
         } else if let Some(runs) = simple_field(child) {
             items.extend(runs.into_iter().map(with_link));
+        } else if let Some(revised) = read_revision(child) {
+            for item in revised {
+                items.push(match item {
+                    Inline::Run(run) => with_link(run),
+                    other => other,
+                });
+            }
         } else {
             items.push(read_bookmark(child).or_else(|| read_comment_mark(child))?);
         }
@@ -427,7 +596,7 @@ fn read_run(r: &Element) -> Run {
                     run.props = read_run_props(child);
                     continue;
                 }
-                "t" => RunContent::Text(child.text()),
+                "t" | "delText" => RunContent::Text(child.text()),
                 "tab" if child.attrs.is_empty() => RunContent::Tab,
                 "noBreakHyphen" if child.attrs.is_empty() => RunContent::Text("\u{2011}".into()),
                 "softHyphen" if child.attrs.is_empty() => RunContent::Text("\u{ad}".into()),
@@ -469,7 +638,7 @@ fn read_run(r: &Element) -> Run {
                     Some(c) => RunContent::FieldChar(c),
                     None => RunContent::Unknown(child.raw()),
                 },
-                "instrText"
+                "instrText" | "delInstrText"
                     if child.elements().next().is_none()
                         && child.attrs.iter().all(|a| a.local == "space") =>
                 {
@@ -532,7 +701,7 @@ pub(crate) fn read_notes(root: &Element, kind: NoteKind) -> Option<Vec<Note>> {
         notes.push(Note {
             id: child.w_attr("id")?.to_string(),
             special: child.w_attr("type").map(str::to_string),
-            blocks: child.elements().map(read_block).collect(),
+            blocks: read_child_blocks(child),
         });
     }
     Some(notes)
@@ -776,7 +945,7 @@ pub(crate) fn read_header_footer(root: &Element) -> Option<Vec<Block>> {
     if !root.is_w("hdr") && !root.is_w("ftr") {
         return None;
     }
-    Some(root.elements().map(read_block).collect())
+    Some(read_child_blocks(root))
 }
 
 /// Начало раздела `w:type`.
@@ -1037,6 +1206,30 @@ mod tests {
     }
 
     #[test]
+    fn revisions_are_read() {
+        let doc = read_body_xml(
+            r#"<w:p><w:r><w:t>a</w:t></w:r>
+               <w:ins w:id="1" w:author="Аня" w:date="2024-05-01T10:00:00Z"><w:r><w:t>b</w:t></w:r></w:ins>
+               <w:del w:id="2" w:author="Боря"><w:r><w:delText>c</w:delText></w:r></w:del>
+               <w:ins w:id="3" w:author="X" w:other="1"><w:r><w:t>d</w:t></w:r></w:ins></w:p>"#,
+        );
+        let p = first_paragraph(&doc);
+        assert_eq!(p.plain_text(), "abc");
+        let runs: Vec<&Run> = p.runs().collect();
+        assert_eq!(runs[0].props.revision, None);
+        let ins = runs[1].props.revision.clone().unwrap();
+        assert_eq!(
+            (ins.kind, ins.author.as_str()),
+            (RevisionKind::Insert, "Аня")
+        );
+        assert_eq!(ins.date.as_deref(), Some("2024-05-01T10:00:00Z"));
+        let del = runs[2].props.revision.clone().unwrap();
+        assert_eq!((del.kind, del.date), (RevisionKind::Delete, None));
+        // Незнакомый атрибут — исправление остаётся как есть.
+        assert!(matches!(p.content.last(), Some(Inline::Unknown(_))));
+    }
+
+    #[test]
     fn run_properties() {
         let doc = read_body_xml(
             r#"<w:p><w:r><w:rPr>
@@ -1208,7 +1401,7 @@ mod tests {
     fn unknown_inlines_and_blocks() {
         let doc = read_body_xml(
             r#"<w:p w14:paraId="1"><w:permStart w:id="0" w:edGrp="everyone"/><w:r><w:t>x</w:t></w:r><w:permEnd w:id="0"/></w:p>
-               <w:sdt><w:sdtContent><w:p/></w:sdtContent></w:sdt>"#,
+               <w:sdt><w:sdtContent><w:bookmarkStart w:id="1" w:name="a"/><w:p/></w:sdtContent></w:sdt>"#,
         );
         let p = first_paragraph(&doc);
         assert_eq!(p.content.len(), 3);
@@ -1413,5 +1606,79 @@ mod tests {
         assert_eq!(parse_twips("1e300pt"), None);
         assert_eq!(parse_half_points("11pt"), Some(HalfPoints(22)));
         assert_eq!(parse_half_points("-1pt"), None);
+    }
+
+    #[test]
+    fn content_controls_show_their_content_and_survive_round_trip() {
+        let body = r#"<w:sdt><w:sdtPr><w:alias w:val="Титул"/><w:tag w:val="cover"/></w:sdtPr><w:sdtContent>
+                 <w:p><w:r><w:t>Заголовок</w:t></w:r></w:p>
+                 <w:sdt><w:sdtPr><w:tag w:val="inner"/></w:sdtPr><w:sdtContent>
+                   <w:tbl><w:tr><w:tc><w:sdt><w:sdtPr><w:tag w:val="cell"/></w:sdtPr><w:sdtContent><w:p><w:r><w:t>ячейка</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc></w:tr></w:tbl>
+                 </w:sdtContent></w:sdt>
+                 <w:p><w:r><w:t>Подзаголовок</w:t></w:r></w:p>
+               </w:sdtContent></w:sdt>
+               <w:p><w:r><w:t>Имя: </w:t></w:r><w:sdt><w:sdtPr><w:tag w:val="name"/></w:sdtPr><w:sdtEndPr><w:rPr><w:b/></w:rPr></w:sdtEndPr><w:sdtContent><w:r><w:t>Иван</w:t></w:r><w:r><w:t> Петров</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t>.</w:t></w:r></w:p>
+               <w:sdt><w:sdtPr><w:tag w:val="a"/></w:sdtPr><w:sdtContent><w:p/></w:sdtContent></w:sdt>
+               <w:sdt><w:sdtPr><w:tag w:val="a"/></w:sdtPr><w:sdtContent><w:p/></w:sdtContent></w:sdt>"#;
+        let doc = read_body_xml(body);
+        assert_eq!(
+            doc.plain_text(),
+            "Заголовок\nячейка\nПодзаголовок\nИмя: Иван Петров.\n\n"
+        );
+        let blocks: Vec<_> = doc.blocks().collect();
+        let Block::Paragraph(title) = blocks[0] else {
+            panic!("expected paragraph")
+        };
+        assert_eq!(title.props.controls.len(), 1);
+        assert_eq!(title.props.controls[0].tag().as_deref(), Some("cover"));
+        assert_eq!(title.props.controls[0].title().as_deref(), Some("Титул"));
+        let Block::Table(table) = blocks[1] else {
+            panic!("expected table")
+        };
+        assert_eq!(table.props.controls.len(), 2);
+        assert!(Arc::ptr_eq(
+            &table.props.controls[0],
+            &title.props.controls[0]
+        ));
+        let Block::Paragraph(cell) = &table.rows[0].cells[0].blocks[0] else {
+            panic!("expected paragraph")
+        };
+        assert_eq!(cell.props.controls[0].tag().as_deref(), Some("cell"));
+        let Block::Paragraph(form) = blocks[3] else {
+            panic!("expected paragraph")
+        };
+        assert!(form.props.controls.is_empty());
+        let runs: Vec<_> = form.runs().collect();
+        assert!(runs[0].props.control.is_none() && runs[3].props.control.is_none());
+        let name = runs[1].props.control.as_ref().expect("control");
+        assert_eq!(name.tag().as_deref(), Some("name"));
+        assert!(name.end_props.is_some());
+        assert!(Arc::ptr_eq(
+            name,
+            runs[2].props.control.as_ref().expect("control")
+        ));
+
+        // Запись возвращает те же элементы: снова читается в ту же модель,
+        // и соседние одинаковые элементы не слились.
+        let written = crate::serialize::document_xml(&doc);
+        assert_eq!(written.matches("<w:sdt>").count(), 6);
+        let again = read_document(&xml::parse(written.as_bytes()).unwrap()).unwrap();
+        assert_eq!(again.sections, doc.sections);
+    }
+
+    #[test]
+    fn unusual_content_controls_stay_as_they_are() {
+        let doc = read_body_xml(
+            r#"<w:sdt><w:sdtPr/><w:sdtContent/></w:sdt>
+               <w:sdt><w:sdtContent><w:customXml/></w:sdtContent></w:sdt>
+               <w:p><w:sdt><w:sdtContent><w:hyperlink/></w:sdtContent></w:sdt></w:p>"#,
+        );
+        let blocks: Vec<_> = doc.blocks().collect();
+        assert!(matches!(blocks[0], Block::Unknown(_)));
+        assert!(matches!(blocks[1], Block::Unknown(_)));
+        let Block::Paragraph(p) = blocks[2] else {
+            panic!("expected paragraph")
+        };
+        assert!(matches!(&p.content[0], Inline::Unknown(r) if r.local_name() == "sdt"));
     }
 }

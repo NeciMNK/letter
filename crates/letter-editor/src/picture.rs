@@ -360,6 +360,7 @@ mod tests {
 
     fn picture(width: i64, height: i64) -> Picture {
         Picture {
+            drawing: None,
             width,
             height,
             image: None,

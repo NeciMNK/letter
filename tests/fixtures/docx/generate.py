@@ -638,6 +638,240 @@ def watermark() -> Document:
     run._r.append(etree.fromstring(WATERMARK))
     return doc
 
+DGM_NS = "http://schemas.openxmlformats.org/drawingml/2006/diagram"
+DSP_NS = "http://schemas.microsoft.com/office/drawing/2008/diagram"
+A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+DGM_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
+DGM_TYPE = "application/vnd.openxmlformats-officedocument.drawingml."
+
+
+def smartart_shape(number: int, prst: str, x: int, y: int, cx: int, cy: int, fill: str, text: str | None) -> str:
+    """Фигура готового вида SmartArt, как её пишет Word: цвет из темы,
+    стиль со ссылками на заливку, линию и шрифт."""
+    body = ""
+    if text is not None:
+        body = (
+            '<dsp:txBody><a:bodyPr spcFirstLastPara="0" vert="horz" wrap="square" '
+            'lIns="76200" tIns="76200" rIns="76200" bIns="76200" numCol="1" '
+            'spcCol="1270" anchor="ctr" anchorCtr="0"><a:noAutofit/></a:bodyPr>'
+            '<a:lstStyle/><a:p><a:pPr marL="0" lvl="0" indent="0" algn="ctr" '
+            'defTabSz="889000"><a:lnSpc><a:spcPct val="90000"/></a:lnSpc></a:pPr>'
+            f'<a:r><a:rPr lang="ru-RU" sz="2000" kern="1200"/><a:t>{text}</a:t></a:r></a:p>'
+            f'</dsp:txBody><dsp:txXfrm><a:off x="{x}" y="{y}"/><a:ext cx="{cx}" cy="{cy}"/></dsp:txXfrm>'
+        )
+    return (
+        f'<dsp:sp modelId="{{00000000-0000-0000-0000-00000000000{number}}}">'
+        f'<dsp:nvSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvSpPr/></dsp:nvSpPr>'
+        f'<dsp:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+        f'<a:prstGeom prst="{prst}"><a:avLst/></a:prstGeom>{fill}'
+        '<a:ln w="12700" cap="flat" cmpd="sng" algn="ctr"><a:solidFill>'
+        '<a:schemeClr val="lt1"><a:hueOff val="0"/></a:schemeClr></a:solidFill>'
+        '<a:prstDash val="solid"/><a:miter lim="800000"/></a:ln><a:effectLst/></dsp:spPr>'
+        '<dsp:style><a:lnRef idx="2"><a:scrgbClr r="0" g="0" b="0"/></a:lnRef>'
+        '<a:fillRef idx="1"><a:scrgbClr r="0" g="0" b="0"/></a:fillRef>'
+        '<a:effectRef idx="0"><a:scrgbClr r="0" g="0" b="0"/></a:effectRef>'
+        '<a:fontRef idx="minor"><a:schemeClr val="lt1"/></a:fontRef></dsp:style>'
+        f"{body}</dsp:sp>"
+    )
+
+
+def smartart() -> Document:
+    """SmartArt «Простой процесс»: три скруглённых прямоугольника со
+    стрелками между ними, с готовым видом (drawing1.xml), как у Word."""
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT  # noqa: F401
+    from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
+
+    doc = new_document("SmartArt")
+    doc.add_paragraph("Перед диаграммой.")
+    main = doc.part
+    package = main.package
+
+    box = '<a:solidFill><a:schemeClr val="accent1"><a:hueOff val="0"/><a:lumMod val="100000"/></a:schemeClr></a:solidFill>'
+    arrow = '<a:solidFill><a:schemeClr val="accent1"><a:tint val="60000"/></a:schemeClr></a:solidFill>'
+    shapes = [
+        smartart_shape(1, "roundRect", 0, 388620, 1371600, 822960, box, "Идея"),
+        smartart_shape(2, "rightArrow", 1508760, 629055, 290830, 340090, arrow, None),
+        smartart_shape(3, "roundRect", 2057400, 388620, 1371600, 822960, box, "Черновик"),
+        smartart_shape(4, "rightArrow", 3566160, 629055, 290830, 340090, arrow, None),
+        smartart_shape(5, "roundRect", 4114800, 388620, 1371600, 822960, box, "Книга"),
+    ]
+    drawing_xml = (
+        f'<dsp:drawing xmlns:dgm="{DGM_NS}" xmlns:dsp="{DSP_NS}" xmlns:a="{A_NS}">'
+        '<dsp:spTree><dsp:nvGrpSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvGrpSpPr/></dsp:nvGrpSpPr>'
+        f'<dsp:grpSpPr/>{"".join(shapes)}</dsp:spTree></dsp:drawing>'
+    )
+
+    def add(name: str, content_type: str, reltype: str, xml: str) -> str:
+        part = Part(PackURI(name), content_type, xml.encode("utf-8"), package)
+        return main.relate_to(part, reltype)
+
+    drawing_id = add(
+        "/word/diagrams/drawing1.xml",
+        "application/vnd.ms-office.drawingml.diagramDrawing+xml",
+        "http://schemas.microsoft.com/office/2007/relationships/diagramDrawing",
+        drawing_xml,
+    )
+    points = "".join(
+        f'<dgm:pt modelId="{{10000000-0000-0000-0000-00000000000{i}}}"><dgm:prSet phldrT="[Текст]"/>'
+        f'<dgm:spPr/><dgm:t><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="ru-RU"/><a:t>{t}</a:t></a:r></a:p></dgm:t></dgm:pt>'
+        for i, t in enumerate(["Идея", "Черновик", "Книга"], start=1)
+    )
+    data_xml = (
+        f'<dgm:dataModel xmlns:dgm="{DGM_NS}" xmlns:a="{A_NS}" xmlns:r="{R_NS}">'
+        '<dgm:ptLst><dgm:pt modelId="{10000000-0000-0000-0000-000000000000}" type="doc">'
+        '<dgm:prSet loTypeId="urn:microsoft.com/office/officeart/2005/8/layout/process1"/>'
+        f'<dgm:spPr/><dgm:t><a:bodyPr/><a:lstStyle/><a:p/></dgm:t></dgm:pt>{points}</dgm:ptLst>'
+        '<dgm:cxnLst/><dgm:bg/><dgm:whole/><dgm:extLst>'
+        '<a:ext uri="http://schemas.microsoft.com/office/drawing/2008/diagram">'
+        f'<dsp:dataModelExt xmlns:dsp="{DSP_NS}" relId="{drawing_id}" minVer="http://schemas.openxmlformats.org/drawingml/2006/diagram"/>'
+        "</a:ext></dgm:extLst></dgm:dataModel>"
+    )
+    dm = add("/word/diagrams/data1.xml", DGM_TYPE + "diagramData+xml", DGM_REL + "diagramData", data_xml)
+    lo = add(
+        "/word/diagrams/layout1.xml",
+        DGM_TYPE + "diagramLayout+xml",
+        DGM_REL + "diagramLayout",
+        f'<dgm:layoutDef xmlns:dgm="{DGM_NS}" xmlns:a="{A_NS}" '
+        'uniqueId="urn:microsoft.com/office/officeart/2005/8/layout/process1">'
+        '<dgm:layoutNode name="Name0"/></dgm:layoutDef>',
+    )
+    qs = add(
+        "/word/diagrams/quickStyle1.xml",
+        DGM_TYPE + "diagramStyle+xml",
+        DGM_REL + "diagramQuickStyle",
+        f'<dgm:styleDef xmlns:dgm="{DGM_NS}" xmlns:a="{A_NS}" '
+        'uniqueId="urn:microsoft.com/office/officeart/2005/8/quickstyle/simple1"><dgm:scene3d>'
+        '<a:camera prst="orthographicFront"/><a:lightRig rig="threePt" dir="t"/></dgm:scene3d></dgm:styleDef>',
+    )
+    cs = add(
+        "/word/diagrams/colors1.xml",
+        DGM_TYPE + "diagramColors+xml",
+        DGM_REL + "diagramColors",
+        f'<dgm:colorsDef xmlns:dgm="{DGM_NS}" xmlns:a="{A_NS}" '
+        'uniqueId="urn:microsoft.com/office/officeart/2005/8/colors/accent1_2"/>',
+    )
+    inline = (
+        f'<w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        f'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+        f'xmlns:a="{A_NS}" xmlns:r="{R_NS}" xmlns:dgm="{DGM_NS}">'
+        '<wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="5486400" cy="1600200"/>'
+        '<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="1" name="Схема 1"/>'
+        '<wp:cNvGraphicFramePr/><a:graphic><a:graphicData '
+        'uri="http://schemas.openxmlformats.org/drawingml/2006/diagram">'
+        f'<dgm:relIds r:dm="{dm}" r:lo="{lo}" r:qs="{qs}" r:cs="{cs}"/>'
+        "</a:graphicData></a:graphic></wp:inline></w:drawing>"
+    )
+    run = doc.add_paragraph().add_run()
+    run._r.append(etree.fromstring(inline))
+    doc.add_paragraph("После диаграммы.")
+    return doc
+
+
+C_NS = "http://schemas.openxmlformats.org/drawingml/2006/chart"
+A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
+def chart_series(index: int, name: str, categories: list[str], values: list[float], color: str | None) -> str:
+    """Ряд `c:ser` с кешем имени, подписей и значений (как пишет Word)."""
+    cats = "".join(f'<c:pt idx="{i}"><c:v>{c}</c:v></c:pt>' for i, c in enumerate(categories))
+    vals = "".join(f'<c:pt idx="{i}"><c:v>{v}</c:v></c:pt>' for i, v in enumerate(values))
+    column = "BCDEFG"[index]
+    fill = (
+        f'<c:spPr><a:solidFill><a:schemeClr val="{color}"/></a:solidFill></c:spPr>'
+        if color
+        else ""
+    )
+    return (
+        f'<c:ser><c:idx val="{index}"/><c:order val="{index}"/>'
+        f'<c:tx><c:strRef><c:f>Лист1!${column}$1</c:f><c:strCache><c:ptCount val="1"/>'
+        f'<c:pt idx="0"><c:v>{name}</c:v></c:pt></c:strCache></c:strRef></c:tx>{fill}'
+        f'<c:cat><c:strRef><c:f>Лист1!$A$2:$A${len(categories) + 1}</c:f><c:strCache>'
+        f'<c:ptCount val="{len(categories)}"/>{cats}</c:strCache></c:strRef></c:cat>'
+        f'<c:val><c:numRef><c:f>Лист1!${column}$2:${column}${len(values) + 1}</c:f><c:numCache>'
+        f'<c:formatCode>General</c:formatCode><c:ptCount val="{len(values)}"/>{vals}'
+        "</c:numCache></c:numRef></c:val></c:ser>"
+    )
+
+
+def add_chart(doc, paragraph, number: int, plot: str, title: str | None, legend: str | None) -> None:
+    """Часть диаграммы `word/charts/chartN.xml` (только кеш, без таблицы
+    с данными) и рисунок-диаграмма в строке абзаца."""
+    from docx.opc.constants import RELATIONSHIP_TYPE
+    from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
+
+    title_xml = (
+        f'<c:title><c:tx><c:rich><a:bodyPr/><a:p><a:r><a:t>{title}</a:t></a:r></a:p>'
+        '</c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/>'
+        if title
+        else '<c:autoTitleDeleted val="1"/>'
+    )
+    legend_xml = (
+        f'<c:legend><c:legendPos val="{legend}"/><c:overlay val="0"/></c:legend>' if legend else ""
+    )
+    xml = (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<c:chartSpace xmlns:c="{C_NS}" xmlns:a="{A_NS}" xmlns:r="{R_NS}">'
+        f'<c:roundedCorners val="0"/><c:chart>{title_xml}<c:plotArea><c:layout/>{plot}</c:plotArea>'
+        f'{legend_xml}<c:plotVisOnly val="1"/></c:chart></c:chartSpace>'
+    )
+    part = Part(
+        PackURI(f"/word/charts/chart{number}.xml"),
+        "application/vnd.openxmlformats-officedocument.drawingml.chart+xml",
+        xml.encode(),
+        doc.part.package,
+    )
+    rid = doc.part.relate_to(part, RELATIONSHIP_TYPE.CHART)
+    cx, cy = Inches(5).emu, Inches(3).emu
+    drawing = (
+        f'<w:drawing xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<wp:inline distT="0" distB="0" distL="0" distR="0" '
+        'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
+        f'<wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>'
+        f'<wp:docPr id="{number}" name="Диаграмма {number}"/><wp:cNvGraphicFramePr/>'
+        f'<a:graphic xmlns:a="{A_NS}"><a:graphicData uri="{C_NS}">'
+        f'<c:chart xmlns:c="{C_NS}" xmlns:r="{R_NS}" r:id="{rid}"/>'
+        "</a:graphicData></a:graphic></wp:inline></w:drawing>"
+    )
+    run = paragraph.add_run()
+    run._r.append(etree.fromstring(drawing))
+
+
+def charts() -> Document:
+    doc = new_document("Диаграммы")
+    months = ["Январь", "Февраль", "Март", "Апрель"]
+    doc.add_paragraph("Гистограмма с группировкой, два ряда:")
+    columns = (
+        '<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:varyColors val="0"/>'
+        + chart_series(0, "Москва", months, [4.3, 2.5, 3.5, 4.5], "accent1")
+        + chart_series(1, "Казань", months, [2.4, 4.4, 1.8, 2.8], "accent2")
+        + '<c:gapWidth val="219"/><c:overlap val="-27"/><c:axId val="1"/><c:axId val="2"/></c:barChart>'
+        '<c:catAx><c:axId val="1"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx>'
+        '<c:valAx><c:axId val="2"/><c:majorGridlines/><c:axPos val="l"/><c:crossAx val="1"/></c:valAx>'
+    )
+    add_chart(doc, doc.add_paragraph(), 1, columns, "Продажи", "b")
+    doc.add_paragraph("Круговая диаграмма:")
+    pie = (
+        '<c:pieChart><c:varyColors val="1"/>'
+        + chart_series(0, "Доля", ["Чай", "Кофе", "Сок"], [50, 30, 20], None)
+        + '<c:firstSliceAng val="0"/></c:pieChart>'
+    )
+    add_chart(doc, doc.add_paragraph(), 2, pie, None, "r")
+    doc.add_paragraph("График:")
+    line = (
+        '<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>'
+        + chart_series(0, "Температура", months, [-8, -6, 1, 9], None)
+        + '<c:marker val="1"/><c:axId val="3"/><c:axId val="4"/></c:lineChart>'
+        '<c:catAx><c:axId val="3"/><c:axPos val="b"/><c:crossAx val="4"/></c:catAx>'
+        '<c:valAx><c:axId val="4"/><c:majorGridlines/><c:axPos val="l"/><c:crossAx val="3"/></c:valAx>'
+    )
+    add_chart(doc, doc.add_paragraph(), 3, line, None, None)
+    doc.add_paragraph("Текст после диаграмм.")
+    return doc
+
 
 M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -734,6 +968,8 @@ FIXTURES = {
     "borders.docx": borders,
     "watermark.docx": watermark,
     "math.docx": math,
+    "smartart.docx": smartart,
+    "charts.docx": charts,
 }
 
 
