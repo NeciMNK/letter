@@ -1200,6 +1200,7 @@ mod tests {
             relationship: None,
             raw: None,
             anchor: None,
+            shape: None,
         };
         // Вставка заменяет выделенное.
         let picked = Selection::new(Position::new(0, 0), Position::new(0, 1));

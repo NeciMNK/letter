@@ -467,11 +467,16 @@ fn dump_run(out: &mut String, depth: usize, run: &Run) {
             }
             RunContent::Picture(picture) => {
                 let chart = picture.image.as_ref().and_then(|i| i.chart.as_ref());
-                let what = match chart {
-                    Some(chart) => {
+                let what = match (picture.shape.as_deref().map(|s| &s.geometry), chart) {
+                    (Some(letter_model::Geometry::Group(_)), _) => "группа".to_string(),
+                    (Some(letter_model::Geometry::Custom(_)), _) => "фигура".to_string(),
+                    (Some(letter_model::Geometry::Preset { name, .. }), _) => {
+                        format!("фигура {name}")
+                    }
+                    (None, Some(chart)) => {
                         format!("диаграмма {:?}, рядов {},", chart.kind, chart.series.len())
                     }
-                    None => "рисунок".to_string(),
+                    (None, None) => "рисунок".to_string(),
                 };
                 let _ = write!(
                     content,

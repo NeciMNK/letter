@@ -9,6 +9,7 @@ use letter_model::ImageData;
 use crate::glyphs::{GlyphCache, GlyphPixels};
 use crate::picture::{decode, placeholder};
 use crate::scene::{DrawItem, Rgba, page_scene};
+use crate::shape::{paint, shape_paths};
 
 /// Картинка RGBA, 8 бит на канал, без предумножения, строки сверху вниз.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -280,7 +281,19 @@ pub fn render_page(
                 y,
                 width,
                 height,
+                shape: Some(shape),
+                ..
+            } => {
+                let paths = shape_paths(&shape, x, y, width, height, scale);
+                paint(&mut image, &paths, 0.0, 0.0);
+            }
+            DrawItem::Picture {
+                x,
+                y,
+                width,
+                height,
                 image: data,
+                shape: None,
             } => {
                 let source = data.and_then(|data| {
                     let index = match decoded.iter().position(|(d, _)| Arc::ptr_eq(d, &data)) {

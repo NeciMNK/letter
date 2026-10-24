@@ -3,12 +3,14 @@
 //! в пикселях. Список одинаков для экрана и для картинки.
 
 use letter_layout::{
-    Float, FontLibrary, LineItem, MathLayout, Page, PageLine, PageStory, PageWatermark, ShapeKind,
-    ShapedRun, TabItem, TabLeader, TextItem, baseline_rise,
+    Float, FontLibrary, LineItem, Margins, MathLayout, Page, PageLine, PageStory, PageWatermark,
+    ShapeKind, ShapedRun, TabItem, TabLeader, TextItem, baseline_rise,
 };
 use std::sync::Arc;
 
-use letter_model::{Color, Drawing, ImageData, ResolvedRunProps, Underline};
+use letter_model::{
+    Color, Drawing, HeaderFooterKind, ImageData, ResolvedRunProps, Shape, Underline,
+};
 
 use crate::drawing::{DrawingFrame, draw_shapes};
 use crate::glyphs::{GlyphCache, GlyphKey, SUBPIXEL_STEPS};
@@ -81,6 +83,8 @@ pub enum DrawItem {
         height: f32,
         /// Картинка; `None` — нарисовать заглушку.
         image: Option<Arc<ImageData>>,
+        /// Фигура: рисуется она, а не картинка.
+        shape: Option<Arc<Shape>>,
     },
     /// Контур фигуры (SmartArt): многоугольник с заливкой и линией
     /// или ломаная.
@@ -180,7 +184,12 @@ pub fn page_scene(
                     &mut pictures,
                     (line.x + object.x, line.baseline - object.height),
                     (object.width, object.height),
-                    (object.image.as_ref(), object.drawing.as_deref()),
+                    (
+                        object.image.as_ref(),
+                        object.drawing.as_deref(),
+                        object.shape.as_ref(),
+                        object.text.as_deref(),
+                    ),
                     scale,
                     library,
                     cache,
@@ -208,7 +217,12 @@ pub fn page_scene(
     }
     let mut float = |out: &mut Vec<DrawItem>, f: &Float| {
         let (at, size) = ((f.x, f.y), (f.width, f.height));
-        let content = (f.image.as_ref(), f.drawing.as_deref());
+        let content = (
+            f.image.as_ref(),
+            f.drawing.as_deref(),
+            f.shape.as_ref(),
+            f.text.as_deref(),
+        );
         picture(out, at, size, content, scale, library, cache);
     };
     let floats = || stories.iter().flat_map(|s| &s.floats).chain(&page.floats);
@@ -224,14 +238,22 @@ pub fn page_scene(
     backgrounds
 }
 
-/// Рисунок в точке `at` размера `size` (пт): картинка, диаграмма или
-/// рисунок из фигур (SmartArt), разобранные на прямоугольники,
-/// многоугольники и глифы. `content` — картинка и рисунок из фигур.
+/// Что нарисовать в рамке рисунка: картинка, рисунок из фигур
+/// (SmartArt), фигура и текст её надписей.
+type Content<'a> = (
+    Option<&'a Arc<ImageData>>,
+    Option<&'a Drawing>,
+    Option<&'a Arc<Shape>>,
+    Option<&'a PageStory>,
+);
+
+/// Рисунок в точке `at` размера `size` (пт): картинка, диаграмма,
+/// рисунок из фигур (SmartArt) или фигура с текстом надписи.
 fn picture(
     out: &mut Vec<DrawItem>,
     (x, y): (f32, f32),
     (width, height): (f32, f32),
-    (image, drawing): (Option<&Arc<ImageData>>, Option<&Drawing>),
+    (image, drawing, shape, text): Content<'_>,
     scale: f32,
     library: &FontLibrary,
     cache: &mut GlyphCache,
@@ -258,7 +280,45 @@ fn picture(
         width: width * scale,
         height: height * scale,
         image: image.cloned(),
+        shape: shape.cloned(),
     });
+    if let Some(text) = text {
+        text_box(out, text, x, y, scale, library, cache);
+    }
+}
+
+/// Текст надписей фигуры, левый верхний угол которой — в точке `x`,
+/// `y` пт: рисуется сразу после самой фигуры, поверх неё.
+fn text_box(
+    out: &mut Vec<DrawItem>,
+    text: &PageStory,
+    x: f32,
+    y: f32,
+    scale: f32,
+    library: &FontLibrary,
+    cache: &mut GlyphCache,
+) {
+    let story = text.clone().shifted(x, y);
+    let page = Page {
+        width: 0.0,
+        height: 0.0,
+        margins: Margins {
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        },
+        lines: story.lines,
+        shapes: story.shapes,
+        floats: story.floats,
+        section: 0,
+        kind: HeaderFooterKind::Default,
+        header: PageStory::default(),
+        footer: PageStory::default(),
+        notes: Vec::new(),
+        watermark: None,
+    };
+    out.extend(page_scene(&page, scale, library, cache));
 }
 
 /// Глифы подложки вдоль повёрнутой базовой линии.

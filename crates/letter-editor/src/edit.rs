@@ -652,6 +652,7 @@ mod tests {
             relationship: Some("rId1".into()),
             raw: None,
             anchor: None,
+            shape: None,
         };
         let mut d = doc(vec![Paragraph::from_runs([Run {
             props: Default::default(),

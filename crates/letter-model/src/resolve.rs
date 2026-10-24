@@ -567,6 +567,7 @@ mod tests {
                 latin: Some("Calibri".into()),
                 ..ThemeFontSet::default()
             },
+            ..Theme::default()
         };
         doc
     }

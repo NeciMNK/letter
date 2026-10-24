@@ -227,16 +227,24 @@ impl PageStory {
     }
 
     /// Колонтитул, сдвинутый вниз на `dy`.
-    fn moved(mut self, dy: f32) -> PageStory {
+    fn moved(self, dy: f32) -> PageStory {
+        self.shifted(0.0, dy)
+    }
+
+    /// Всё содержимое, сдвинутое вправо на `dx` и вниз на `dy`.
+    pub fn shifted(mut self, dx: f32, dy: f32) -> PageStory {
         for line in &mut self.lines {
+            line.x += dx;
             line.top += dy;
             line.baseline += dy;
-            line.cell = line.cell.map(|c| c.moved(0.0, dy));
+            line.cell = line.cell.map(|c| c.moved(dx, dy));
         }
         for shape in &mut self.shapes {
+            shape.x += dx;
             shape.y += dy;
         }
         for float in &mut self.floats {
+            float.x += dx;
             float.y += dy;
             float.paragraph_top += dy;
         }
@@ -258,6 +266,10 @@ pub struct Float {
     pub height: f32,
     /// Картинка (`None` — заглушка).
     pub image: Option<Arc<ImageData>>,
+    /// Фигура вместо картинки.
+    pub shape: Option<Arc<letter_model::Shape>>,
+    /// Текст надписей фигуры от левого верхнего угла рисунка.
+    pub text: Option<Arc<PageStory>>,
     /// Рисунок из фигур (SmartArt) — рисуется вместо картинки.
     pub drawing: Option<Arc<Drawing>>,
     /// Обтекание текстом.
@@ -902,6 +914,112 @@ fn lay_story_with(
     (story, height)
 }
 
+/// Текст надписей фигуры (и фигур её группы) размером `width` ×
+/// `height` пт, свёрстанный от левого верхнего угла фигуры. `None`, если
+/// текста нет. Поворот фигуры к тексту пока не применяется.
+fn text_boxes(
+    doc: &Document,
+    shape: &letter_model::Shape,
+    width: f32,
+    height: f32,
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+) -> Option<Arc<PageStory>> {
+    let mut out = PageStory::default();
+    add_text_box(
+        &mut out,
+        doc,
+        shape,
+        [0.0, 0.0, width, height],
+        shaper,
+        library,
+        0,
+    );
+    (!out.is_empty()).then(|| Arc::new(out))
+}
+
+/// Самая глубокая вложенность групп фигур, в которой ищется текст.
+const MAX_SHAPE_DEPTH: usize = 16;
+
+fn add_text_box(
+    out: &mut PageStory,
+    doc: &Document,
+    shape: &letter_model::Shape,
+    [x, y, w, h]: [f32; 4],
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+    depth: usize,
+) {
+    if depth > MAX_SHAPE_DEPTH || !(w.is_finite() && h.is_finite()) {
+        return;
+    }
+    if let letter_model::Geometry::Group(group) = &shape.geometry {
+        let frame = group.frame;
+        if frame.width <= 0 || frame.height <= 0 {
+            return;
+        }
+        let (sx, sy) = (w / frame.width as f32, h / frame.height as f32);
+        for child in &group.children {
+            let f = child.frame;
+            let rect = [
+                x + (f.x - frame.x) as f32 * sx,
+                y + (f.y - frame.y) as f32 * sy,
+                f.width as f32 * sx,
+                f.height as f32 * sy,
+            ];
+            add_text_box(out, doc, &child.shape, rect, shaper, library, depth + 1);
+        }
+        return;
+    }
+    if shape.text.is_empty() {
+        return;
+    }
+    let [left, top, right, bottom] = shape.text_insets.map(|v| v as f32 / EMU_PER_POINT as f32);
+    let geometry = Geometry {
+        width: w,
+        height: STORY_HEIGHT,
+        margins: Margins {
+            top: 0.0,
+            right,
+            bottom: 0.0,
+            left,
+        },
+    };
+    if geometry.text_width() < 1.0 {
+        return;
+    }
+    let (story, text_height) = lay_story(doc, &shape.text, &geometry, shaper, library);
+    // Текст, который не влез, выходит за фигуру: при выравнивании
+    // посередине — в обе стороны, как в Word.
+    let free = h - top - bottom - text_height;
+    let dy = top
+        + match shape.text_anchor {
+            letter_model::TextAnchor::Top => 0.0,
+            letter_model::TextAnchor::Center => free / 2.0,
+            letter_model::TextAnchor::Bottom => free,
+        };
+    let mut story = story.shifted(x, y + dy);
+    if let Some(color) = &shape.text_color {
+        let [r, g, b, _] = color.rgba(&letter_model::ColorScheme::default());
+        for line in &mut story.lines {
+            line.spans = line
+                .spans
+                .iter()
+                .cloned()
+                .map(|mut props| {
+                    if props.color == letter_model::Color::Auto {
+                        props.color = letter_model::Color::Rgb(r, g, b);
+                    }
+                    props
+                })
+                .collect();
+        }
+    }
+    out.lines.append(&mut story.lines);
+    out.shapes.append(&mut story.shapes);
+    out.floats.append(&mut story.floats);
+}
+
 /// Текст сноски, свёрстанный от своего верха.
 #[derive(Debug, Clone, Default)]
 struct NoteBox {
@@ -1123,6 +1241,8 @@ fn place_float(
         width: spec.width,
         height: spec.height,
         image: spec.image.clone(),
+        shape: spec.shape.clone(),
+        text: spec.text.clone(),
         drawing: spec.drawing.clone(),
         wrap: anchor.wrap,
         behind: anchor.wrap == Wrap::None && anchor.behind_text,
@@ -1396,6 +1516,8 @@ struct FloatSpec {
     width: f32,
     height: f32,
     image: Option<Arc<ImageData>>,
+    shape: Option<Arc<letter_model::Shape>>,
+    text: Option<Arc<PageStory>>,
     drawing: Option<Arc<Drawing>>,
     anchor: Anchor,
 }
@@ -1487,12 +1609,24 @@ fn prepare(
                         &std::mem::take(&mut text),
                         &resolved,
                     );
+                    let boxes = picture.shape.as_deref().and_then(|shape| {
+                        text_boxes(
+                            doc,
+                            shape,
+                            picture.width_points(),
+                            picture.height_points(),
+                            shaper,
+                            library,
+                        )
+                    });
                     if let Some(anchor) = &picture.anchor {
                         floats.push(FloatSpec {
                             at: spans.iter().map(|s: &TextSpan| s.text.len()).sum(),
                             width: picture.width_points(),
                             height: picture.height_points(),
                             image: picture.image.clone(),
+                            shape: picture.shape.clone(),
+                            text: boxes.clone(),
                             drawing: picture.drawing.clone(),
                             anchor: (**anchor).clone(),
                         });
@@ -1501,6 +1635,8 @@ fn prepare(
                         width: picture.width_points(),
                         height: picture.height_points(),
                         image: picture.image.clone(),
+                        shape: picture.shape.clone(),
+                        text: boxes,
                         drawing: picture.drawing.clone(),
                         floating: picture.anchor.is_some(),
                         ..InlineObject::default()
@@ -3191,6 +3327,7 @@ mod tests {
                 behind_text,
                 distance: letter_model::Distance::default(),
             })),
+            shape: None,
         })
     }
 
@@ -3218,6 +3355,7 @@ mod tests {
                 behind_text: false,
                 distance: letter_model::Distance::default(),
             })),
+            shape: None,
         })
     }
 

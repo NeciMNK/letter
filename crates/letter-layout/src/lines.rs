@@ -21,13 +21,14 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
-use letter_model::{Drawing, ImageData, OBJECT_CHAR};
+use letter_model::{Drawing, ImageData, OBJECT_CHAR, Shape};
 
 use unicode_bidi::{BidiInfo, Level};
 use unicode_linebreak::{BreakOpportunity, linebreaks};
 
 use crate::fonts::{FontLibrary, FontMatch};
 use crate::math::MathLayout;
+use crate::pages::PageStory;
 use crate::shaping::{ShapedGlyph, ShapedRun, Shaper, TextStyle};
 
 /// Допуск при сравнении ширин, пт: строка «влезает», если вылезает
@@ -99,6 +100,11 @@ pub struct InlineObject {
     pub image: Option<Arc<ImageData>>,
     /// Свёрстанная формула: тогда рисуется она, а не картинка.
     pub math: Option<Arc<MathLayout>>,
+    /// Фигура вместо картинки.
+    pub shape: Option<Arc<Shape>>,
+    /// Текст надписей фигуры, свёрстанный от левого верхнего угла
+    /// объекта.
+    pub text: Option<Arc<PageStory>>,
     /// Рисунок из фигур (SmartArt) — рисуется вместо картинки.
     pub drawing: Option<Arc<Drawing>>,
     /// Плавающий объект: в строке от него только знак привязки без
@@ -344,6 +350,10 @@ pub struct ObjectItem {
     pub image: Option<Arc<ImageData>>,
     /// Формула (рисуется вместо картинки).
     pub math: Option<Arc<MathLayout>>,
+    /// Фигура вместо картинки.
+    pub shape: Option<Arc<Shape>>,
+    /// Текст надписей фигуры от левого верхнего угла объекта.
+    pub text: Option<Arc<PageStory>>,
     /// Рисунок из фигур (SmartArt).
     pub drawing: Option<Arc<Drawing>>,
 }
@@ -1114,7 +1124,9 @@ impl<'a> Builder<'a> {
                         span: cluster.span,
                         math: object.as_ref().and_then(|o| o.math.clone()),
                         image: object.as_ref().and_then(|o| o.image.clone()),
-                        drawing: object.and_then(|o| o.drawing),
+                        drawing: object.as_ref().and_then(|o| o.drawing.clone()),
+                        shape: object.as_ref().and_then(|o| o.shape.clone()),
+                        text: object.and_then(|o| o.text),
                     }));
                 }
                 Kind::Break(_) => {}
