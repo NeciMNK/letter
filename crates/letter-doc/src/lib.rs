@@ -23,7 +23,10 @@
 //! ```
 
 mod fib;
+mod links;
 mod lists;
+mod pictures;
+mod properties;
 mod reader;
 mod sprm;
 mod styles;

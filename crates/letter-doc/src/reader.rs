@@ -3,16 +3,18 @@
 use std::io::{Cursor, Read};
 
 use letter_model::{
-    Block, BreakKind, CellProps, Columns, Comment, Document, FieldChar, FieldCharKind, HalfPoints,
-    HeaderFooter, HeaderFooters, Inline, LineSpacing, Note, NoteKind, NoteReference, PageMargins,
-    PageSize, Paragraph, ParagraphProps, RawXml, Run, RunContent, RunFonts, RunProps, Section,
-    SectionProps, Spacing, Style, StyleKind, Table, TableCell, TableRow, TableWidth, Twips,
+    Block, Bookmark, BreakKind, CellProps, Columns, Comment, Document, FieldChar, FieldCharKind,
+    HalfPoints, HeaderFooter, HeaderFooters, Inline, LineSpacing, Note, NoteKind, NoteReference,
+    PageMargins, PageSize, Paragraph, ParagraphProps, Picture, RawXml, Run, RunContent, RunFonts,
+    RunProps, Section, SectionProps, Spacing, Style, StyleKind, Table, TableCell, TableRow,
+    TableWidth, Twips,
 };
 
 use crate::fib::{Fib, Stories, index, plc, u16_at, u32_at};
+use crate::pictures::{self, Drawings, Media};
 use crate::sprm::{Sep, TableMarks, apply_chp, apply_pap, apply_sep, sprms};
 use crate::styles::{ISTD_NIL, StyleSheet, builtin_name, fonts, style_id};
-use crate::{ReadError, lists};
+use crate::{ReadError, links, lists, properties};
 
 /// Самый большой поток, который мы согласны прочитать (512 МБ).
 const MAX_STREAM_SIZE: u64 = 512 * 1024 * 1024;
@@ -75,6 +77,9 @@ pub(crate) fn read(data: &[u8]) -> Result<Document, ReadError> {
     let word = stream(&mut file, "/WordDocument")?;
     let fib = Fib::read(&word)?;
     let table = stream(&mut file, if fib.table_1 { "/1Table" } else { "/0Table" })?;
+    // Картинок, рисунков и сведений может не быть — это не ошибка.
+    let data = stream(&mut file, "/Data").unwrap_or_default();
+    let summary = stream(&mut file, "/\u{5}SummaryInformation").unwrap_or_default();
 
     let fonts = fib
         .part(&table, index::STTBF_FFN)
@@ -115,6 +120,19 @@ pub(crate) fn read(data: &[u8]) -> Result<Document, ReadError> {
         .and_then(|dop| dop.first())
         .is_some_and(|b| b & 1 != 0);
 
+    let drawings = fib
+        .part(&table, index::DGG_INFO)
+        .map(|content| Drawings::read(content, &word))
+        .unwrap_or_default();
+    let shapes = |i| -> Vec<(u32, &[u8])> {
+        fib.part(&table, i)
+            .and_then(|b| plc(b, 26))
+            .map(|(cps, spas)| cps.into_iter().zip(spas).collect())
+            .unwrap_or_default()
+    };
+    let (shapes_main, shapes_headers) = (shapes(index::PLC_SPA_MOM), shapes(index::PLC_SPA_HDR));
+    let media = Media::default();
+
     let ids = style_ids(&sheet);
     let mut doc = Document::new();
     fill_styles(&mut doc, &sheet, &ids, &fonts);
@@ -140,12 +158,18 @@ pub(crate) fn read(data: &[u8]) -> Result<Document, ReadError> {
         notes: &notes,
         headers: &headers,
         even_and_odd,
+        data: &data,
+        drawings: &drawings,
+        shapes_main: &shapes_main,
+        shapes_headers: &shapes_headers,
+        media: &media,
     };
     doc.sections = builder.build();
     doc.footnotes = builder.notes(NoteKind::Footnote);
     doc.endnotes = builder.notes(NoteKind::Endnote);
     doc.comments = builder.comments();
     doc.settings.even_and_odd_headers = even_and_odd;
+    doc.properties.core = properties::read(&summary);
     Ok(doc)
 }
 
@@ -426,11 +450,22 @@ struct Builder<'a> {
     headers: &'a [u32],
     /// Колонтитулы чётных страниц отдельно.
     even_and_odd: bool,
+    /// Поток `Data` с картинками в строке.
+    data: &'a [u8],
+    /// Рисунки документа и плавающие фигуры текста и колонтитулов
+    /// (позиция знака привязки и `FSPA`).
+    drawings: &'a Drawings,
+    shapes_main: &'a [(u32, &'a [u8])],
+    shapes_headers: &'a [(u32, &'a [u8])],
+    /// Номера файлов картинок.
+    media: &'a Media,
 }
 
-/// Сноски, концевые сноски и примечания: где ссылки и где текст.
+/// Сноски, концевые сноски, примечания и закладки: где ссылки и где текст.
 #[derive(Debug, Clone, Default)]
 struct Notes {
+    /// Закладки: имя и кусок текста (`CP`).
+    bookmarks: Vec<(String, std::ops::Range<u32>)>,
     /// Ссылки на сноски: позиция и «номер ставится сам».
     footnote_refs: Vec<(u32, bool)>,
     /// Границы текста сносок от начала сносок.
@@ -468,6 +503,7 @@ impl Notes {
                 .unwrap_or_default()
         };
         let mut notes = Notes {
+            bookmarks: bookmarks(fib, table),
             footnote_refs: refs(index::PLCFFND_REF),
             footnote_texts: texts(index::PLCFFND_TXT),
             endnote_refs: refs(index::PLCFEND_REF),
@@ -517,6 +553,32 @@ impl Notes {
 }
 
 /// Строки `Xst` подряд: длина в знаках и знаки UTF-16.
+/// Закладки документа: имена из `SttbfBkmk`, начала из `PlcfBkf` (с
+/// номером конца) и концы из `PlcfBkl`.
+fn bookmarks(fib: &Fib, table: &[u8]) -> Vec<(String, std::ops::Range<u32>)> {
+    let names = fib
+        .part(table, index::STTBF_BKMK)
+        .map(sttb)
+        .unwrap_or_default();
+    let Some((starts, entries)) = fib.part(table, index::PLCF_BKF).and_then(|b| plc(b, 4)) else {
+        return Vec::new();
+    };
+    let ends = fib
+        .part(table, index::PLCF_BKL)
+        .and_then(|b| plc(b, 0))
+        .map(|(cps, _)| cps)
+        .unwrap_or_default();
+    entries
+        .iter()
+        .zip(&starts)
+        .zip(names)
+        .filter_map(|((entry, &start), (name, _))| {
+            let end = *ends.get(usize::from(u16_at(entry, 0)?))?;
+            Some((name, start..end.max(start)))
+        })
+        .collect()
+}
+
 fn xst_list(bytes: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     let mut at = 0;
@@ -530,8 +592,9 @@ fn xst_list(bytes: &[u8]) -> Vec<String> {
     out
 }
 
-/// Добавочные данные каждой строки расширенной таблицы строк (`STTB`).
-fn sttb_extra(bytes: &[u8]) -> Vec<Vec<u8>> {
+/// Строки расширенной таблицы строк (`STTB`, UTF-16) и добавочные
+/// данные каждой.
+fn sttb(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
     if u16_at(bytes, 0) != Some(0xFFFF) {
         return Vec::new();
     }
@@ -543,11 +606,20 @@ fn sttb_extra(bytes: &[u8]) -> Vec<Vec<u8>> {
         let Some(len) = u16_at(bytes, at).map(usize::from) else {
             break;
         };
+        let units: Vec<u16> = (0..len)
+            .map_while(|k| u16_at(bytes, at + 2 + k * 2))
+            .collect();
         at += 2 + len * 2;
-        out.push(bytes.get(at..at + extra).unwrap_or_default().to_vec());
+        let data = bytes.get(at..at + extra).unwrap_or_default().to_vec();
+        out.push((String::from_utf16_lossy(&units), data));
         at += extra;
     }
     out
+}
+
+/// Добавочные данные каждой строки расширенной таблицы строк (`STTB`).
+fn sttb_extra(bytes: &[u8]) -> Vec<Vec<u8>> {
+    sttb(bytes).into_iter().map(|(_, extra)| extra).collect()
 }
 
 /// Таблица, которая сейчас собирается.
@@ -602,6 +674,21 @@ impl Builder<'_> {
 
         for (offset, ch) in chars.iter().enumerate() {
             let cp = range.start + offset as u32;
+            for (i, (name, range)) in self.notes.bookmarks.iter().enumerate() {
+                if range.start == cp {
+                    content.push(Inline::BookmarkStart(Bookmark {
+                        id: i.to_string(),
+                        name: name.clone(),
+                    }));
+                    run_key = None;
+                }
+            }
+            for (i, (_, range)) in self.notes.bookmarks.iter().enumerate() {
+                if range.end == cp {
+                    content.push(Inline::BookmarkEnd(i.to_string()));
+                    run_key = None;
+                }
+            }
             if story == Story::Main {
                 for (id, _) in self.notes.comments.iter().filter(|(_, r)| r.start == cp) {
                     content.push(Inline::CommentStart(id.clone()));
@@ -657,7 +744,20 @@ impl Builder<'_> {
                     .iter()
                     .position(|&c| c == cp)
                     .map(|i| RunContent::CommentReference(i.to_string())),
-                // Картинки и прочие особые знаки — позже.
+                // Картинки; знак без картинки (данные поля, фигура) пропускаем.
+                0x01 | 0x08 if in_code => continue,
+                0x01 | 0x08 => {
+                    let picture = if ch.code == 0x01 {
+                        self.inline_picture(ch)
+                    } else {
+                        self.floating_picture(cp, story)
+                    };
+                    match picture {
+                        Some(picture) => Some(RunContent::Picture(picture)),
+                        None => continue,
+                    }
+                }
+                // Прочие особые знаки — позже.
                 code if code < 0x20 && code != 0x09 => continue,
                 code => {
                     let s = String::from_utf16_lossy(&[code]);
@@ -862,6 +962,40 @@ impl Builder<'_> {
     }
 
     /// Добавочное оформление куска (после «быстрого сохранения»).
+    /// Картинка в строке: знак 0x01 со ссылкой в поток `Data`
+    /// (`sprmCPicLocation`).
+    fn inline_picture(&self, ch: &Char) -> Option<Picture> {
+        let direct = find(self.chpx, ch.fc).map_or(&[][..], |r| r.grpprl.as_slice());
+        let all: Vec<_> = [direct, self.prc(ch)].into_iter().flat_map(sprms).collect();
+        // Данные поля (`sprmCFData`) — не картинка.
+        if all
+            .iter()
+            .any(|(sprm, op)| *sprm == 0x0806 && op.first() != Some(&0))
+        {
+            return None;
+        }
+        let offset = all
+            .iter()
+            .filter(|(sprm, _)| *sprm == 0x6A03)
+            .filter_map(|(_, op)| u32_at(op, 0))
+            .next_back()?;
+        pictures::inline(self.data, offset as usize, self.media)
+    }
+
+    /// Плавающая картинка у знака привязки 0x08 в позиции `cp`.
+    fn floating_picture(&self, cp: u32, story: Story) -> Option<Picture> {
+        let (shapes, cp) = match story {
+            Story::Main => (self.shapes_main, cp),
+            Story::Header => (
+                self.shapes_headers,
+                cp.checked_sub(self.stories.headers_start())?,
+            ),
+            _ => return None,
+        };
+        let (_, fspa) = shapes.iter().find(|(at, _)| *at == cp)?;
+        self.drawings.floating(fspa, self.media)
+    }
+
     fn prc(&self, ch: &Char) -> &[u8] {
         self.pieces
             .get(ch.piece)
@@ -920,10 +1054,12 @@ fn drop_plain_level(props: &mut ParagraphProps) {
 
 /// Содержимое абзаца без пустых фрагментов.
 fn take_content(content: &mut Vec<Inline>) -> Vec<Inline> {
-    std::mem::take(content)
-        .into_iter()
-        .filter(|i| !matches!(i, Inline::Run(r) if r.content.is_empty()))
-        .collect()
+    links::hyperlinks(
+        std::mem::take(content)
+            .into_iter()
+            .filter(|i| !matches!(i, Inline::Run(r) if r.content.is_empty()))
+            .collect(),
+    )
 }
 
 fn text(s: &str) -> RunContent {

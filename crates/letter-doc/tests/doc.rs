@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use letter_doc::{ReadError, is_doc, read, read_file};
 use letter_model::{
     Block, Border, Color, Document, HeaderFooter, HeaderFooters, Inline, ListCounters, NoteKind,
-    Paragraph, RunContent, StyleKind, Table, Twips,
+    Paragraph, Picture, RunContent, StyleKind, Table, Twips,
 };
 
 const FIXTURES: &[&str] = &[
@@ -27,6 +27,9 @@ const FIXTURES: &[&str] = &[
     "sections",
     "borders",
     "cells",
+    "links",
+    "image",
+    "floating",
 ];
 
 fn dir() -> PathBuf {
@@ -425,6 +428,132 @@ fn cell_borders_shading_and_row_heights() {
 }
 
 #[test]
+fn hyperlinks_and_bookmarks() {
+    let (doc, docx) = (doc("links"), docx("links"));
+    let links = |d: &Document| {
+        paragraphs(d)
+            .into_iter()
+            .flat_map(|p| &p.content)
+            .filter_map(|i| match i {
+                Inline::Run(r) => r
+                    .props
+                    .link
+                    .as_ref()
+                    .map(|l| (r.plain_text(), l.target.clone(), l.anchor.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(links(&doc), links(&docx));
+    assert_eq!(links(&doc).len(), 2);
+    let bookmarks = |d: &Document| {
+        paragraphs(d)
+            .into_iter()
+            .flat_map(|p| &p.content)
+            .filter_map(|i| match i {
+                Inline::BookmarkStart(b) => Some(b.name.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(bookmarks(&doc), bookmarks(&docx));
+    // Поля ссылок в тексте не остаются.
+    assert!(
+        !paragraphs(&doc)
+            .iter()
+            .any(|p| p.content.iter().any(|i| matches!(
+                i,
+                Inline::Run(r) if r.content.iter().any(|c| matches!(c, RunContent::FieldChar(_)))
+            )))
+    );
+}
+
+#[test]
+fn document_properties() {
+    let (doc, docx) = (doc("links"), docx("links"));
+    let (core, original) = (&doc.properties.core, &docx.properties.core);
+    assert_eq!(core.title.as_deref(), Some("Ссылки"));
+    assert_eq!(core.title, original.title);
+    assert_eq!(core.creator, original.creator);
+    assert_eq!(core.created, original.created);
+    assert_eq!(core.modified, original.modified);
+}
+
+/// Картинки документа по порядку.
+fn pictures(doc: &Document) -> Vec<&Picture> {
+    paragraphs(doc)
+        .into_iter()
+        .flat_map(|p| &p.content)
+        .filter_map(|i| match i {
+            Inline::Run(r) => Some(&r.content),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|c| match c {
+            RunContent::Picture(p) => Some(p),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Размеры почти равны: LibreOffice округляет их до twip.
+fn close(a: i64, b: i64) -> bool {
+    (a - b).abs() <= 1000
+}
+
+#[test]
+fn inline_and_floating_pictures() {
+    for name in ["image", "floating"] {
+        let (doc, docx) = (doc(name), docx(name));
+        let (all, original) = (pictures(&doc), pictures(&docx));
+        assert_eq!(all.len(), original.len(), "{name}");
+        for (p, o) in all.iter().zip(&original) {
+            assert!(
+                close(p.width, o.width) && close(p.height, o.height),
+                "{name}"
+            );
+            // Те же байты картинки, что в .docx.
+            let (image, source) = (p.image.as_ref().unwrap(), o.image.as_ref().unwrap());
+            assert_eq!(image.bytes, source.bytes, "{name}");
+            assert!(image.name.ends_with(".png"));
+            assert_eq!(p.anchor.is_some(), o.anchor.is_some(), "{name}");
+        }
+    }
+    let doc = doc("floating");
+    let all = pictures(&doc);
+    let first = all[0].anchor.as_ref().unwrap();
+    let original = docx("floating");
+    let expected = pictures(&original)[0].anchor.clone().unwrap();
+    assert_eq!(first.horizontal, expected.horizontal);
+    assert_eq!(first.vertical, expected.vertical);
+    assert_eq!(first.wrap, expected.wrap);
+    assert_eq!(first.distance, expected.distance);
+    let behind = all[1].anchor.as_ref().unwrap();
+    assert!(behind.behind_text);
+    assert_eq!(
+        behind.horizontal.placement,
+        letter_model::Placement::Align(letter_model::AnchorAlign::Center)
+    );
+}
+
+#[test]
+fn pictures_survive_saving_as_docx() {
+    // Картинки из .doc сохраняются в .docx и читаются обратно.
+    let doc = doc("floating");
+    let bytes = letter_docx::write_bytes(&doc).unwrap();
+    let back = letter_docx::read_bytes(&bytes).unwrap();
+    let (before, after) = (pictures(&doc), pictures(&back));
+    assert_eq!(after.len(), before.len());
+    for (a, b) in before.iter().zip(&after) {
+        assert_eq!(
+            a.image.as_ref().map(|i| &i.bytes),
+            b.image.as_ref().map(|i| &i.bytes)
+        );
+        assert_eq!(a.anchor, b.anchor);
+    }
+}
+
+#[test]
 fn russian_text_and_fonts() {
     let doc = doc("ru-en");
     assert!(doc.plain_text().contains("Привет") || doc.plain_text().contains('ё'));
@@ -435,15 +564,17 @@ fn russian_text_and_fonts() {
 fn broken_files_are_errors_not_crashes() {
     assert!(matches!(read(b"not a doc"), Err(ReadError::NotADoc)));
     assert!(!is_doc(b"PK\x03\x04"));
-    let bytes = std::fs::read(dir().join("doc/table.doc")).unwrap();
-    assert!(is_doc(&bytes));
     // Обрезанные и испорченные копии: только ошибки, без падений.
-    for len in (0..bytes.len()).step_by(997) {
-        let _ = read(&bytes[..len]);
-    }
-    for at in (0..bytes.len()).step_by(61) {
-        let mut broken = bytes.clone();
-        broken[at] ^= 0xA5;
-        let _ = read(&broken);
+    for name in ["table", "floating", "lists"] {
+        let bytes = std::fs::read(dir().join(format!("doc/{name}.doc"))).unwrap();
+        assert!(is_doc(&bytes));
+        for len in (0..bytes.len()).step_by(997) {
+            let _ = read(&bytes[..len]);
+        }
+        for at in (0..bytes.len()).step_by(61) {
+            let mut broken = bytes.clone();
+            broken[at] ^= 0xA5;
+            let _ = read(&broken);
+        }
     }
 }
