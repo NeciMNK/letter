@@ -107,6 +107,56 @@ def table() -> Document:
     return doc
 
 
+def set_cell(cell, fill: str | None, sides: dict[str, tuple[str, int, str]]) -> None:
+    """Заливка (`w:shd`) и границы (`w:tcBorders`) ячейки: сторона →
+    (вид, толщина в 1/8 пт, цвет)."""
+    tcpr = cell._tc.get_or_add_tcPr()
+    if sides:
+        borders = etree.SubElement(tcpr, qn("w:tcBorders"))
+        for side, (style, size, color) in sides.items():
+            border = etree.SubElement(borders, qn(f"w:{side}"))
+            border.set(qn("w:val"), style)
+            border.set(qn("w:sz"), str(size))
+            border.set(qn("w:space"), "0")
+            border.set(qn("w:color"), color)
+    if fill:
+        shd = etree.SubElement(tcpr, qn("w:shd"))
+        shd.set(qn("w:val"), "clear")
+        shd.set(qn("w:color"), "auto")
+        shd.set(qn("w:fill"), fill)
+
+
+def set_row_height(row, twips: int, rule: str) -> None:
+    trpr = row._tr.get_or_add_trPr()
+    height = etree.SubElement(trpr, qn("w:trHeight"))
+    height.set(qn("w:val"), str(twips))
+    height.set(qn("w:hRule"), rule)
+
+
+def cells() -> Document:
+    """Таблица без стиля: свои границы и заливка ячеек, строка-заголовок,
+    высота строк «ровно» и «не меньше»."""
+    doc = new_document("Ячейки таблицы")
+    doc.add_paragraph("A table with shaded cells and its own borders:")
+    t = doc.add_table(rows=3, cols=2)
+    line = ("single", 8, "C00000")
+    box = {side: line for side in ("top", "left", "bottom", "right")}
+    for r, row in enumerate(t.rows):
+        for c, cell in enumerate(row.cells):
+            cell.text = f"Cell {r + 1}.{c + 1}"
+            fill = "D9E2F3" if r == 0 else ("FFF2CC" if (r, c) == (2, 1) else None)
+            sides = dict(box)
+            if (r, c) == (1, 0):
+                sides["bottom"] = ("double", 6, "auto")
+            set_cell(cell, fill, sides)
+    trpr = t.rows[0]._tr.get_or_add_trPr()
+    etree.SubElement(trpr, qn("w:tblHeader"))
+    set_row_height(t.rows[0], 600, "exact")
+    set_row_height(t.rows[1], 400, "atLeast")
+    doc.add_paragraph("Text after the table.")
+    return doc
+
+
 def image() -> Document:
     doc = new_document("Картинка")
     img = Image.new("RGB", (200, 120), (255, 255, 255))
@@ -1087,6 +1137,7 @@ FIXTURES = {
     "headings.docx": headings,
     "lists.docx": lists,
     "table.docx": table,
+    "cells.docx": cells,
     "image.docx": image,
     "floating.docx": floating,
     "sections.docx": sections,

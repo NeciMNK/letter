@@ -17,6 +17,7 @@
 | `sections.docx` | Разделы: на текущей странице с двумя колонками, альбомный, с нечётной страницы |
 | `notes.docx` | Две сноски и концевая сноска (с чертами-разделителями) |
 | `comments.docx` | Два примечания: на первое есть ответ, второе отмечено «решено» (части `comments.xml` и `commentsExtended.xml`, как у Word) |
+| `cells.docx` | Таблица без стиля: свои границы и заливка ячеек, строка-заголовок, высота строк «ровно» и «не меньше» |
 | `borders.docx` | Границы и заливка абзацев (рамка вокруг двух абзацев, линия снизу, заливка), цвет и рамка страницы |
 | `watermark.docx` | Подложка «ОБРАЗЕЦ» (фигура VML с текстом в верхнем колонтитуле), как её вставляет Word |
 | `shapes.docx` | Фигуры DrawingML, как их пишет Word (`mc:AlternateContent`): надпись, стрелка, пунктирный овал за текстом, линия со стрелкой и свой контур в строке, группа |
@@ -92,7 +93,7 @@ soffice --headless --convert-to odt ../docx/имя.docx
 ## Word 97–2003 (`doc/`)
 
 `plain-text`, `bold-italic`, `headings`, `lists`, `table`, `ru-en`, `pages`,
-`header-footer`, `headers`, `notes`, `comments`, `sections` — наши файлы из `docx/`, сохранённые LibreOffice в формате
+`header-footer`, `headers`, `notes`, `comments`, `sections`, `borders`, `cells` — наши файлы из `docx/`, сохранённые LibreOffice в формате
 Word 97–2003:
 
 ```sh
