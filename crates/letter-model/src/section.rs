@@ -1,6 +1,6 @@
 //! Разделы документа: размер страницы, поля, ориентация.
 
-use crate::{Block, Border, RawXml, Twips};
+use crate::{Block, Border, NumberFormat, RawXml, Twips};
 
 /// Раздел документа. У каждого раздела свои размер страницы и поля;
 /// документ из одного раздела — самый частый случай.
@@ -23,6 +23,16 @@ impl Section {
     }
 }
 
+/// Нумерация страниц раздела, окно «Формат номера страницы».
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PageNumbering {
+    /// «Начать с» (`w:start`); `None` — «продолжить» нумерацию
+    /// предыдущего раздела.
+    pub start: Option<u32>,
+    /// Вид номеров (`w:fmt`); `None` — 1, 2, 3.
+    pub format: Option<NumberFormat>,
+}
+
 /// Параметры страницы раздела. `None` — не задано в файле;
 /// тогда используются [`PageSize::A4`] и [`PageMargins::default`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -43,6 +53,9 @@ pub struct SectionProps {
     pub title_page: bool,
     /// Границы страниц (`w:pgBorders`).
     pub page_borders: Option<PageBorders>,
+    /// Нумерация страниц (`w:pgNumType`); `None` — как у предыдущего
+    /// раздела, арабскими цифрами.
+    pub page_numbering: Option<PageNumbering>,
     /// Свойства, которые программа пока не понимает (колонтитулы, колонки,
     /// сетка и т. п.), в порядке из файла.
     pub unknown: Vec<RawXml>,

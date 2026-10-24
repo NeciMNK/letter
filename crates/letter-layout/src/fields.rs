@@ -3,11 +3,18 @@
 //! заменяется номером этой страницы. Остальные поля показывают свой
 //! сохранённый результат.
 
-use letter_model::{Block, Field, Paragraph, fields, set_field_result};
+use letter_model::{Block, Field, NumberFormat, Paragraph, fields, set_field_result};
+
+/// Номер страницы и вид номеров её раздела.
+pub(crate) type PageNumber<'a> = (usize, Option<&'a NumberFormat>);
 
 /// Блоки `blocks` с номером страницы `page` и числом страниц `pages`
 /// в полях PAGE и NUMPAGES; `None`, если таких полей нет.
-pub(crate) fn with_page_numbers(blocks: &[Block], page: usize, pages: usize) -> Option<Vec<Block>> {
+pub(crate) fn with_page_numbers(
+    blocks: &[Block],
+    page: PageNumber<'_>,
+    pages: usize,
+) -> Option<Vec<Block>> {
     if !blocks.iter().any(has_page_fields) {
         return None;
     }
@@ -21,7 +28,9 @@ pub(crate) fn with_page_numbers(blocks: &[Block], page: usize, pages: usize) -> 
 /// Есть ли в блоке поле PAGE или NUMPAGES.
 fn has_page_fields(block: &Block) -> bool {
     match block {
-        Block::Paragraph(p) => fields(p).iter().any(|f| field_value(f, 1, 1).is_some()),
+        Block::Paragraph(p) => fields(p)
+            .iter()
+            .any(|f| field_value(f, (1, None), 1).is_some()),
         Block::Table(t) => t
             .rows
             .iter()
@@ -32,7 +41,7 @@ fn has_page_fields(block: &Block) -> bool {
     }
 }
 
-fn substitute(block: &mut Block, page: usize, pages: usize) {
+fn substitute(block: &mut Block, page: PageNumber<'_>, pages: usize) {
     match block {
         Block::Paragraph(p) => substitute_paragraph(p, page, pages),
         Block::Table(t) => {
@@ -46,7 +55,7 @@ fn substitute(block: &mut Block, page: usize, pages: usize) {
     }
 }
 
-fn substitute_paragraph(paragraph: &mut Paragraph, page: usize, pages: usize) {
+fn substitute_paragraph(paragraph: &mut Paragraph, page: PageNumber<'_>, pages: usize) {
     for (index, field) in fields(paragraph).iter().enumerate() {
         if let Some(value) = field_value(field, page, pages) {
             set_field_result(paragraph, index, &value);
@@ -56,13 +65,12 @@ fn substitute_paragraph(paragraph: &mut Paragraph, page: usize, pages: usize) {
 
 /// Значение поля: номер страницы или число страниц в нужном виде
 /// (`\* roman` и т. п.); `None` — другое поле.
-fn field_value(field: &Field, page: usize, pages: usize) -> Option<String> {
-    let number = match field.name().as_str() {
-        "PAGE" => page,
-        "NUMPAGES" => pages,
-        _ => return None,
-    };
-    Some(field.format_number(number))
+fn field_value(field: &Field, page: PageNumber<'_>, pages: usize) -> Option<String> {
+    match field.name().as_str() {
+        "PAGE" => Some(field.format_page_number(page.0, page.1)),
+        "NUMPAGES" => Some(field.format_number(pages)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -112,7 +120,7 @@ mod tests {
             code("NUMPAGES"),
             field_char("end"),
         ])];
-        let filled = with_page_numbers(&blocks, 3, 12).unwrap();
+        let filled = with_page_numbers(&blocks, (3, None), 12).unwrap();
         assert_eq!(text(&filled), "Page 3 of 12");
     }
 
@@ -125,6 +133,6 @@ mod tests {
             RunContent::Text("01.01.2026".into()),
             field_char("end"),
         ])];
-        assert_eq!(with_page_numbers(&blocks, 2, 2), None);
+        assert_eq!(with_page_numbers(&blocks, (2, None), 2), None);
     }
 }

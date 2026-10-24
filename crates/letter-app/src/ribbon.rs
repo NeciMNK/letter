@@ -205,6 +205,14 @@ pub enum RibbonCommand {
     NextComment(bool),
     /// Показать или скрыть область примечаний.
     ToggleComments,
+    /// «Следующая сноска» и соседние пункты: к следующей (`forward`) или
+    /// предыдущей ссылке на сноску вида `kind`.
+    NextNote {
+        /// Вид сноски.
+        kind: letter_model::NoteKind,
+        /// Вперёд.
+        forward: bool,
+    },
     /// Развернуть (`true`) или свернуть заголовок у курсора (режим
     /// «Структура»).
     OutlineExpand(bool),
@@ -232,6 +240,10 @@ pub enum RibbonCommand {
     PageNumber(crate::headers::PageNumberPlace),
     /// «Особый колонтитул для первой страницы».
     TitlePage(bool),
+    /// «Разные колонтитулы для чётных и нечётных страниц».
+    EvenOddHeaders(bool),
+    /// Окно «Формат номеров страниц».
+    PageNumberFormat,
     /// «Закрыть окно колонтитулов».
     CloseHeaderFooter,
     /// Обновить поля в выделенном (F9).
@@ -349,6 +361,8 @@ pub struct RibbonInfo {
     pub comments: bool,
     /// «Показать уровень» режима «Структура»; `None` — все уровни.
     pub show_level: Option<u8>,
+    /// Уровень абзаца у курсора в структуре (1–9); `None` — обычный текст.
+    pub outline_level: Option<u8>,
     /// Режим просмотра.
     pub view_mode: crate::view::ViewMode,
     /// Курсор в таблице.
@@ -363,6 +377,8 @@ pub struct RibbonInfo {
     pub story: Option<bool>,
     /// У раздела открытого колонтитула особый колонтитул первой страницы.
     pub title_page: bool,
+    /// «Разные колонтитулы для чётных и нечётных страниц».
+    pub even_odd: bool,
     /// В документе включена автоматическая расстановка переносов.
     pub auto_hyphenation: bool,
     /// Отступ слева абзаца с курсором, твипы.

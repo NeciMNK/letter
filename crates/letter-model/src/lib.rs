@@ -80,7 +80,7 @@ pub use run::{
 };
 pub use section::{
     Columns, HeaderFooter, HeaderFooterKind, HeaderFooters, Orientation, PageBorderDisplay,
-    PageBorders, PageMargins, PageSize, Section, SectionProps, SectionStart,
+    PageBorders, PageMargins, PageNumbering, PageSize, Section, SectionProps, SectionStart,
 };
 pub use shape::{
     ColorBase, ColorMod, ColorScheme, DEFAULT_LINE_WIDTH, DEFAULT_TEXT_INSETS, Frame, Geometry,

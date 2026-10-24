@@ -11,11 +11,12 @@ use crate::ribbon::{RibbonCommand, RibbonInfo, group};
 
 /// Подсказки клавиш вкладки «Колонтитулы» (для проверки).
 #[cfg(test)]
-pub const KEYTIPS: [&str; 5] = [
+pub const KEYTIPS: [&str; 6] = [
     "keytip-hf-header",
     "keytip-hf-footer",
     "keytip-hf-page-number",
     "keytip-hf-title-page",
+    "keytip-hf-even-odd",
     "keytip-hf-close",
 ];
 
@@ -43,21 +44,37 @@ pub fn header_footer(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand
         buttons(ui, info, out, "keytip-hf");
     });
     group(ui, tr("group-options"), |ui| {
-        let mut on = info.title_page;
-        let response = ui
-            .checkbox(&mut on, tr("title-page"))
-            .on_hover_text(tr("title-page-hint"));
-        let command = RibbonCommand::TitlePage(!info.title_page);
-        keytips::tip(
-            ui,
-            &response,
-            Level::Commands,
-            "keytip-hf-title-page",
-            TipAction::Command(command.clone()),
-        );
-        if response.changed() {
-            out.push(command);
-        }
+        ui.vertical(|ui| {
+            let options = [
+                (
+                    info.title_page,
+                    "title-page",
+                    "title-page-hint",
+                    "keytip-hf-title-page",
+                    RibbonCommand::TitlePage(!info.title_page),
+                ),
+                (
+                    info.even_odd,
+                    "even-odd-headers",
+                    "even-odd-headers-hint",
+                    "keytip-hf-even-odd",
+                    RibbonCommand::EvenOddHeaders(!info.even_odd),
+                ),
+            ];
+            for (mut on, label, hint, key, command) in options {
+                let response = ui.checkbox(&mut on, tr(label)).on_hover_text(tr(hint));
+                keytips::tip(
+                    ui,
+                    &response,
+                    Level::Commands,
+                    key,
+                    TipAction::Command(command.clone()),
+                );
+                if response.changed() {
+                    out.push(command);
+                }
+            }
+        });
     });
     group(ui, tr("group-close"), |ui| {
         let response = icon_text_button(ui, Icon::Close, tr("close-header-footer"), true);
@@ -128,6 +145,11 @@ fn buttons(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>, prefix:
                     out.push(RibbonCommand::PageNumber(place));
                     ui.close();
                 }
+            }
+            ui.separator();
+            if ui.button(tr("page-number-format")).clicked() {
+                out.push(RibbonCommand::PageNumberFormat);
+                ui.close();
             }
         },
     );

@@ -10,10 +10,10 @@ use letter_model::{
     Block, Bookmark, BreakKind, Color, Columns, ContentControl, ContentControlRef, Document,
     FieldChar, FieldCharKind, FirstLineIndent, HalfPoints, HeaderFooter, HeaderFooterKind,
     HeaderFooters, Hyperlink, Indentation, Inline, LineSpacing, Note, NoteKind, NoteReference,
-    NumberingRef, Orientation, PageBorderDisplay, PageBorders, PageMargins, PageSize, Paragraph,
-    ParagraphProps, RawXml, Revision, RevisionKind, Run, RunContent, RunFonts, RunProps, Section,
-    SectionProps, SectionStart, Spacing, Symbol, TabStop, ThemeColor, Twips, Underline,
-    VerticalAlign,
+    NumberingRef, Orientation, PageBorderDisplay, PageBorders, PageMargins, PageNumbering,
+    PageSize, Paragraph, ParagraphProps, RawXml, Revision, RevisionKind, Run, RunContent, RunFonts,
+    RunProps, Section, SectionProps, SectionStart, Spacing, Symbol, TabStop, ThemeColor, Twips,
+    Underline, VerticalAlign,
 };
 
 use crate::ReadError;
@@ -857,6 +857,7 @@ fn read_section_props(sect: &Element) -> SectionProps {
                 "footerReference" => read_reference(child, &mut props.footers),
                 "titlePg" => toggle(child).map(|on| props.title_page = on).is_some(),
                 "pgBorders" => set(&mut props.page_borders, read_page_borders(child)),
+                "pgNumType" => set(&mut props.page_numbering, read_page_numbering(child)),
                 _ => false,
             };
         if !understood {
@@ -864,6 +865,29 @@ fn read_section_props(sect: &Element) -> SectionProps {
         }
     }
     props
+}
+
+/// `w:pgNumType`: начальный номер и вид номеров страниц. `None`, если
+/// есть другое (номера глав и т. п.) — тогда элемент сохраняется как есть.
+fn read_page_numbering(element: &Element) -> Option<PageNumbering> {
+    if !element.only_attrs(&["start", "fmt"]) || element.elements().next().is_some() {
+        return None;
+    }
+    let start = match element.w_attr("start") {
+        Some(v) => Some(v.trim().parse().ok()?),
+        None => None,
+    };
+    let format = match element.w_attr("fmt") {
+        Some(v) => Some(
+            crate::numbering::FORMATS
+                .iter()
+                .find(|(name, _)| *name == v)?
+                .1
+                .clone(),
+        ),
+        None => None,
+    };
+    Some(PageNumbering { start, format })
 }
 
 /// `w:pgBorders`: границы страниц. `None`, если внутри непонятное

@@ -52,7 +52,7 @@ use crate::table::{
     BorderPreset, delete_columns, delete_rows, delete_table, in_table, insert_columns, insert_rows,
     insert_table, merge_cells, next_cell, set_cell_borders, set_cell_shading,
 };
-use crate::toc::{insert_toc, update_tocs};
+use crate::toc::{delete_toc, insert_toc, update_tocs};
 use crate::watermark::set_watermark;
 
 /// Правка документа.
@@ -164,6 +164,16 @@ pub enum Command {
         /// Включить.
         on: bool,
     },
+    /// «Разные колонтитулы для чётных и нечётных страниц» (во всём
+    /// документе).
+    EvenOddHeaders(bool),
+    /// «Формат номеров страниц» раздела; `None` — как у предыдущего.
+    PageNumbering {
+        /// Номер раздела.
+        section: usize,
+        /// Начальный номер и вид номеров.
+        numbering: Option<letter_model::PageNumbering>,
+    },
     /// Поставить ссылку (`None` — снять). С текстом — заменить им
     /// выделенное и поставить ссылку на него; без текста — на выделенное,
     /// а если ничего не выделено — на всю ссылку у курсора.
@@ -185,6 +195,8 @@ pub enum Command {
     InsertToc(Box<FieldContext>),
     /// Перестроить все оглавления документа («Обновить таблицу»).
     UpdateToc(Box<FieldContext>),
+    /// «Удалить оглавление» (с курсором, иначе первое).
+    DeleteToc,
     /// «Цвет страницы»; `None` — «Нет цвета».
     PageColor(Option<Color>),
     /// «Расстановка переносов»: автоматическая (`true`) или нет.
@@ -499,6 +511,15 @@ impl History {
                 self.change_settings(doc, selection, |s| s.track_revisions = on);
                 return selection;
             }
+            Command::EvenOddHeaders(on) => {
+                if doc.settings.even_and_odd_headers != on {
+                    let before = Box::new(doc.settings.clone());
+                    doc.settings.even_and_odd_headers = on;
+                    let after = Box::new(doc.settings.clone());
+                    self.push(Patch::Settings { before, after }, selection);
+                }
+                return selection;
+            }
             Command::Watermark(text) => {
                 let before = doc.sections.clone();
                 set_watermark(doc, text.as_deref());
@@ -602,8 +623,10 @@ impl History {
                 | Command::PageSetup(_)
                 | Command::HeaderFooter { .. }
                 | Command::TitlePage { .. }
+                | Command::PageNumbering { .. }
                 | Command::UpdateFields(_)
                 | Command::UpdateToc(_)
+                | Command::DeleteToc
                 | Command::Link { text: None, .. }
                 | Command::AddBookmark(_)
                 | Command::DeleteBookmark(_)
@@ -635,6 +658,7 @@ impl History {
             | Command::DeleteBookmark(_)
             | Command::UpdateFields(_)
             | Command::UpdateToc(_)
+            | Command::DeleteToc
             | Command::InsertToc(_)
             | Command::AcceptRevisions { all: true }
             | Command::RejectRevisions { all: true }
@@ -656,7 +680,9 @@ impl History {
         };
         // Колонтитул меняет свой раздел, где бы ни было выделение.
         let (from, to) = match &command {
-            Command::HeaderFooter { section, .. } | Command::TitlePage { section, .. }
+            Command::HeaderFooter { section, .. }
+            | Command::TitlePage { section, .. }
+            | Command::PageNumbering { section, .. }
                 if *section < doc.sections.len() =>
             {
                 ((*section, 0), (*section, 0))
@@ -672,6 +698,7 @@ impl History {
                 | Command::PageSetup(_)
                 | Command::HeaderFooter { .. }
                 | Command::TitlePage { .. }
+                | Command::PageNumbering { .. }
         );
         let saved = if from.0 == to.0 && !whole {
             Saved::Blocks(doc.sections[from.0].blocks[from.1..=to.1].to_vec())
@@ -798,6 +825,12 @@ impl History {
                 set_title_page(doc, *section, *on);
                 Some(selection)
             }
+            Command::PageNumbering { section, numbering } => {
+                if let Some(section) = doc.sections.get_mut(*section) {
+                    section.props.page_numbering = numbering.clone();
+                }
+                Some(selection)
+            }
             Command::Link { link, text: None } => {
                 let (from, to) = match link_at(doc, selection.focus) {
                     Some((_, from, to)) if selection.is_empty() => (from, to),
@@ -817,6 +850,13 @@ impl History {
             Command::DeleteBookmark(name) => {
                 delete_bookmark(doc, name);
                 Some(selection)
+            }
+            Command::DeleteToc => {
+                delete_toc(doc, start.paragraph);
+                Some(Selection {
+                    anchor: clamp(doc, selection.anchor),
+                    focus: clamp(doc, selection.focus),
+                })
             }
             Command::AcceptRevisions { all } | Command::RejectRevisions { all } => {
                 let range = (!all).then_some((start.paragraph, end.paragraph));
@@ -935,8 +975,10 @@ impl History {
             | Command::PageSetup(_)
             | Command::HeaderFooter { .. }
             | Command::TitlePage { .. }
+            | Command::PageNumbering { .. }
             | Command::UpdateFields(_)
             | Command::UpdateToc(_)
+            | Command::DeleteToc
             | Command::Link { text: None, .. }
             | Command::AddBookmark(_)
             | Command::DeleteBookmark(_)
@@ -950,6 +992,7 @@ impl History {
             | Command::OutlineLevel(_)
             | Command::PageColor(_)
             | Command::AutoHyphenation(_)
+            | Command::EvenOddHeaders(_)
             | Command::Protection(_)
             | Command::WriteProtection(_)
             | Command::TrackChanges(_)
@@ -1459,6 +1502,32 @@ mod tests {
         assert_eq!(d, original);
         h.redo(&mut d);
         assert_eq!(d.sections.len(), 2);
+    }
+
+    #[test]
+    fn page_numbering_and_even_odd_headers_can_be_undone() {
+        let mut d = doc(&["a"]);
+        let mut h = History::new();
+        let numbering = letter_model::PageNumbering {
+            start: Some(3),
+            format: None,
+        };
+        h.run(
+            &mut d,
+            caret(0, 0),
+            Command::PageNumbering {
+                section: 0,
+                numbering: Some(numbering.clone()),
+            },
+        );
+        h.run(&mut d, caret(0, 0), Command::EvenOddHeaders(true));
+        assert_eq!(d.sections[0].props.page_numbering, Some(numbering));
+        assert!(d.settings.even_and_odd_headers);
+        h.undo(&mut d);
+        assert!(!d.settings.even_and_odd_headers);
+        h.undo(&mut d);
+        assert_eq!(d.sections[0].props.page_numbering, None);
+        assert!(!h.can_undo());
     }
 
     #[test]
