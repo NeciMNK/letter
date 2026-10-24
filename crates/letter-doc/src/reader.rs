@@ -9,10 +9,10 @@ use letter_model::{
     SectionProps, Spacing, Style, StyleKind, Table, TableCell, TableRow, TableWidth, Twips,
 };
 
-use crate::ReadError;
 use crate::fib::{Fib, Stories, index, plc, u16_at, u32_at};
 use crate::sprm::{Sep, TableMarks, apply_chp, apply_pap, apply_sep, sprms};
 use crate::styles::{ISTD_NIL, StyleSheet, builtin_name, fonts, style_id};
+use crate::{ReadError, lists};
 
 /// Самый большой поток, который мы согласны прочитать (512 МБ).
 const MAX_STREAM_SIZE: u64 = 512 * 1024 * 1024;
@@ -118,6 +118,15 @@ pub(crate) fn read(data: &[u8]) -> Result<Document, ReadError> {
     let ids = style_ids(&sheet);
     let mut doc = Document::new();
     fill_styles(&mut doc, &sheet, &ids, &fonts);
+    let style_of = |istd: u16| char_style(&ids, istd);
+    doc.numbering = lists::read(
+        fib.part_and_rest(&table, index::PLF_LST),
+        fib.part_and_rest(&table, index::PLF_LFO),
+        &lists::Context {
+            fonts: &fonts,
+            style_id: &style_of,
+        },
+    );
     let builder = Builder {
         chars: &chars,
         pieces: &pieces,
@@ -392,6 +401,7 @@ fn fill_styles(doc: &mut Document, sheet: &StyleSheet, ids: &[Option<String>], f
         for (sprm, op) in sprms(&entry.papx) {
             apply_pap(&mut style.paragraph, &mut marks, sprm, op);
         }
+        drop_plain_level(&mut style.paragraph);
         for (sprm, op) in sprms(&entry.chpx) {
             apply_chp(&mut style.run, sprm, op, fonts, &style_of);
         }
@@ -543,7 +553,7 @@ fn sttb_extra(bytes: &[u8]) -> Vec<Vec<u8>> {
 /// Таблица, которая сейчас собирается.
 #[derive(Default)]
 struct TableState {
-    rows: Vec<(Vec<TableCell>, Vec<i16>)>,
+    rows: Vec<(Vec<TableCell>, TableMarks)>,
     cells: Vec<TableCell>,
     blocks: Vec<Block>,
 }
@@ -678,7 +688,7 @@ impl Builder<'_> {
                     table.cells.push(cell(blocks));
                 }
                 let cells = std::mem::take(&mut table.cells);
-                table.rows.push((cells, marks.cell_edges));
+                table.rows.push((cells, marks));
             } else if marks.in_table || ch.code == 0x07 {
                 table.blocks.push(paragraph.into());
                 if ch.code == 0x07 {
@@ -892,7 +902,19 @@ impl Builder<'_> {
         for (sprm, op) in sprms(self.prc(ch)) {
             apply_pap(&mut props, &mut marks, sprm, op);
         }
+        drop_plain_level(&mut props);
         (props, marks)
+    }
+}
+
+/// Word пишет «уровень 0» и абзацам не из списка: такая ссылка на
+/// список ничего не значит, убираем её.
+fn drop_plain_level(props: &mut ParagraphProps) {
+    if props
+        .numbering
+        .is_some_and(|n| n.id.is_none() && n.level.unwrap_or(0) == 0)
+    {
+        props.numbering = None;
     }
 }
 
@@ -958,12 +980,12 @@ fn flush_table(state: &mut TableState, blocks: &mut Vec<Block>) {
     }
     if !state.cells.is_empty() {
         let cells = std::mem::take(&mut state.cells);
-        state.rows.push((cells, Vec::new()));
+        state.rows.push((cells, TableMarks::default()));
     }
     let mut edges: Vec<i16> = state
         .rows
         .iter()
-        .flat_map(|(_, e)| e.iter().copied())
+        .flat_map(|(_, marks)| marks.cell_edges.iter().copied())
         .collect();
     edges.sort_unstable();
     edges.dedup();
@@ -974,9 +996,20 @@ fn flush_table(state: &mut TableState, blocks: &mut Vec<Block>) {
             .collect(),
         ..Table::default()
     };
-    for (cells, row_edges) in std::mem::take(&mut state.rows) {
+    table.props.borders = state
+        .rows
+        .iter()
+        .find_map(|(_, marks)| marks.table_borders.clone());
+    for (cells, marks) in std::mem::take(&mut state.rows) {
         let mut cells = cells;
+        let row_edges = &marks.cell_edges;
         for (i, cell) in cells.iter_mut().enumerate() {
+            if let Some(look) = marks.cells.get(i) {
+                if !look.borders.is_empty() {
+                    cell.props.borders = Some(look.borders.clone());
+                }
+                cell.props.shading = look.shading.clone().or_else(|| look.shading80.clone());
+            }
             let (Some(&left), Some(&right)) = (row_edges.get(i), row_edges.get(i + 1)) else {
                 continue;
             };
@@ -987,7 +1020,7 @@ fn flush_table(state: &mut TableState, blocks: &mut Vec<Block>) {
             }
         }
         table.rows.push(TableRow {
-            props: Default::default(),
+            props: marks.row,
             raw_props: Vec::new(),
             cells,
         });

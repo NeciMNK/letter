@@ -2,12 +2,13 @@
 //! и значение. Здесь они разбираются и переводятся в модель.
 
 use letter_model::{
-    Alignment, Color, FirstLineIndent, HalfPoints, Highlight, LineSpacing, Orientation,
-    ParagraphProps, RunProps, SectionStart, TabLeader, TabStop, TabStopKind, Twips, Underline,
+    Alignment, Border, Borders, Color, FirstLineIndent, HalfPoints, HeightRule, Highlight,
+    LineSpacing, NumberingRef, Orientation, ParagraphBorders, ParagraphProps, RowHeight, RowProps,
+    RunProps, SectionStart, Shading, TabLeader, TabStop, TabStopKind, Twips, Underline,
     VerticalAlign,
 };
 
-use crate::fib::{i16_at, u16_at};
+use crate::fib::{i16_at, u16_at, u32_at};
 
 /// Свойства подряд (`grpprl`): номер и значение без поля длины.
 pub(crate) fn sprms(grpprl: &[u8]) -> Vec<(u16, &[u8])> {
@@ -178,7 +179,7 @@ pub(crate) fn apply_chp(
 }
 
 /// Признаки абзаца, которых нет в модели: он в таблице, это конец
-/// строки таблицы, ширины ячеек строки.
+/// строки таблицы, ширины ячеек и оформление строки.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct TableMarks {
     /// Абзац внутри таблицы.
@@ -187,6 +188,37 @@ pub(crate) struct TableMarks {
     pub row_end: bool,
     /// Границы ячеек строки (`rgdxaCenter`), если заданы.
     pub cell_edges: Vec<i16>,
+    /// Свойства строки: высота, строка-заголовок.
+    pub row: RowProps,
+    /// Границы и заливка ячеек строки по порядку.
+    pub cells: Vec<CellLook>,
+    /// Границы всей таблицы.
+    pub table_borders: Option<Borders>,
+    /// Стороны абзаца, заданные новыми свойствами (`Brc`): старые
+    /// (`Brc80`, только 16 цветов) их уже не меняют.
+    exact_borders: u8,
+    /// Заливка абзаца задана новым свойством (`Shd`).
+    exact_shading: bool,
+}
+
+/// Границы и заливка одной ячейки.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct CellLook {
+    pub borders: Borders,
+    /// Заливка из нового свойства (`Shd`, любой цвет).
+    pub shading: Option<Shading>,
+    /// Заливка из старого (`Shd80`, 16 цветов) — если нового нет.
+    pub shading80: Option<Shading>,
+}
+
+impl TableMarks {
+    /// Ячейка номер `i`; недостающие добавляются.
+    fn cell(&mut self, i: usize) -> &mut CellLook {
+        if self.cells.len() <= i {
+            self.cells.resize_with(i + 1, CellLook::default);
+        }
+        &mut self.cells[i]
+    }
 }
 
 /// Применяет свойство абзаца. Номер стиля (`sprmPIstd`) здесь не
@@ -233,13 +265,305 @@ pub(crate) fn apply_pap(props: &mut ParagraphProps, marks: &mut TableMarks, sprm
         0x2416 => marks.in_table = u8_of(op) != 0,
         0x6649 => marks.in_table = u16_of(op) > 0,
         0x2417 => marks.row_end = u8_of(op) != 0,
+        0xC60D | 0xC615 => change_tabs(&mut props.tabs, op),
+        // Список (`ilfo`, номер с 1; 0 — не в списке) и уровень.
+        0x460B => {
+            let ilfo = u16_of(op);
+            let id = if ilfo < 0x07FF { u32::from(ilfo) } else { 0 };
+            let level = props.numbering.and_then(|n| n.level);
+            props.numbering = Some(NumberingRef {
+                id: Some(id),
+                level,
+            });
+        }
+        0x260A => {
+            let id = props.numbering.and_then(|n| n.id);
+            props.numbering = Some(NumberingRef {
+                id,
+                level: Some(u8_of(op).min(8)),
+            });
+        }
+        // Границы абзаца: новые (`Brc`) и старые (`Brc80`).
+        0xC64E..=0xC653 | 0x6424..=0x6428 | 0x6629 => {
+            let (side, border, exact) = match sprm {
+                0xC64E..=0xC653 => (usize::from(sprm - 0xC64E), brc(op), true),
+                0x6629 => (5, brc80(op), false),
+                _ => (usize::from(sprm - 0x6424), brc80(op), false),
+            };
+            let bit = 1 << side;
+            if !exact && marks.exact_borders & bit != 0 {
+                return;
+            }
+            if exact {
+                marks.exact_borders |= bit;
+            }
+            let borders = props.borders.get_or_insert_with(ParagraphBorders::default);
+            let slot = match side {
+                0 => &mut borders.top,
+                1 => &mut borders.left,
+                2 => &mut borders.bottom,
+                3 => &mut borders.right,
+                4 => &mut borders.between,
+                _ => &mut borders.bar,
+            };
+            *slot = border;
+            if borders.is_empty() {
+                props.borders = None;
+            }
+        }
+        0xC64D => {
+            props.shading = shd(op);
+            marks.exact_shading = true;
+        }
+        0x442D if !marks.exact_shading => props.shading = shd80(u16_of(op)),
+        _ => apply_tap(marks, sprm, op),
+    }
+}
+
+/// Свойства строки таблицы (`TAP`): ширины, границы и заливка ячеек,
+/// высота строки.
+fn apply_tap(marks: &mut TableMarks, sprm: u16, op: &[u8]) {
+    match sprm {
         0xD608 | 0xD606 => {
             let count = usize::from(u8_of(op));
             marks.cell_edges = (0..=count).filter_map(|i| i16_at(op, 1 + i * 2)).collect();
+            // За границами — ячейки (`TC80`, по 20 байт): флаги, ширина
+            // и четыре старые границы.
+            let cells = 1 + (count + 1) * 2;
+            for i in 0..count {
+                let Some(tc) = op.get(cells + i * 20..cells + (i + 1) * 20) else {
+                    break;
+                };
+                let side = |n: usize| tc.get(4 + n * 4..8 + n * 4).and_then(brc80);
+                let cell = marks.cell(i);
+                cell.borders.top = side(0);
+                cell.borders.left = side(1);
+                cell.borders.bottom = side(2);
+                cell.borders.right = side(3);
+            }
         }
-        0xC60D | 0xC615 => change_tabs(&mut props.tabs, op),
+        // Границы части ячеек: с какой по какую, какие стороны, линия.
+        0xD62F | 0xD620 => {
+            let (first, last, sides) = (u8_of(op), op.get(1), op.get(2));
+            let (Some(&last), Some(&sides)) = (last, sides) else {
+                return;
+            };
+            let rest = op.get(3..).unwrap_or_default();
+            let border = if sprm == 0xD62F {
+                brc(rest)
+            } else {
+                brc80(rest)
+            };
+            for i in usize::from(first)..usize::from(last).min(64) {
+                let cell = marks.cell(i);
+                let slots = [
+                    (1, &mut cell.borders.top),
+                    (2, &mut cell.borders.left),
+                    (4, &mut cell.borders.bottom),
+                    (8, &mut cell.borders.right),
+                ];
+                for (bit, slot) in slots {
+                    if sides & bit != 0 {
+                        slot.clone_from(&border);
+                    }
+                }
+            }
+        }
+        // Заливка ячеек: новая (`Shd` по 10 байт, три части по 22 ячейки)
+        // и старая (`Shd80` по 2 байта).
+        0xD612 | 0xD616 | 0xD60C => {
+            let first = match sprm {
+                0xD612 => 0,
+                0xD616 => 22,
+                _ => 44,
+            };
+            for (i, shd_bytes) in op.as_chunks::<10>().0.iter().enumerate() {
+                marks.cell(first + i).shading = shd(shd_bytes);
+            }
+        }
+        0xD609 => {
+            for (i, shd_bytes) in op.as_chunks::<2>().0.iter().enumerate() {
+                marks.cell(i).shading80 = shd80(u16_of(shd_bytes));
+            }
+        }
+        0xD613 | 0xD605 => {
+            let size = if sprm == 0xD613 { 8 } else { 4 };
+            let side = |n: usize| {
+                let bytes = op.get(n * size..(n + 1) * size)?;
+                if sprm == 0xD613 {
+                    brc(bytes)
+                } else {
+                    brc80(bytes)
+                }
+            };
+            let borders = Borders {
+                top: side(0),
+                left: side(1),
+                bottom: side(2),
+                right: side(3),
+                inside_h: side(4),
+                inside_v: side(5),
+            };
+            marks.table_borders = (!borders.is_empty()).then_some(borders);
+        }
+        0x9407 => {
+            let height = i32::from(i16_of(op));
+            marks.row.height = (height != 0).then(|| RowHeight {
+                value: Twips(height.abs()),
+                rule: if height < 0 {
+                    HeightRule::Exact
+                } else {
+                    HeightRule::AtLeast
+                },
+            });
+        }
+        0x3404 => marks.row.header = (u8_of(op) != 0).then_some(true),
+        0x3403 | 0x3466 => marks.row.cant_split = (u8_of(op) != 0).then_some(true),
         _ => {}
     }
+}
+
+/// Вид линии по номеру (`brcType`) — имя, как в .docx.
+fn border_style(kind: u8) -> &'static str {
+    match kind {
+        2 => "thick",
+        3 => "double",
+        6 => "dotted",
+        7 => "dashed",
+        8 => "dotDash",
+        9 => "dotDotDash",
+        10 => "triple",
+        11 => "thinThickSmallGap",
+        12 => "thickThinSmallGap",
+        13 => "thinThickThinSmallGap",
+        14 => "thinThickMediumGap",
+        15 => "thickThinMediumGap",
+        16 => "thinThickThinMediumGap",
+        17 => "thinThickLargeGap",
+        18 => "thickThinLargeGap",
+        19 => "thinThickThinLargeGap",
+        20 => "wave",
+        21 => "doubleWave",
+        22 => "dashSmallGap",
+        23 => "dashDotStroked",
+        24 => "threeDEmboss",
+        25 => "threeDEngrave",
+        26 => "outset",
+        27 => "inset",
+        _ => "single",
+    }
+}
+
+/// Линия из толщины, вида, отступа и цвета; вид 0 — линии нет (не
+/// задана), 0xFF — убрана.
+fn border(width: u8, kind: u8, flags: u8, color: Option<Color>) -> Option<Border> {
+    match kind {
+        0 => None,
+        0xFF => Some(Border {
+            style: "nil".into(),
+            size: None,
+            space: None,
+            color: None,
+        }),
+        kind => Some(Border {
+            style: border_style(kind).into(),
+            size: Some(u32::from(width)),
+            space: Some(u32::from(flags & 0x1F)),
+            color,
+        }),
+    }
+}
+
+/// Цвет `COLORREF`: красный, зелёный, синий и признак «авто».
+fn colorref(op: &[u8]) -> Option<Color> {
+    match op {
+        [_, _, _, 0xFF, ..] => Some(Color::Auto),
+        [r, g, b, _, ..] => Some(Color::Rgb(*r, *g, *b)),
+        _ => None,
+    }
+}
+
+/// Граница `Brc` (8 байт): цвет, толщина, вид, отступ.
+pub(crate) fn brc(op: &[u8]) -> Option<Border> {
+    let bytes = op.get(..8)?;
+    if u32_at(bytes, 0) == Some(0xFFFF_FFFF) {
+        return border(0, 0xFF, 0, None);
+    }
+    border(bytes[4], bytes[5], bytes[6], colorref(bytes))
+}
+
+/// Старая граница `Brc80` (4 байта): толщина, вид, цвет из 16, отступ.
+pub(crate) fn brc80(op: &[u8]) -> Option<Border> {
+    let bytes = op.get(..4)?;
+    if u32_at(bytes, 0) == Some(0xFFFF_FFFF) {
+        return border(0, 0xFF, 0, None);
+    }
+    border(bytes[0], bytes[1], bytes[3], ico_color(bytes[2]))
+}
+
+/// Узор заливки по номеру (`ipat`) — имя, как в .docx.
+fn shading_pattern(ipat: u16) -> &'static str {
+    match ipat {
+        1 => "solid",
+        2 => "pct5",
+        3 => "pct10",
+        4 => "pct20",
+        5 => "pct25",
+        6 => "pct30",
+        7 => "pct40",
+        8 => "pct50",
+        9 => "pct60",
+        10 => "pct70",
+        11 => "pct75",
+        12 => "pct80",
+        13 => "pct90",
+        14 => "horzStripe",
+        15 => "vertStripe",
+        16 => "reverseDiagStripe",
+        17 => "diagStripe",
+        18 => "horzCross",
+        19 => "diagCross",
+        20 => "thinHorzStripe",
+        21 => "thinVertStripe",
+        22 => "thinReverseDiagStripe",
+        23 => "thinDiagStripe",
+        24 => "thinHorzCross",
+        25 => "thinDiagCross",
+        0xFFFF => "nil",
+        _ => "clear",
+    }
+}
+
+/// Заливка из узора и цветов; пустая (без узора и цвета) — `None`.
+fn shading(ipat: u16, color: Option<Color>, fill: Option<Color>) -> Option<Shading> {
+    let auto = |c: Option<Color>| matches!(c, None | Some(Color::Auto));
+    if ipat == 0 && auto(color) && auto(fill) {
+        return None;
+    }
+    Some(Shading {
+        pattern: shading_pattern(ipat).into(),
+        color,
+        fill,
+    })
+}
+
+/// Заливка `Shd` (10 байт): цвет узора, цвет фона, узор.
+pub(crate) fn shd(op: &[u8]) -> Option<Shading> {
+    let bytes = op.get(..10)?;
+    shading(
+        u16_at(bytes, 8)?,
+        colorref(&bytes[..4]),
+        colorref(&bytes[4..8]),
+    )
+}
+
+/// Старая заливка `Shd80`: цвета из 16 и узор в двух байтах.
+pub(crate) fn shd80(value: u16) -> Option<Shading> {
+    if value == 0xFFFF {
+        return shading(0xFFFF, None, None);
+    }
+    let ico = |shift: u16| ico_color(((value >> shift) & 0x1F) as u8);
+    shading(value >> 10, ico(0), ico(5))
 }
 
 /// Добавляет и убирает позиции табуляции (`PChgTabsPapxOperand`).
@@ -445,5 +769,84 @@ mod tests {
             }]
         );
         assert!(marks.in_table);
+    }
+
+    #[test]
+    fn borders_and_shading() {
+        // Новая граница: цвет 1F4E79, 1 пт, одинарная, отступ 4 пт.
+        let border = brc(&[0x1F, 0x4E, 0x79, 0, 8, 1, 4, 0]).unwrap();
+        assert_eq!(border.style, "single");
+        assert_eq!(border.size, Some(8));
+        assert_eq!(border.space, Some(4));
+        assert_eq!(border.color, Some(Color::Rgb(0x1F, 0x4E, 0x79)));
+        assert_eq!(brc(&[0; 8]), None);
+        assert_eq!(brc80(&[6, 3, 0, 1]).unwrap().style, "double");
+        assert!(brc80(&[0xFF; 4]).unwrap().is_none());
+        // Заливка: узор «нет», фон FFF2CC.
+        let fill = shd(&[0, 0, 0, 0xFF, 0xFF, 0xF2, 0xCC, 0, 0, 0]).unwrap();
+        assert_eq!(fill.fill, Some(Color::Rgb(0xFF, 0xF2, 0xCC)));
+        assert_eq!(fill.pattern, "clear");
+        assert_eq!(shd(&[0, 0, 0, 0xFF, 0, 0, 0, 0xFF, 0, 0]), None);
+        // Старая: фон — жёлтый (7) из 16 цветов.
+        assert_eq!(shd80(7 << 5).unwrap().fill, ico_color(7));
+
+        // Новая граница абзаца главнее старой, в каком бы порядке ни шли.
+        let mut para = ParagraphProps::default();
+        let mut marks = TableMarks::default();
+        apply_pap(
+            &mut para,
+            &mut marks,
+            0xC64E,
+            &[0x12, 0x34, 0x56, 0, 8, 1, 0, 0],
+        );
+        apply_pap(&mut para, &mut marks, 0x6424, &[8, 1, 2, 0]);
+        let top = para.borders.unwrap().top.unwrap();
+        assert_eq!(top.color, Some(Color::Rgb(0x12, 0x34, 0x56)));
+    }
+
+    #[test]
+    fn table_row_properties() {
+        let mut para = ParagraphProps::default();
+        let mut marks = TableMarks::default();
+        apply_pap(&mut para, &mut marks, 0x9407, &(-600i16).to_le_bytes());
+        apply_pap(&mut para, &mut marks, 0x3404, &[1]);
+        // Правая граница у ячеек 0 и 1.
+        apply_pap(
+            &mut para,
+            &mut marks,
+            0xD62F,
+            &[0, 2, 8, 0xC0, 0, 0, 0, 8, 1, 0, 0],
+        );
+        let mut shading = vec![0, 0, 0, 0xFF, 0xD9, 0xE2, 0xF3, 0, 0, 0];
+        shading.extend([0, 0, 0, 0xFF, 0, 0, 0, 0xFF, 0, 0]);
+        apply_pap(&mut para, &mut marks, 0xD612, &shading);
+        assert_eq!(
+            marks.row.height,
+            Some(RowHeight {
+                value: Twips(600),
+                rule: HeightRule::Exact
+            })
+        );
+        assert_eq!(marks.row.header, Some(true));
+        assert_eq!(marks.cells.len(), 2);
+        assert!(marks.cells[1].borders.right.is_some());
+        assert!(marks.cells[1].borders.left.is_none());
+        assert!(marks.cells[0].shading.is_some());
+        assert!(marks.cells[1].shading.is_none());
+    }
+
+    #[test]
+    fn list_reference() {
+        let mut para = ParagraphProps::default();
+        let mut marks = TableMarks::default();
+        apply_pap(&mut para, &mut marks, 0x260A, &[2]);
+        apply_pap(&mut para, &mut marks, 0x460B, &[3, 0]);
+        assert_eq!(
+            para.numbering,
+            Some(NumberingRef {
+                id: Some(3),
+                level: Some(2)
+            })
+        );
     }
 }

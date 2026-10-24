@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use letter_doc::{ReadError, is_doc, read, read_file};
 use letter_model::{
-    Block, Document, HeaderFooter, HeaderFooters, Inline, NoteKind, Paragraph, RunContent,
-    StyleKind, Twips,
+    Block, Border, Color, Document, HeaderFooter, HeaderFooters, Inline, ListCounters, NoteKind,
+    Paragraph, RunContent, StyleKind, Table, Twips,
 };
 
 const FIXTURES: &[&str] = &[
@@ -25,6 +25,8 @@ const FIXTURES: &[&str] = &[
     "notes",
     "comments",
     "sections",
+    "borders",
+    "cells",
 ];
 
 fn dir() -> PathBuf {
@@ -316,6 +318,110 @@ fn several_sections() {
             "раздел {i}"
         );
     }
+}
+
+/// Номера пунктов списков у абзацев по порядку (`None` — не в списке).
+fn list_labels(doc: &Document) -> Vec<(String, Option<String>)> {
+    let mut counters = ListCounters::default();
+    paragraphs(doc)
+        .into_iter()
+        .map(|p| {
+            let label = doc
+                .resolve_paragraph(&p.props)
+                .numbering
+                .and_then(|(id, level)| counters.next(&doc.numbering, id, level))
+                .map(|label| label.text);
+            (p.plain_text(), label)
+        })
+        .collect()
+}
+
+#[test]
+fn list_numbers_and_bullets() {
+    let (doc, docx) = (doc("lists"), docx("lists"));
+    let labels = list_labels(&doc);
+    assert_eq!(labels, list_labels(&docx));
+    assert_eq!(labels[6].1.as_deref(), Some("2."));
+    // Маркер — знак шрифта Symbol, как в .docx.
+    let (id, level) = doc
+        .resolve_paragraph(&paragraphs(&doc)[1].props)
+        .numbering
+        .unwrap();
+    let bullet = doc.numbering.level(id, level).unwrap();
+    assert_eq!(bullet.run.fonts.ascii.as_deref(), Some("Symbol"));
+    assert!(bullet.paragraph.indentation.left.is_some());
+}
+
+/// Вид и толщина линии.
+fn line(border: &Option<Border>) -> Option<(String, Option<u32>)> {
+    border.as_ref().map(|b| (b.style.clone(), b.size))
+}
+
+#[test]
+fn paragraph_borders_and_shading() {
+    let (doc, docx) = (doc("borders"), docx("borders"));
+    let (all, original) = (paragraphs(&doc), paragraphs(&docx));
+    assert_eq!(all.len(), original.len());
+    for (p, o) in all.iter().zip(&original) {
+        assert_eq!(p.props.shading, o.props.shading, "{}", p.plain_text());
+        assert_eq!(p.props.borders.is_some(), o.props.borders.is_some());
+    }
+    let frame = all[0].props.borders.as_ref().unwrap();
+    let expected = original[0].props.borders.as_ref().unwrap();
+    assert_eq!(frame.top, expected.top);
+    assert_eq!(frame.left, expected.left);
+    assert_eq!(frame.right, expected.right);
+    // LibreOffice пишет рамку двух абзацев без линии между ними: верх
+    // у первого, низ у второго.
+    assert_eq!(
+        all[1].props.borders.as_ref().unwrap().bottom,
+        expected.bottom
+    );
+    let heading = all[2].props.borders.as_ref().unwrap();
+    assert_eq!(line(&heading.bottom), Some(("double".into(), Some(6))));
+    assert_eq!(heading.top, None);
+}
+
+fn first_table(doc: &Document) -> &Table {
+    doc.sections[0]
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Table(t) => Some(t),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[test]
+fn cell_borders_shading_and_row_heights() {
+    let (doc, docx) = (doc("cells"), docx("cells"));
+    let (table, original) = (first_table(&doc), first_table(&docx));
+    assert_eq!(table.rows.len(), original.rows.len());
+    for (row, o) in table.rows.iter().zip(&original.rows) {
+        assert_eq!(row.props.height, o.props.height);
+        assert_eq!(row.props.header, o.props.header);
+        for (cell, o) in row.cells.iter().zip(&o.cells) {
+            assert_eq!(cell.props.shading, o.props.shading);
+            let (b, o) = (
+                cell.props.borders.as_ref().unwrap(),
+                o.props.borders.as_ref().unwrap(),
+            );
+            for (side, original) in [
+                (&b.top, &o.top),
+                (&b.left, &o.left),
+                (&b.bottom, &o.bottom),
+                (&b.right, &o.right),
+            ] {
+                assert_eq!(line(side), line(original));
+            }
+        }
+    }
+    let red = table.rows[0].cells[0].props.borders.as_ref().unwrap();
+    assert_eq!(
+        red.top.as_ref().and_then(|b| b.color),
+        Some(Color::Rgb(0xC0, 0, 0))
+    );
 }
 
 #[test]

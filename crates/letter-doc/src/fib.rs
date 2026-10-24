@@ -45,6 +45,9 @@ pub(crate) mod index {
     /// Ссылки на концевые сноски (`PlcfendRef`) и их текст (`PlcfendTxt`).
     pub const PLCFEND_REF: usize = 46;
     pub const PLCFEND_TXT: usize = 47;
+    /// Списки (`PlfLst`, за ним — уровни `LVL`) и их варианты (`PlfLfo`).
+    pub const PLF_LST: usize = 73;
+    pub const PLF_LFO: usize = 74;
 }
 
 /// Части текста документа по порядку (`CP`): основной текст, сноски,
@@ -160,6 +163,16 @@ impl Fib {
             return None;
         }
         table.get(fc as usize..(fc as usize).checked_add(lcb as usize)?)
+    }
+
+    /// Табличный поток от начала части до конца: у некоторых частей
+    /// (списки) данные продолжаются за указанной длиной.
+    pub fn part_and_rest<'t>(&self, table: &'t [u8], index: usize) -> Option<&'t [u8]> {
+        let &(fc, lcb) = self.fc_lcb.get(index)?;
+        if lcb == 0 {
+            return None;
+        }
+        table.get(fc as usize..)
     }
 }
 
