@@ -18,6 +18,7 @@ use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
 use crate::WriteError;
+use crate::kind::{FileKind, MACRO_CONTENT_TYPES, MACRO_RELATIONSHIPS};
 use crate::package::{CONTENT_TYPES_PART, attr, normalize_part_name, rels_part_for};
 use crate::properties;
 use crate::serialize::{self, escape_attr};
@@ -74,15 +75,24 @@ const CT_APP: &str = "application/vnd.openxmlformats-officedocument.extended-pro
 const NS_RELS: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
 const NS_CONTENT_TYPES: &str = "http://schemas.openxmlformats.org/package/2006/content-types";
 
-/// Записывает документ в формате .docx.
-pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), WriteError> {
+/// Записывает документ в формате .docx. Если задана разновидность
+/// файла `kind`, главная часть получает её тип содержимого, а в файл без
+/// макросов не попадают части макросов; иначе разновидность остаётся
+/// той, из которой документ был прочитан.
+pub(crate) fn write<W: Write + Seek>(
+    doc: &Document,
+    kind: Option<FileKind>,
+    writer: W,
+) -> Result<(), WriteError> {
     let empty = SourcePackage::default();
-    let source = doc.source.as_ref().unwrap_or(&empty);
-    let main = if source.main_part.is_empty() {
+    let original = doc.source.as_ref().unwrap_or(&empty);
+    let main = if original.main_part.is_empty() {
         "word/document.xml".to_string()
     } else {
-        source.main_part.clone()
+        original.main_part.clone()
     };
+    let retargeted = kind.map(|kind| retarget(original, &main, kind));
+    let source = retargeted.as_ref().unwrap_or(original);
 
     // Части в порядке записи: имя и содержимое.
     let mut parts: Vec<(String, Cow<'_, [u8]>)> = Vec::new();
@@ -356,6 +366,113 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
     }
     zip.finish()?;
     Ok(())
+}
+
+/// Копия исходного пакета для записи файлом разновидности `kind`: тип
+/// содержимого главной части `main` — от `kind`, а если в `kind` нельзя
+/// хранить макросы, из пакета убраны части макросов, их файлы связей
+/// и связи, которые на них ведут.
+fn retarget(source: &SourcePackage, main: &str, kind: FileKind) -> SourcePackage {
+    let mut result = source.clone();
+    // Тип меняется на месте, чтобы порядок записей не сдвигался.
+    match result
+        .content_types
+        .iter_mut()
+        .find(|(part, _)| part.eq_ignore_ascii_case(main))
+    {
+        Some((_, content_type)) => *content_type = kind.content_type().to_string(),
+        None => result
+            .content_types
+            .push((main.to_string(), kind.content_type().to_string())),
+    }
+    if kind.has_macros() {
+        return result;
+    }
+
+    // Части макросов: по типу содержимого и по типу связи на них.
+    let mut removed: Vec<String> = source
+        .parts
+        .iter()
+        .filter(|p| {
+            content_type_of_part(source, &p.name).is_some_and(|t| MACRO_CONTENT_TYPES.contains(&t))
+        })
+        .map(|p| p.name.clone())
+        .collect();
+    let links = Links::new(source);
+    let mut rels_files = Vec::new();
+    for part in &source.parts {
+        if let Some(from) = source_of_rels(&part.name) {
+            let rels = links.load(&from, &part.name);
+            for rel in &rels {
+                if !rel.external && MACRO_RELATIONSHIPS.iter().any(|s| rel.kind.ends_with(s)) {
+                    removed.push(rel.target.clone());
+                }
+            }
+            rels_files.push((part.name.clone(), rels));
+        }
+    }
+    // Файлы связей самих частей макросов тоже не нужны.
+    let removed_rels: Vec<String> = removed.iter().map(|r| rels_part_for(r)).collect();
+    let is_removed = |name: &str| {
+        removed
+            .iter()
+            .chain(&removed_rels)
+            .any(|r| r.eq_ignore_ascii_case(name))
+    };
+    result.parts.retain(|p| !is_removed(&p.name));
+    result.content_types.retain(|(part, _)| !is_removed(part));
+    for (name, rels) in rels_files {
+        if is_removed(&name) {
+            continue;
+        }
+        let before = rels.len();
+        let kept: Vec<Relationship> = rels
+            .into_iter()
+            .filter(|r| r.external || !is_removed(&r.target))
+            .collect();
+        if let Some(part) = result
+            .parts
+            .iter_mut()
+            .find(|p| p.name.eq_ignore_ascii_case(&name))
+            && kept.len() != before
+        {
+            part.data = relationships_xml(&kept).into_bytes();
+        }
+    }
+    result
+}
+
+/// Часть, связи которой лежат в файле связей `rels_name`
+/// (`word/_rels/document.xml.rels` → `word/document.xml`, `_rels/.rels` →
+/// пустая строка — сам пакет). Для других имён — `None`.
+fn source_of_rels(rels_name: &str) -> Option<String> {
+    let (dir, file) = rels_name.rsplit_once('/').unwrap_or(("", rels_name));
+    let name = file.strip_suffix(".rels")?;
+    let dir = if dir.eq_ignore_ascii_case("_rels") {
+        ""
+    } else {
+        dir.strip_suffix("/_rels")?
+    };
+    Some(join(dir, name))
+}
+
+/// Тип содержимого части исходного пакета: свой (`Override`) или по
+/// расширению имени (`Default`).
+pub(crate) fn content_type_of_part<'s>(source: &'s SourcePackage, name: &str) -> Option<&'s str> {
+    let by_override = source
+        .content_types
+        .iter()
+        .find(|(part, _)| part.eq_ignore_ascii_case(name));
+    let by_extension = || {
+        let (_, extension) = name.rsplit_once('.')?;
+        source
+            .default_content_types
+            .iter()
+            .find(|(ext, _)| ext.eq_ignore_ascii_case(extension))
+    };
+    by_override
+        .or_else(by_extension)
+        .map(|(_, content_type)| content_type.as_str())
 }
 
 /// Проверяет, что связь каждого рисунка ведёт к его картинке. Если нет

@@ -41,6 +41,8 @@ pub struct DocumentInfo {
     pub path: Option<PathBuf>,
     /// Изменён после сохранения.
     pub modified: bool,
+    /// Сохраняется с паролем на открытие.
+    pub encrypted: bool,
     /// Страниц.
     pub pages: usize,
     /// Страница с курсором, с нуля.
@@ -252,7 +254,7 @@ impl Backstage {
                     return;
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| match page {
-                    Page::Info => info_page(ui, info),
+                    Page::Info => info_page(ui, info, &mut out),
                     Page::New => new_page(ui, &mut out),
                     Page::Open | Page::Print => open_page(ui, info, &mut out),
                     Page::Export => export_page(ui, &mut out),
@@ -280,7 +282,7 @@ fn heading(ui: &mut Ui, text: &str) {
 }
 
 /// «Сведения»: имя, путь, свойства и статистика.
-fn info_page(ui: &mut Ui, info: &BackstageInfo) {
+fn info_page(ui: &mut Ui, info: &BackstageInfo, out: &mut Vec<RibbonCommand>) {
     heading(ui, tr("backstage-info"));
     let Some(document) = &info.document else {
         return;
@@ -294,6 +296,16 @@ fn info_page(ui: &mut Ui, info: &BackstageInfo) {
         ui.label(
             RichText::new(tr("backstage-unsaved-changes")).color(Color32::from_rgb(160, 60, 0)),
         );
+    }
+    ui.add_space(16.0);
+    ui.label(RichText::new(tr("backstage-protect")).size(16.0));
+    ui.label(if document.encrypted {
+        tr("backstage-encrypted")
+    } else {
+        tr("backstage-not-encrypted")
+    });
+    if ui.button(tr("backstage-encrypt")).clicked() {
+        out.push(RibbonCommand::EncryptDialog);
     }
     ui.add_space(16.0);
     ui.label(RichText::new(tr("backstage-properties")).size(16.0));
