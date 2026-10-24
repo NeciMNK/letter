@@ -66,8 +66,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Установить cargo-packager
         run: cargo install cargo-packager --version 0.11.8 --locked
+      # Путь для файлов — от корня репозитория: относительный cargo-packager
+      # считает от папки крейта.
       - name: Собрать установщики
-        run: cargo packager --release --packages letter-app --formats ${{ matrix.formats }} --out-dir dist
+        run: cargo packager --release --packages letter-app --formats ${{ matrix.formats }} --out-dir "${{ github.workspace }}/dist"
       # Портативная версия: программа, папка letter-data (включает хранение
       # настроек рядом с программой) и инструкция.
       - name: Портативная версия
