@@ -2076,6 +2076,7 @@ dependencies = [
  "letter-rtf",
  "letter-text",
  "rfd",
+ "spellbook",
  "unic-langid",
 ]
 
@@ -2126,8 +2127,12 @@ dependencies = [
 name = "letter-editor"
 version = "0.1.0"
 dependencies = [
+ "encoding_rs",
+ "getrandom 0.4.3",
  "letter-layout",
  "letter-model",
+ "sha2",
+ "spellbook",
  "unicode-segmentation",
 ]
 
@@ -3691,6 +3696,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "spellbook"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d204abcbdf8e88729306a8d0ca01a79d8a49969fe1f84696909d6dbc4321c1a"
+dependencies = [
+ "foldhash 0.2.0",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]

@@ -4,8 +4,10 @@
 
 use letter_model::{Block, Comment, Paragraph};
 
-use crate::document::read_block;
-use crate::serialize::{block_xml, element_with, escape_attr, root_attributes, xml_part};
+use crate::document::read_child_blocks;
+use crate::serialize::{
+    BlocksXml, block_xml, element_with, escape_attr, root_attributes, xml_part,
+};
 use crate::xml::Element;
 
 /// Пространство имён `w14` (метки абзацев).
@@ -25,7 +27,7 @@ pub(crate) fn read_comments(root: &Element) -> Option<Vec<Comment>> {
         if !child.is_w("comment") {
             return None;
         }
-        let blocks: Vec<Block> = child.elements().map(read_block).collect();
+        let blocks: Vec<Block> = read_child_blocks(child);
         let para_id = child
             .elements()
             .filter(|e| e.is_w("p"))
@@ -152,19 +154,20 @@ pub(crate) fn comments_xml(comments: &[Comment], root: Option<&[(String, String)
         if let Some(initials) = &comment.initials {
             extra.push_str(&format!(r#" w:initials="{}""#, escape_attr(initials)));
         }
-        let mut inner = String::new();
+        let mut blocks = BlocksXml::default();
         let last = comment.blocks.len().saturating_sub(1);
         for (i, block) in comment.blocks.iter().enumerate() {
             let xml = block_xml(block);
             match (&comment.para_id, block) {
-                (Some(id), Block::Paragraph(_)) if i == last => {
+                (Some(id), Block::Paragraph(p)) if i == last => {
                     let rest = xml.strip_prefix("<w:p").unwrap_or(&xml);
-                    inner.push_str(&format!(r#"<w:p w14:paraId="{}""#, escape_attr(id)));
-                    inner.push_str(rest);
+                    let xml = format!(r#"<w:p w14:paraId="{}"{rest}"#, escape_attr(id));
+                    blocks.push(&p.props.controls, &xml);
                 }
-                _ => inner.push_str(&xml),
+                _ => blocks.block(block),
             }
         }
+        let inner = blocks.finish();
         content.push_str(&format!(
             r#"<w:comment w:id="{}" w:author="{}"{extra}>{inner}</w:comment>"#,
             escape_attr(&comment.id),

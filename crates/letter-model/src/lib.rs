@@ -19,6 +19,7 @@
 
 mod border;
 mod comment;
+mod control;
 mod document;
 mod field;
 mod note;
@@ -27,6 +28,7 @@ mod package;
 mod paragraph;
 mod picture;
 mod properties;
+mod protection;
 mod raw;
 mod resolve;
 mod run;
@@ -40,6 +42,10 @@ mod watermark;
 
 pub use border::{Border, Borders, ParagraphBorders, Shading};
 pub use comment::Comment;
+pub use control::{
+    CheckBoxSymbols, ContentControl, ContentControlRef, ControlKind, ControlLock, ControlNesting,
+    ControlStep, ListItem,
+};
 pub use document::{Document, Settings, for_each_picture_in};
 pub use field::{Field, alphabetic, fields, roman, set_field_result};
 pub use note::{Note, NoteKind, NoteReference};
@@ -57,11 +63,13 @@ pub use picture::{
     Picture, Placement, VerticalFrom, Wrap,
 };
 pub use properties::{AppProperties, CoreProperties, Properties, Statistics};
+pub use protection::{DocumentProtection, EditRestriction, PasswordHash, WriteProtection};
 pub use raw::RawXml;
 pub use resolve::{ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps, overlay_borders};
 pub use run::{
-    BreakKind, Color, FieldChar, FieldCharKind, Highlight, Hyperlink, OBJECT_CHAR, Run, RunContent,
-    RunFonts, RunProps, ThemeColor, ThemeFont, Underline, VerticalAlign,
+    BreakKind, Color, FieldChar, FieldCharKind, Highlight, Hyperlink, OBJECT_CHAR, Revision,
+    RevisionKind, Run, RunContent, RunFonts, RunProps, ThemeColor, ThemeFont, Underline,
+    VerticalAlign,
 };
 pub use section::{
     Columns, HeaderFooter, HeaderFooterKind, HeaderFooters, Orientation, PageBorderDisplay,
