@@ -873,6 +873,138 @@ def charts() -> Document:
     return doc
 
 
+NS_SHAPES = (
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+    'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+    'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+    'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+    'xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" '
+    'xmlns:v="urn:schemas-microsoft-com:vml"'
+)
+
+# Стиль фигуры Word по умолчанию: заливка accent1, линия accent1 темнее.
+SHAPE_STYLE = (
+    '<wps:style><a:lnRef idx="2"><a:schemeClr val="accent1"><a:shade val="15000"/>'
+    '</a:schemeClr></a:lnRef><a:fillRef idx="1"><a:schemeClr val="accent1"/></a:fillRef>'
+    '<a:effectRef idx="0"><a:schemeClr val="accent1"/></a:effectRef>'
+    '<a:fontRef idx="minor"><a:schemeClr val="lt1"/></a:fontRef></wps:style>'
+)
+
+
+def emu(cm: float) -> int:
+    return round(cm * 360000)
+
+
+def wsp(geometry: str, cx: int, cy: int, extra: str = "", style: bool = True,
+        text: str | None = None, off: tuple[int, int] = (0, 0)) -> str:
+    """Фигура `wps:wsp`: контур, размер и необязательный текст надписи."""
+    txbx = ""
+    if text is not None:
+        txbx = (
+            '<wps:txbx><w:txbxContent><w:p><w:pPr><w:jc w:val="center"/></w:pPr>'
+            f'<w:r><w:t>{text}</w:t></w:r></w:p></w:txbxContent></wps:txbx>'
+        )
+    return (
+        f'<wps:wsp><wps:cNvSpPr/><wps:spPr><a:xfrm><a:off x="{off[0]}" y="{off[1]}"/>'
+        f'<a:ext cx="{cx}" cy="{cy}"/></a:xfrm>{geometry}{extra}</wps:spPr>'
+        f'{SHAPE_STYLE if style else ""}{txbx}'
+        '<wps:bodyPr rot="0" vert="horz" wrap="square" lIns="91440" tIns="45720" '
+        'rIns="91440" bIns="45720" anchor="ctr"><a:noAutofit/></wps:bodyPr></wps:wsp>'
+    )
+
+
+def drawing(number: int, name: str, cx: int, cy: int, graphic: str, uri: str,
+            frame: str) -> str:
+    """`w:drawing` с фигурой: `frame` — `inline` или положение `anchor`."""
+    graphic = (
+        f'<wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>'
+        '{wrap}'
+        f'<wp:docPr id="{number}" name="{name}"/><wp:cNvGraphicFramePr/>'
+        f'<a:graphic><a:graphicData uri="{uri}">{graphic}</a:graphicData></a:graphic>'
+    )
+    if frame == "inline":
+        body = graphic.replace("{wrap}", "")
+        return f'<w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">{body}</wp:inline></w:drawing>'
+    x, y, wrap, behind = frame
+    body = graphic.replace("{wrap}", wrap)
+    return (
+        f'<w:drawing><wp:anchor distT="0" distB="0" distL="114300" distR="114300" '
+        f'simplePos="0" relativeHeight="{251659264 + number}" behindDoc="{behind}" locked="0" '
+        'layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>'
+        f'<wp:positionH relativeFrom="column"><wp:posOffset>{x}</wp:posOffset></wp:positionH>'
+        f'<wp:positionV relativeFrom="paragraph"><wp:posOffset>{y}</wp:posOffset></wp:positionV>'
+        f'{body}</wp:anchor></w:drawing>'
+    )
+
+
+def alternate(inner: str) -> str:
+    """Фигура так, как её пишет Word: `mc:AlternateContent` с запасным VML."""
+    return (
+        f'<mc:AlternateContent {NS_SHAPES}><mc:Choice Requires="wps">{inner}</mc:Choice>'
+        '<mc:Fallback><w:pict><v:rect style="width:1pt;height:1pt"/></w:pict></mc:Fallback>'
+        '</mc:AlternateContent>'
+    )
+
+
+def shapes() -> Document:
+    """Фигуры DrawingML: надпись, стрелка, овал, линия со стрелкой, свой
+    контур и группа, как их вставляет Word («Вставка → Фигуры»)."""
+    doc = new_document("Фигуры")
+    wps_uri = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+    wpg_uri = "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
+    square = '<wp:wrapSquare wrapText="bothSides"/>'
+
+    def add(text: str, xml: str) -> None:
+        paragraph = doc.add_paragraph(text)
+        paragraph.add_run()._r.append(etree.fromstring(xml))
+
+    rect = wsp('<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>', emu(5), emu(2),
+               text="Надпись в прямоугольнике")
+    add("Прямоугольник с текстом справа от этого абзаца, текст обтекает его.",
+        alternate(drawing(1, "Прямоугольник 1", emu(5), emu(2), rect, wps_uri,
+                          (emu(10), 0, square, 0))))
+    arrow = wsp('<a:prstGeom prst="rightArrow"><a:avLst/></a:prstGeom>', emu(4), emu(1.5),
+                '<a:solidFill><a:srgbClr val="FFC000"/></a:solidFill><a:ln><a:noFill/></a:ln>')
+    add("Жёлтая стрелка вправо без линии.",
+        alternate(drawing(2, "Стрелка 2", emu(4), emu(1.5), arrow, wps_uri,
+                          (emu(4), emu(0.2), "<wp:wrapTopAndBottom/>", 0))))
+    oval = wsp('<a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom>', emu(3), emu(2),
+               '<a:noFill/><a:ln w="28575"><a:solidFill><a:srgbClr val="C00000"/></a:solidFill>'
+               '<a:prstDash val="dash"/></a:ln>')
+    add("Красный пунктирный овал за текстом.",
+        alternate(drawing(3, "Овал 3", emu(3), emu(2), oval, wps_uri,
+                          (emu(1), 0, "<wp:wrapNone/>", 1))))
+    line = wsp('<a:prstGeom prst="straightConnector1"><a:avLst/></a:prstGeom>', emu(4), 0,
+               '<a:ln w="19050"><a:solidFill><a:schemeClr val="tx1"/></a:solidFill>'
+               '<a:tailEnd type="triangle"/></a:ln>', style=False)
+    add("Линия со стрелкой в строке:",
+        alternate(drawing(4, "Прямая со стрелкой 4", emu(4), 0, line, wps_uri, "inline")))
+    custom = wsp(
+        '<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:rect l="0" t="0" r="r" b="b"/>'
+        '<a:pathLst><a:path w="100" h="100"><a:moveTo><a:pt x="50" y="0"/></a:moveTo>'
+        '<a:lnTo><a:pt x="100" y="100"/></a:lnTo><a:lnTo><a:pt x="0" y="100"/></a:lnTo>'
+        '<a:close/></a:path></a:pathLst></a:custGeom>',
+        emu(2), emu(2),
+        '<a:solidFill><a:schemeClr val="accent6"><a:lumMod val="75000"/></a:schemeClr></a:solidFill>')
+    add("Свой контур (треугольник) в строке:",
+        alternate(drawing(5, "Полилиния 5", emu(2), emu(2), custom, wps_uri, "inline")))
+    group = (
+        '<wpg:wgp><wpg:cNvGrpSpPr/><wpg:grpSpPr><a:xfrm><a:off x="0" y="0"/>'
+        f'<a:ext cx="{emu(6)}" cy="{emu(2)}"/><a:chOff x="0" y="0"/>'
+        f'<a:chExt cx="{emu(6)}" cy="{emu(2)}"/></a:xfrm></wpg:grpSpPr>'
+        + wsp('<a:prstGeom prst="roundRect"><a:avLst/></a:prstGeom>', emu(3), emu(2))
+        + wsp('<a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom>', emu(2), emu(2),
+              '<a:solidFill><a:schemeClr val="accent2"/></a:solidFill>', off=(emu(4), 0))
+        + '</wpg:wgp>'
+    )
+    add("Группа: скруглённый прямоугольник и круг.",
+        alternate(drawing(6, "Группа 6", emu(6), emu(2), group, wpg_uri,
+                          (0, emu(0.5), "<wp:wrapTopAndBottom/>", 0))))
+    doc.add_paragraph("Текст после фигур.")
+    return doc
+
+
 FIXTURES = {
     "empty.docx": empty,
     "plain-text.docx": plain_text,
@@ -892,6 +1024,7 @@ FIXTURES = {
     "comments.docx": comments,
     "borders.docx": borders,
     "watermark.docx": watermark,
+    "shapes.docx": shapes,
     "smartart.docx": smartart,
     "charts.docx": charts,
 }

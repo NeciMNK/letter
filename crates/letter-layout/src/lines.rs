@@ -21,12 +21,13 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
-use letter_model::{Drawing, ImageData, OBJECT_CHAR};
+use letter_model::{Drawing, ImageData, OBJECT_CHAR, Shape};
 
 use unicode_bidi::{BidiInfo, Level};
 use unicode_linebreak::{BreakOpportunity, linebreaks};
 
 use crate::fonts::{FontLibrary, FontMatch};
+use crate::pages::PageStory;
 use crate::shaping::{ShapedGlyph, ShapedRun, Shaper, TextStyle};
 
 /// Допуск при сравнении ширин, пт: строка «влезает», если вылезает
@@ -94,6 +95,11 @@ pub struct InlineObject {
     pub height: f32,
     /// Картинка рисунка (`None` — рисовать заглушку).
     pub image: Option<Arc<ImageData>>,
+    /// Фигура вместо картинки.
+    pub shape: Option<Arc<Shape>>,
+    /// Текст надписей фигуры, свёрстанный от левого верхнего угла
+    /// объекта.
+    pub text: Option<Arc<PageStory>>,
     /// Рисунок из фигур (SmartArt) — рисуется вместо картинки.
     pub drawing: Option<Arc<Drawing>>,
     /// Плавающий объект: в строке от него только знак привязки без
@@ -334,6 +340,10 @@ pub struct ObjectItem {
     pub span: usize,
     /// Картинка.
     pub image: Option<Arc<ImageData>>,
+    /// Фигура вместо картинки.
+    pub shape: Option<Arc<Shape>>,
+    /// Текст надписей фигуры от левого верхнего угла объекта.
+    pub text: Option<Arc<PageStory>>,
     /// Рисунок из фигур (SmartArt).
     pub drawing: Option<Arc<Drawing>>,
 }
@@ -1102,7 +1112,9 @@ impl<'a> Builder<'a> {
                         height: object.as_ref().map_or(0.0, |o| o.height),
                         span: cluster.span,
                         image: object.as_ref().and_then(|o| o.image.clone()),
-                        drawing: object.and_then(|o| o.drawing),
+                        drawing: object.as_ref().and_then(|o| o.drawing.clone()),
+                        shape: object.as_ref().and_then(|o| o.shape.clone()),
+                        text: object.and_then(|o| o.text),
                     }));
                 }
                 Kind::Break(_) => {}
@@ -1786,6 +1798,8 @@ mod tests {
                     width,
                     height: 50.0,
                     image: None,
+                    shape: None,
+                    text: None,
                     drawing: None,
                     floating: false,
                 },

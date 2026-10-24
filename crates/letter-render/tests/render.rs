@@ -212,6 +212,7 @@ fn inline_picture_is_drawn() {
                 width,
                 height,
                 image,
+                shape: None,
             } => {
                 assert!(image.is_some());
                 Some((x, y, width, height))
@@ -287,6 +288,7 @@ fn broken_picture_becomes_a_placeholder() {
         relationship: None,
         raw: None,
         anchor: None,
+        shape: None,
     };
     doc.sections[0].blocks = vec![Block::from(Paragraph::from_runs([Run {
         props: Default::default(),
@@ -343,6 +345,77 @@ fn floating_pictures_are_drawn_in_their_place() {
     let tops: Vec<f32> = page.lines.iter().map(|l| l.top).collect();
     let steps: Vec<f32> = tops.windows(2).map(|w| w[1] - w[0]).collect();
     assert!(steps.iter().all(|s| *s < 30.0), "{steps:?}");
+}
+
+#[test]
+fn shapes_are_drawn_on_screen_image_and_pdf() {
+    let library = FontLibrary::embedded_only();
+    let mut cache = GlyphCache::new();
+    let doc = layout("shapes.docx", &library);
+    let page = &doc.pages[0];
+    let scale = SCREEN_PIXELS_PER_POINT;
+    let mut shapes: Vec<(String, (f32, f32, f32, f32))> =
+        page_scene(page, scale, &library, &mut cache)
+            .into_iter()
+            .filter_map(|i| match i {
+                DrawItem::Picture {
+                    x,
+                    y,
+                    width,
+                    height,
+                    shape: Some(shape),
+                    ..
+                } => {
+                    let name = match &shape.geometry {
+                        letter_model::Geometry::Preset { name, .. } => name.clone(),
+                        _ => String::new(),
+                    };
+                    Some((name, (x, y, width, height)))
+                }
+                _ => None,
+            })
+            .collect();
+    assert_eq!(shapes.len(), 6, "{shapes:?}");
+    let mut find = |name: &str| {
+        let i = shapes.iter().position(|(n, _)| n == name).unwrap();
+        shapes.remove(i).1
+    };
+    let (arrow, oval) = (find("rightArrow"), find("ellipse"));
+    // Надпись: белые буквы внутри синего прямоугольника.
+    let (rx, ry, rw, rh) = find("rect");
+    let glyphs = page_scene(page, scale, &library, &mut cache)
+        .into_iter()
+        .filter(|i| match *i {
+            DrawItem::Glyph { x, y, color, .. } => {
+                let (x, y) = (x as f32, y as f32);
+                color == [255, 255, 255, 255] && x > rx && x < rx + rw && y > ry && y < ry + rh
+            }
+            _ => false,
+        })
+        .count();
+    assert_eq!(glyphs, "Надпись в прямоугольнике".chars().count());
+    let image = render_page(page, scale, &library, &mut cache);
+    let at = |x: f32, y: f32| image.pixel(x as u32, y as u32).unwrap();
+    // Жёлтая стрелка (FFC000): середина залита, правый верхний угол
+    // прямоугольника пуст — там скос острия.
+    let (x, y, w, h) = arrow;
+    let middle = at(x + w / 2.0, y + h / 2.0);
+    assert!(
+        middle[0] > 240 && (180..210).contains(&middle[1]) && middle[2] < 30,
+        "{middle:?}"
+    );
+    assert_eq!(at(x + w - 2.0, y + 2.0), [255, 255, 255, 255]);
+    // Овал без заливки: середина белая, на левом краю — красная линия.
+    let (x, y, w, h) = oval;
+    let inside = at(x + w / 2.0, y + h / 2.0);
+    assert!(inside[0] > 200 && inside[1] > 200, "{inside:?}");
+    let edge = (0..6)
+        .map(|dx| at(x + dx as f32, y + h / 2.0))
+        .any(|p| p[0] > 150 && p[1] < 80);
+    assert!(edge);
+    // В PDF фигуры — линии с заливкой (оператор `f` или `B`).
+    let pdf = letter_render::write_pdf(&doc.pages, &library, &Default::default());
+    assert!(pdf.len() > 1000);
 }
 
 #[test]

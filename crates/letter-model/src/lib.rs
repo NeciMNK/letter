@@ -35,6 +35,7 @@ mod raw;
 mod resolve;
 mod run;
 mod section;
+mod shape;
 mod style;
 mod symbol;
 mod table;
@@ -78,6 +79,11 @@ pub use run::{
 pub use section::{
     Columns, HeaderFooter, HeaderFooterKind, HeaderFooters, Orientation, PageBorderDisplay,
     PageBorders, PageMargins, PageSize, Section, SectionProps, SectionStart,
+};
+pub use shape::{
+    ColorBase, ColorMod, ColorScheme, DEFAULT_LINE_WIDTH, DEFAULT_TEXT_INSETS, Frame, Geometry,
+    Group, GroupChild, LineDash, LineEnd, PathCommand, Shape, ShapeColor, ShapeLine, ShapePath,
+    TextAnchor,
 };
 pub use style::{DocDefaults, Style, StyleKind, Styles};
 pub use symbol::{Symbol, is_symbol_font, symbol_char};

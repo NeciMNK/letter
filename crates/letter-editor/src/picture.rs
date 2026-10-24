@@ -365,6 +365,7 @@ mod tests {
             relationship: None,
             raw: None,
             anchor: None,
+            shape: None,
         }
     }
 

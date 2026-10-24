@@ -582,7 +582,12 @@ fn read_spacing(spacing: &Element) -> Option<Spacing> {
 fn read_run(r: &Element) -> Run {
     let mut run = Run::default();
     for child in r.elements() {
-        let item = if !is_w_ns(child.ns.as_deref()) {
+        let item = if child.local == "AlternateContent" {
+            match crate::picture::read_alternate(child) {
+                Some(picture) => RunContent::Picture(picture),
+                None => RunContent::Unknown(child.raw()),
+            }
+        } else if !is_w_ns(child.ns.as_deref()) {
             RunContent::Unknown(child.raw())
         } else {
             match child.local.as_str() {

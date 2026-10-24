@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use letter_layout::{FontId, FontLibrary, LineItem, Page};
-use letter_model::{Hyperlink, ImageData};
+use letter_model::{Hyperlink, ImageData, Shape};
 use pdf_writer::types::{
     ActionType, AnnotationType, CidFontType, FontFlags, SystemInfo, TextRenderingMode,
 };
@@ -24,6 +24,7 @@ use subsetter::GlyphRemapper;
 use crate::glyphs::{GlyphCache, SUBPIXEL_STEPS};
 use crate::picture::decode;
 use crate::scene::{DrawItem, Rgba, page_scene};
+use crate::shape::{Segment, shape_paths};
 
 /// Точек сцены на пункт: положения округляются до 1/100 пункта.
 const SCALE: f32 = 100.0;
@@ -302,7 +303,23 @@ fn page_content(
                 y,
                 width,
                 height: h,
+                shape: Some(shape),
+                ..
+            } => {
+                if in_text {
+                    content.end_text();
+                    in_text = false;
+                    current_font = None;
+                }
+                write_shape(&mut content, shape, [*x, *y, *width, *h], height);
+            }
+            DrawItem::Picture {
+                x,
+                y,
+                width,
+                height: h,
                 image,
+                shape: None,
             } => {
                 if in_text {
                     content.end_text();
@@ -387,6 +404,55 @@ fn page_content(
         content.end_text();
     }
     content.finish().to_vec()
+}
+
+/// Фигура линиями PDF: каждая линия — со своими заливкой и обводкой
+/// внутри `q … Q`, чтобы не сбить цвета и толщину линий текста.
+/// Прозрачность фигур пока не передаётся.
+fn write_shape(content: &mut Content, shape: &Shape, [x, y, w, h]: [f32; 4], height: f32) {
+    let point = |[px, py]: [f32; 2]| (px / SCALE, height - py / SCALE);
+    for path in shape_paths(shape, x, y, w, h, SCALE) {
+        if path.fill.is_none() && path.stroke.is_none() {
+            continue;
+        }
+        content.save_state();
+        if let Some([r, g, b, _]) = path.fill {
+            content.set_fill_rgb(unit(r), unit(g), unit(b));
+        }
+        if let Some(stroke) = &path.stroke {
+            let [r, g, b, _] = stroke.color;
+            content.set_stroke_rgb(unit(r), unit(g), unit(b));
+            content.set_line_width(stroke.width / SCALE);
+            if !stroke.dash.is_empty() {
+                content.set_dash_pattern(stroke.dash.iter().map(|d| d / SCALE), 0.0);
+            }
+        }
+        for segment in &path.segments {
+            match *segment {
+                Segment::MoveTo(p) => {
+                    let (x, y) = point(p);
+                    content.move_to(x, y);
+                }
+                Segment::LineTo(p) => {
+                    let (x, y) = point(p);
+                    content.line_to(x, y);
+                }
+                Segment::CubicTo(a, b, c) => {
+                    let ((x1, y1), (x2, y2), (x3, y3)) = (point(a), point(b), point(c));
+                    content.cubic_to(x1, y1, x2, y2, x3, y3);
+                }
+                Segment::Close => {
+                    content.close_path();
+                }
+            }
+        }
+        match (path.fill.is_some(), path.stroke.is_some()) {
+            (true, true) => content.fill_nonzero_and_stroke(),
+            (true, false) => content.fill_nonzero(),
+            _ => content.stroke(),
+        };
+        content.restore_state();
+    }
 }
 
 /// Цвет заливки, если он сменился.

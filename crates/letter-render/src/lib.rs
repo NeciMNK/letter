@@ -6,6 +6,7 @@
 //! - [`drawing`] — рисунки из фигур (SmartArt);
 //! - [`marks`] — знаки форматирования (¶, пробелы, табуляции);
 //! - [`picture`] — распаковка картинок рисунков;
+//! - [`shape`] — фигуры (прямоугольники, стрелки, группы) в виде линий;
 //! - [`chart`] — диаграммы по данным из документа;
 //! - [`image`] — отрисовка страницы в картинку в памяти (тесты, сверка);
 //! - [`screen`] — отрисовка на экране через egui: серый фон, белые листы
@@ -23,6 +24,7 @@ pub mod pdf;
 pub mod picture;
 pub mod scene;
 pub mod screen;
+pub mod shape;
 
 pub use glyphs::{GlyphCache, GlyphImage, GlyphKey, GlyphPixels};
 pub use image::{RgbaImage, render_page};
