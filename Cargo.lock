@@ -2088,9 +2088,13 @@ dependencies = [
  "letter-editor",
  "letter-layout",
  "letter-model",
+ "letter-odt",
  "letter-render",
+ "letter-rtf",
+ "letter-text",
  "lopdf",
  "png",
+ "zip",
 ]
 
 [[package]]
