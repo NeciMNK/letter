@@ -15,6 +15,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod chart;
 mod comments;
 mod crypto;
 mod document;
@@ -94,9 +95,11 @@ pub fn read<R: Read + Seek>(mut reader: R) -> Result<Document, ReadError> {
         numbering_part = Some(name);
         numbering_root_attributes = root.root_attributes();
     }
+    // Цвета темы нужны диаграммам и SmartArt.
     let mut look = Look::default();
     if let Some((_, root)) = read_related_xml(&mut package, &main, "theme") {
         doc.theme = theme::read_theme(&root);
+        look.palette = chart::theme_palette(&root);
         look.colors = smartart::read_colors(&root);
         look.theme = doc.theme.clone();
     }
@@ -370,6 +373,7 @@ fn attach_links(blocks: &mut [Block], addresses: &[(String, String)]) {
     }
 }
 
+/// Находит картинки рисунков (и данные диаграмм) по их связям.
 fn attach_images(
     visit: impl FnOnce(&mut dyn FnMut(&mut Picture)),
     relationships: &[package::Relationship],
@@ -388,16 +392,32 @@ fn attach_images(
             picture.image = image.clone();
             return;
         }
-        let image = relationships
-            .iter()
-            .find(|r| r.id == id && r.kind.ends_with("/image"))
-            .and_then(|r| source.part(&r.target))
-            .map(|part| {
+        let relationship = relationships.iter().find(|r| r.id == id);
+        let part = relationship.and_then(|r| source.part(&r.target));
+        let image = match relationship {
+            Some(r) if r.kind.ends_with("/image") => part.map(|part| {
                 Arc::new(ImageData {
                     name: part.name.clone(),
                     bytes: part.data.clone(),
+                    chart: None,
                 })
-            });
+            }),
+            // Диаграмма рисуется по своим данным; непонятая — заглушкой.
+            Some(r) if r.kind.ends_with("/chart") => part
+                .and_then(|part| {
+                    let root = xml::parse(&part.data).ok()?;
+                    let chart = chart::read_chart(&root, &look.palette)?;
+                    Some((part, chart))
+                })
+                .map(|(part, chart)| {
+                    Arc::new(ImageData {
+                        name: part.name.clone(),
+                        bytes: Vec::new(),
+                        chart: Some(Arc::new(chart)),
+                    })
+                }),
+            _ => None,
+        };
         picture.image = image.clone();
         if let Some(r) = relationships.iter().find(|r| r.id == id) {
             loaded.push((r.id.as_str(), image));
@@ -405,9 +425,11 @@ fn attach_images(
     });
 }
 
-/// Тема документа для готового вида SmartArt: цвета и шрифты.
+/// Тема документа для диаграмм и готового вида SmartArt: цвета и шрифты.
 #[derive(Default)]
 struct Look {
+    /// Цвета рядов диаграмм.
+    palette: Vec<(u8, u8, u8)>,
     colors: smartart::Colors,
     theme: letter_model::Theme,
 }

@@ -8,7 +8,7 @@ use letter_layout::{
 };
 use std::sync::Arc;
 
-use letter_model::{Color, ImageData, ResolvedRunProps, Underline};
+use letter_model::{Color, Drawing, ImageData, ResolvedRunProps, Underline};
 
 use crate::drawing::{DrawingFrame, draw_shapes};
 use crate::glyphs::{GlyphCache, GlyphKey, SUBPIXEL_STEPS};
@@ -44,6 +44,13 @@ pub enum DrawItem {
         x: i32,
         /// Базовая линия, округлённая до пикселя.
         y: i32,
+        /// Цвет.
+        color: Rgba,
+    },
+    /// Залитый выпуклый многоугольник (части диаграмм).
+    Polygon {
+        /// Вершины по порядку.
+        points: Vec<(f32, f32)>,
         /// Цвет.
         color: Rgba,
     },
@@ -148,28 +155,15 @@ pub fn page_scene(
                 }
                 // Знак привязки плавающего рисунка места не занимает.
                 LineItem::Object(object) if object.width == 0.0 && object.height == 0.0 => {}
-                LineItem::Object(object) => {
-                    let (x, y) = (line.x + object.x, line.baseline - object.height);
-                    let (width, height) = (object.width, object.height);
-                    match &object.drawing {
-                        Some(drawing) => {
-                            let frame = DrawingFrame {
-                                x,
-                                y,
-                                width,
-                                height,
-                            };
-                            draw_shapes(&mut pictures, drawing, frame, scale, library, cache);
-                        }
-                        None => pictures.push(DrawItem::Picture {
-                            x: x * scale,
-                            y: y * scale,
-                            width: width * scale,
-                            height: height * scale,
-                            image: object.image.clone(),
-                        }),
-                    }
-                }
+                LineItem::Object(object) => picture(
+                    &mut pictures,
+                    (line.x + object.x, line.baseline - object.height),
+                    (object.width, object.height),
+                    (object.image.as_ref(), object.drawing.as_deref()),
+                    scale,
+                    library,
+                    cache,
+                ),
             }
         }
         // Номер или маркер пункта списка.
@@ -191,23 +185,10 @@ pub fn page_scene(
             }
         }
     }
-    let mut float = |out: &mut Vec<DrawItem>, f: &Float| match &f.drawing {
-        Some(drawing) => {
-            let frame = DrawingFrame {
-                x: f.x,
-                y: f.y,
-                width: f.width,
-                height: f.height,
-            };
-            draw_shapes(out, drawing, frame, scale, library, cache);
-        }
-        None => out.push(DrawItem::Picture {
-            x: f.x * scale,
-            y: f.y * scale,
-            width: f.width * scale,
-            height: f.height * scale,
-            image: f.image.clone(),
-        }),
+    let mut float = |out: &mut Vec<DrawItem>, f: &Float| {
+        let (at, size) = ((f.x, f.y), (f.width, f.height));
+        let content = (f.image.as_ref(), f.drawing.as_deref());
+        picture(out, at, size, content, scale, library, cache);
     };
     let floats = || stories.iter().flat_map(|s| &s.floats).chain(&page.floats);
     for f in floats().filter(|f| f.behind) {
@@ -220,6 +201,43 @@ pub fn page_scene(
         float(&mut backgrounds, f);
     }
     backgrounds
+}
+
+/// Рисунок в точке `at` размера `size` (пт): картинка, диаграмма или
+/// рисунок из фигур (SmartArt), разобранные на прямоугольники,
+/// многоугольники и глифы. `content` — картинка и рисунок из фигур.
+fn picture(
+    out: &mut Vec<DrawItem>,
+    (x, y): (f32, f32),
+    (width, height): (f32, f32),
+    (image, drawing): (Option<&Arc<ImageData>>, Option<&Drawing>),
+    scale: f32,
+    library: &FontLibrary,
+    cache: &mut GlyphCache,
+) {
+    if let Some(drawing) = drawing {
+        let frame = DrawingFrame {
+            x,
+            y,
+            width,
+            height,
+        };
+        draw_shapes(out, drawing, frame, scale, library, cache);
+        return;
+    }
+    if let Some(chart) = image.and_then(|i| i.chart.as_ref()) {
+        out.extend(crate::chart::chart_items(
+            chart, x, y, width, height, scale, library, cache,
+        ));
+        return;
+    }
+    out.push(DrawItem::Picture {
+        x: x * scale,
+        y: y * scale,
+        width: width * scale,
+        height: height * scale,
+        image: image.cloned(),
+    });
 }
 
 /// Глифы подложки вдоль повёрнутой базовой линии.

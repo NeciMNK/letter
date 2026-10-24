@@ -36,6 +36,7 @@ const FIXTURES: &[&str] = &[
     "borders.docx",
     "watermark.docx",
     "smartart.docx",
+    "charts.docx",
     "header-footer.docx",
     "ru-en.docx",
 ];
@@ -63,6 +64,76 @@ fn zip_parts(bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
 /// Сохраняет и снова открывает документ.
 fn round_trip(doc: &Document) -> Document {
     read_bytes(&write_bytes(doc).unwrap()).unwrap()
+}
+
+#[test]
+fn revisions_survive_round_trip() {
+    use letter_model::{Revision, RevisionKind};
+    let revision = |kind, author: &str| RunProps {
+        revision: Some(Revision {
+            kind,
+            author: author.into(),
+            date: Some("2024-05-01T10:00:00Z".into()),
+        }),
+        ..RunProps::default()
+    };
+    let mut doc = Document::new();
+    doc.settings.track_revisions = true;
+    let mut link = Run::text("ссылка").with_props(revision(RevisionKind::Insert, "A"));
+    link.props.link = Some(Hyperlink::to("https://example.com"));
+    doc.sections[0].blocks = vec![
+        Paragraph::from_runs([
+            Run::text("было "),
+            Run::text("новое ").with_props(revision(RevisionKind::Insert, "A")),
+            Run::text("ещё ").with_props(revision(RevisionKind::Insert, "A")),
+            Run::text(" старое").with_props(revision(RevisionKind::Delete, "B & C")),
+            link,
+        ])
+        .into(),
+    ];
+    let bytes = write_bytes(&doc).unwrap();
+    let xml = String::from_utf8(zip_parts(&bytes)["word/document.xml"].clone()).unwrap();
+    assert!(
+        xml.contains("<w:delText xml:space=\"preserve\"> старое</w:delText>"),
+        "{xml}"
+    );
+    assert!(xml.contains("<w:hyperlink"), "{xml}");
+    let back = read_bytes(&bytes).unwrap();
+    assert!(back.settings.track_revisions);
+    let Some(Block::Paragraph(p)) = back.blocks().next() else {
+        panic!("нет абзаца");
+    };
+    let expect: Vec<_> = doc
+        .blocks()
+        .next()
+        .map(|b| match b {
+            Block::Paragraph(p) => p
+                .runs()
+                .map(|r| {
+                    (
+                        r.plain_text(),
+                        r.props.revision.clone(),
+                        r.props.link.is_some(),
+                    )
+                })
+                .collect(),
+            _ => Vec::new(),
+        })
+        .unwrap_or_default();
+    let got: Vec<_> = p
+        .runs()
+        .map(|r| {
+            (
+                r.plain_text(),
+                r.props.revision.clone(),
+                r.props.link.is_some(),
+            )
+        })
+        .collect();
+    // Соседние фрагменты с одним исправлением при чтении не сливаются,
+    // но идут в одном `w:ins`.
+    assert_eq!(got, expect);
+    assert_eq!(xml.matches("<w:ins ").count(), 2, "{xml}");
 }
 
 #[test]
@@ -173,6 +244,7 @@ fn new_document_is_a_valid_package() {
 /// Документ, в котором задано всё, что понимает модель.
 fn everything() -> Document {
     let run_props = RunProps {
+        control: None,
         style: Some("Strong".into()),
         fonts: RunFonts {
             ascii: Some("Arial".into()),
@@ -208,6 +280,7 @@ fn everything() -> Document {
         position: Some(-6),
         kerning: Some(HalfPoints(24)),
         link: None,
+        revision: None,
         // Порядок как в схеме: при записи элементы всё равно встанут так.
         unknown: vec![
             RawXml::new(
@@ -219,6 +292,7 @@ fn everything() -> Document {
         ],
     };
     let paragraph_props = ParagraphProps {
+        controls: Vec::new(),
         style: Some("Heading1".into()),
         numbering: Some(letter_model::NumberingRef {
             id: Some(3),
@@ -304,6 +378,7 @@ fn everything() -> Document {
             .into(),
             Table {
                 props: Box::new(TableProps {
+                    controls: Vec::new(),
                     style: Some("TableGrid".into()),
                     width: Some(TableWidth::Percent(5000)),
                     alignment: Some(Alignment::Center),
@@ -661,6 +736,38 @@ fn resized_image_keeps_its_new_size() {
         sizes.push((picture.width, picture.height, picture.image.is_some()));
     });
     assert_eq!(sizes, [(914_400, 548_640, true)]);
+}
+
+#[test]
+fn resized_chart_keeps_its_part() {
+    let mut doc = read_bytes(&fixture_bytes("charts.docx")).unwrap();
+    doc.for_each_picture_mut(|picture| {
+        picture.width /= 2;
+        picture.height /= 2;
+    });
+    let saved = write_bytes(&doc).unwrap();
+    let before = zip_parts(&fixture_bytes("charts.docx"));
+    let after = zip_parts(&saved);
+    for n in 1..=3 {
+        let name = format!("word/charts/chart{n}.xml");
+        assert_eq!(before.get(&name), after.get(&name), "{name}");
+    }
+    // Новых картинок для диаграмм не появилось.
+    assert!(!after.keys().any(|k| k.contains("media/")));
+    let mut reopened = read_bytes(&saved).unwrap();
+    let mut found = Vec::new();
+    reopened.for_each_picture_mut(|picture| {
+        let chart = picture.image.as_ref().and_then(|i| i.chart.as_ref());
+        found.push((picture.width, chart.map(|c| c.series.len())));
+    });
+    assert_eq!(
+        found,
+        [
+            (2_286_000, Some(2)),
+            (2_286_000, Some(1)),
+            (2_286_000, Some(1))
+        ]
+    );
 }
 
 #[test]

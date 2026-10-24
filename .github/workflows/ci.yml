@@ -43,3 +43,18 @@ jobs:
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  release-tests:
+    name: Скорость и битые файлы (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Системные библиотеки для окна (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libwayland-dev
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      # F10.3: 500 страниц открываются быстрее 2 с, память меньше 500 МБ.
+      # F10.4: полный набор испорченных файлов не роняет программу.
+      - run: cargo test --release -p letter-cli --test performance --test robustness -- --nocapture

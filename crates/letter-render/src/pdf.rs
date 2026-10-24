@@ -228,6 +228,26 @@ fn page_content(
                 let (x, y, w, h) = (x / SCALE, y / SCALE, width / SCALE, h / SCALE);
                 content.rect(x, height - y - h, w, h).fill_nonzero();
             }
+            DrawItem::Polygon { points, color } => {
+                if in_text {
+                    content.end_text();
+                    in_text = false;
+                    current_font = None;
+                }
+                if color[3] != current_alpha {
+                    alpha_state(&mut content, refs, color[3]);
+                    current_alpha = color[3];
+                }
+                set_fill(&mut content, *color, &mut current_color);
+                let mut points = points.iter().map(|&(x, y)| (x / SCALE, height - y / SCALE));
+                if let Some((x, y)) = points.next() {
+                    content.move_to(x, y);
+                    for (x, y) in points {
+                        content.line_to(x, y);
+                    }
+                    content.close_path().fill_nonzero();
+                }
+            }
             DrawItem::Glyph { key, x, y, color } => {
                 let font = embed_font(fonts, refs, key.font);
                 let gid = font.remapper.remap(key.glyph_id);

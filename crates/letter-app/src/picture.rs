@@ -50,6 +50,7 @@ pub fn picture_from_bytes(bytes: Vec<u8>, extension: &str) -> Result<Picture, St
     let data = ImageData {
         name: format!("media/image.{extension}"),
         bytes,
+        chart: None,
     };
     let (width, height) = letter_render::picture::pixel_size(&data)
         .ok_or_else(|| tr("picture-unsupported").to_owned())?;

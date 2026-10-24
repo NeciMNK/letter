@@ -290,7 +290,8 @@ pub(crate) fn blocks_mut<'a>(doc: &'a mut Document, path: &Path) -> Option<&'a m
     Some(blocks)
 }
 
-/// Абзац номер `index` (по порядку во всём документе) для чтения.
+/// Абзац номер `index` (по порядку во всём документе, включая абзацы
+/// таблиц) для чтения.
 pub fn paragraph_ref(doc: &Document, index: usize) -> Option<&Paragraph> {
     let path = find(doc, index)?;
     let mut blocks = &doc.sections.get(path.section)?.blocks;
@@ -535,8 +536,10 @@ fn remove_range(paragraph: &mut Paragraph, start: usize, end: usize) {
     tidy(paragraph);
 }
 
+/// Пустой фрагмент, который можно убрать. Пустой фрагмент элемента
+/// управления содержимым остаётся: без него пропал бы сам элемент.
 fn is_empty_run(inline: &Inline) -> bool {
-    matches!(inline, Inline::Run(r) if r.content.is_empty())
+    matches!(inline, Inline::Run(r) if r.content.is_empty() && r.props.control.is_none())
 }
 
 /// Наводит порядок: соседние тексты одного фрагмента склеены, пустые

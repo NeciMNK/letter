@@ -32,11 +32,14 @@ mod paragraph_dialog;
 mod password_dialog;
 mod picture;
 mod print;
+mod protect_dialog;
 mod references;
+mod review;
 mod ribbon;
 mod ruler;
 mod settings;
 mod shortcuts;
+mod spelling;
 mod story;
 mod styles;
 mod symbols;
@@ -51,14 +54,21 @@ use eframe::egui;
 use letter_layout::FontLibrary;
 use viewer::{APP_NAME, Viewer};
 
+/// Значок программы (рисунок — `assets/icon/generate.py`).
+const ICON: &[u8] = include_bytes!("../assets/icon/letter-256.png");
+
 fn main() -> eframe::Result {
     let file = std::env::args_os().nth(1).map(PathBuf::from);
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title(APP_NAME)
+        .with_inner_size([1024.0, 768.0])
+        .with_min_inner_size([400.0, 300.0])
+        .with_drag_and_drop(true);
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(ICON) {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(APP_NAME)
-            .with_inner_size([1024.0, 768.0])
-            .with_min_inner_size([400.0, 300.0])
-            .with_drag_and_drop(true),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
@@ -88,5 +98,14 @@ struct LetterApp {
 impl eframe::App for LetterApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.viewer.ui(ui);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn icon_is_a_valid_png() {
+        let icon = eframe::icon_data::from_png_bytes(super::ICON).unwrap();
+        assert_eq!((icon.width, icon.height), (256, 256));
     }
 }

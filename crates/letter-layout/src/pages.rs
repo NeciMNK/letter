@@ -1402,6 +1402,33 @@ struct FloatSpec {
 
 /// Добавляет кусок текста фрагмента: с учётом «все прописные» и разных
 /// шрифтов для разных видов письменности.
+/// Цвета исправлений разных авторов, как в Word: по очереди.
+const REVISION_COLORS: [(u8, u8, u8); 6] = [
+    (0xC0, 0x00, 0x00),
+    (0x00, 0x52, 0xA3),
+    (0x00, 0x80, 0x00),
+    (0x8E, 0x2E, 0xA4),
+    (0xC0, 0x60, 0x00),
+    (0x00, 0x80, 0x80),
+];
+
+/// Исправление на экране («Все исправления»): вставленное подчёркнуто,
+/// удалённое зачёркнуто, цвет — автора.
+fn show_revision(props: &mut letter_model::ResolvedRunProps, revision: &letter_model::Revision) {
+    let index = revision.author.bytes().fold(0usize, |h, b| {
+        h.wrapping_mul(31).wrapping_add(usize::from(b))
+    });
+    let (r, g, b) = REVISION_COLORS[index % REVISION_COLORS.len()];
+    props.color = letter_model::Color::Rgb(r, g, b);
+    props.underline_color = None;
+    match revision.kind {
+        letter_model::RevisionKind::Insert => {
+            props.underline = letter_model::Underline::Single;
+        }
+        letter_model::RevisionKind::Delete => props.strike = true,
+    }
+}
+
 fn push_text(
     spans: &mut Vec<TextSpan>,
     span_props: &mut Vec<ResolvedRunProps>,
@@ -1439,7 +1466,10 @@ fn prepare(
     let mut floats = Vec::new();
     let mut notes = Vec::new();
     for run in paragraph.runs() {
-        let resolved = doc.resolve_run_in(&paragraph.props, &run.props, table);
+        let mut resolved = doc.resolve_run_in(&paragraph.props, &run.props, table);
+        if let Some(revision) = &run.props.revision {
+            show_revision(&mut resolved, revision);
+        }
         let mut text = String::new();
         for item in &run.content {
             match item {

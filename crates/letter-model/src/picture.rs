@@ -1,8 +1,9 @@
-//! Рисунки в тексте ([`Picture`]) и их содержимое ([`ImageData`]).
+//! Рисунки в тексте ([`Picture`]) и их содержимое ([`ImageData`]):
+//! картинка или диаграмма.
 
 use std::sync::Arc;
 
-use crate::{Drawing, RawXml};
+use crate::{Chart, Drawing, RawXml};
 
 /// Сколько EMU (английских метрических единиц OOXML) в пункте.
 /// В дюйме 914 400 EMU, в сантиметре — 360 000.
@@ -175,8 +176,11 @@ pub struct ImageData {
     /// Имя части внутри файла документа, например `word/media/image1.png`.
     /// По расширению видно, что это за картинка.
     pub name: String,
-    /// Содержимое файла картинки.
+    /// Содержимое файла картинки (у диаграммы пусто).
     pub bytes: Vec<u8>,
+    /// Диаграмма вместо картинки: тогда `name` — имя части диаграммы
+    /// (`word/charts/chart1.xml`), и рисуется диаграмма по её данным.
+    pub chart: Option<Arc<Chart>>,
 }
 
 impl std::fmt::Debug for ImageData {
@@ -185,6 +189,7 @@ impl std::fmt::Debug for ImageData {
         f.debug_struct("ImageData")
             .field("name", &self.name)
             .field("len", &self.bytes.len())
+            .field("chart", &self.chart.is_some())
             .finish()
     }
 }
@@ -209,10 +214,11 @@ mod tests {
         let data = ImageData {
             name: "word/media/a.png".into(),
             bytes: vec![0; 5],
+            chart: None,
         };
         assert_eq!(
             format!("{data:?}"),
-            r#"ImageData { name: "word/media/a.png", len: 5 }"#
+            r#"ImageData { name: "word/media/a.png", len: 5, chart: false }"#
         );
     }
 }

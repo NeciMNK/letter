@@ -488,6 +488,7 @@ fn link_pictures<'d>(
     let mut broken = false;
     let mut probe = |picture: &Picture| {
         if let Some(image) = &picture.image
+            && image.chart.is_none()
             && !links.points_to(main, picture.relationship.as_deref(), image)
         {
             broken = true;
@@ -504,6 +505,10 @@ fn link_pictures<'d>(
         let Some(image) = picture.image.clone() else {
             return;
         };
+        // Диаграмма остаётся при своей части и связи.
+        if image.chart.is_some() {
+            return;
+        }
         if links.points_to(main, picture.relationship.as_deref(), &image) {
             return;
         }
