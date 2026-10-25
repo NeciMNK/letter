@@ -10,3 +10,13 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+# Составной файл (OLE, «структурированное хранилище»), внутри которого
+# лежат потоки .doc.
+cfb = "0.15"
+letter-model.workspace = true
+thiserror = "2"
+
+[dev-dependencies]
+letter-docx.workspace = true

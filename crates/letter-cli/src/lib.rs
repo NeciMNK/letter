@@ -201,7 +201,14 @@ fn write_png(image: &RgbaImage, path: &Path) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+/// Открывает .docx, а файл с расширением .doc — как Word 97–2003.
 fn open(path: &str) -> Result<Document, String> {
+    let is_doc = Path::new(path)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("doc"));
+    if is_doc {
+        return letter_doc::read_file(path).map_err(|e| format!("{path}: {e}"));
+    }
     letter_docx::read_file(path).map_err(|e| format!("{path}: {e}"))
 }
 

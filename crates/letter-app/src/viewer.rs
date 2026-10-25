@@ -1176,7 +1176,7 @@ impl Viewer {
             .document
             .as_ref()
             .and_then(|d| d.path.clone())
-            .filter(|p| files::FileFormat::from_path(p).is_some());
+            .filter(|p| files::FileFormat::from_path(p).is_some_and(files::FileFormat::writable));
         match path {
             Some(path) => self.save_to(&path),
             None => self.save_as(),

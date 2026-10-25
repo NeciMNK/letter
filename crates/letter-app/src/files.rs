@@ -19,6 +19,8 @@ use letter_model::Document;
 pub enum FileFormat {
     /// Документ Word (.docx).
     Docx,
+    /// Документ Word 97–2003 (.doc), только чтение.
+    Doc,
     /// RTF.
     Rtf,
     /// OpenDocument (.odt, а для чтения ещё и плоский .fodt).
@@ -33,10 +35,17 @@ impl FileFormat {
         let extension = path.extension()?.to_str()?.to_ascii_lowercase();
         Some(match extension.as_str() {
             "docx" | "docm" | "dotx" | "dotm" => FileFormat::Docx,
+            "doc" | "dot" => FileFormat::Doc,
             "rtf" => FileFormat::Rtf,
             "odt" | "fodt" => FileFormat::Odt,
             _ => FileFormat::Text(letter_text::Format::from_path(path)?),
         })
+    }
+
+    /// Умеем ли сохранять в этот формат (.doc пока только читается:
+    /// «Сохранить» у такого документа открывает «Сохранить как»).
+    pub fn writable(self) -> bool {
+        self != FileFormat::Doc
     }
 }
 
@@ -45,10 +54,12 @@ pub const OPEN_FILTERS: &[(&str, &[&str])] = &[
     (
         "filter-all-documents",
         &[
-            "docx", "docm", "dotx", "dotm", "rtf", "odt", "fodt", "txt", "html", "htm", "md",
+            "docx", "docm", "dotx", "dotm", "doc", "dot", "rtf", "odt", "fodt", "txt", "html",
+            "htm", "md",
         ],
     ),
     ("filter-docx", &["docx", "docm", "dotx", "dotm"]),
+    ("filter-doc", &["doc", "dot"]),
     ("filter-rtf", &["rtf"]),
     ("filter-odt", &["odt", "fodt"]),
     ("filter-txt", &["txt"]),
@@ -113,6 +124,7 @@ pub fn read(path: &Path) -> Result<Document, String> {
     let data = fs::read(path).map_err(|e| fail(&e))?;
     match format {
         FileFormat::Docx => letter_docx::read_bytes(&data).map_err(|e| fail(&e)),
+        FileFormat::Doc => letter_doc::read(&data).map_err(|e| fail(&e)),
         FileFormat::Rtf => letter_rtf::read(&data).map_err(|e| fail(&e)),
         FileFormat::Odt => letter_odt::read(&data).map_err(|e| fail(&e)),
         FileFormat::Text(letter_text::Format::Text) => Ok(letter_text::read_txt(&data)),
@@ -129,6 +141,7 @@ pub fn write(doc: &Document, path: &Path) -> Result<(), String> {
     let format = FileFormat::from_path(path).ok_or_else(|| fail(&tr("error-unknown-format")))?;
     let data = match format {
         FileFormat::Docx => letter_docx::write_bytes(doc).map_err(|e| fail(&e))?,
+        FileFormat::Doc => return Err(fail(&tr("error-doc-write"))),
         FileFormat::Rtf => letter_rtf::write(doc).into_bytes(),
         FileFormat::Odt => letter_odt::write(doc).map_err(|e| fail(&e))?,
         FileFormat::Text(letter_text::Format::Text) => letter_text::write_txt(doc),
@@ -416,6 +429,8 @@ pub mod tests {
         let format = |p: &str| FileFormat::from_path(Path::new(p));
         assert_eq!(format("a.DOCX"), Some(FileFormat::Docx));
         assert_eq!(format("a.rtf"), Some(FileFormat::Rtf));
+        assert_eq!(format("a.doc"), Some(FileFormat::Doc));
+        assert!(!FileFormat::Doc.writable() && FileFormat::Rtf.writable());
         assert_eq!(format("a.fodt"), Some(FileFormat::Odt));
         assert_eq!(
             format("a.md"),
@@ -423,6 +438,16 @@ pub mod tests {
         );
         assert_eq!(format("a.pdf"), None);
         assert_eq!(format("a"), None);
+    }
+
+    #[test]
+    fn doc_files_are_read_but_not_written() {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/doc/ru-en.doc");
+        let doc = read(&fixture).unwrap();
+        assert!(!doc.plain_text().is_empty());
+        let dir = tests::temp_dir("doc-write");
+        assert!(write(&doc, &dir.join("a.doc")).is_err());
     }
 
     #[test]
