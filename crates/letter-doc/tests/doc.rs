@@ -71,3 +71,39 @@ fn not_a_doc_file_is_an_error() {
     let docx = std::fs::read(fixtures().join("docx/plain-text.docx")).unwrap();
     assert!(letter_doc::read(&docx).is_err());
 }
+
+/// Оформление фрагмента с текстом `text`.
+fn run_with<'a>(doc: &'a Document, text: &str) -> &'a letter_model::RunProps {
+    paragraphs(doc)
+        .into_iter()
+        .flat_map(|p| &p.content)
+        .find_map(|inline| match inline {
+            letter_model::Inline::Run(run) if run.plain_text() == text => Some(&run.props),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("нет фрагмента {text:?}"))
+}
+
+#[test]
+fn run_formatting_is_read() {
+    let doc = letter_doc::read_file(fixtures().join("doc/bold-italic.doc")).unwrap();
+    assert_eq!(run_with(&doc, "bold").bold, Some(true));
+    assert_eq!(run_with(&doc, "italic").italic, Some(true));
+    let red = run_with(&doc, "red 16pt");
+    assert_eq!(red.size, Some(letter_model::HalfPoints(32)));
+    assert!(red.color.is_some());
+}
+
+#[test]
+fn paragraph_styles_are_read() {
+    let doc = letter_doc::read_file(fixtures().join("doc/headings.doc")).unwrap();
+    let styles: Vec<_> = paragraphs(&doc)
+        .iter()
+        .map(|p| p.props.style.as_deref())
+        .collect();
+    assert_eq!(styles[0], Some("Title"));
+    assert_eq!(styles[1], Some("Heading1"));
+    assert_eq!(styles[3], Some("Heading2"));
+    let heading = doc.styles.get("Heading1").expect("стиль Heading1");
+    assert_eq!(heading.name.as_deref(), Some("heading 1"));
+}
