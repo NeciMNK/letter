@@ -73,6 +73,11 @@ pub fn table() -> Vec<Shortcut> {
         local(CTRL_SHIFT, Key::Num8, C::ToggleMarks),
         local(Modifiers::NONE, Key::F9, C::UpdateFields),
         local(
+            Modifiers::NONE,
+            Key::F7,
+            C::Spelling(crate::spelling::SpellAction::Next),
+        ),
+        local(
             CTRL_ALT,
             Key::F,
             C::Edit(Command::InsertNote(NoteKind::Footnote)),

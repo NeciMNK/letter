@@ -1,0 +1,16 @@
+[package]
+name = "letter-spell"
+description = "Проверка орфографии по словарям Hunspell (русский и английский)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# Проверка и подсказки по словарям Hunspell (.aff/.dic), на чистом Rust.
+spellbook = "0.4"

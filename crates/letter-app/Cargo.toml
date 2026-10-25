@@ -30,6 +30,7 @@ letter-model.workspace = true
 letter-odt.workspace = true
 letter-render.workspace = true
 letter-rtf.workspace = true
+letter-spell.workspace = true
 letter-text.workspace = true
 # Системное окно выбора файла (Windows, macOS, Linux через XDG-портал).
 rfd = "0.17"

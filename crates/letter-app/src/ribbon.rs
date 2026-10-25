@@ -194,6 +194,8 @@ pub enum RibbonCommand {
     /// «Рецензирование → Исправления» (Ctrl+Shift+E): включить или
     /// выключить запись исправлений.
     ToggleTrackRevisions,
+    /// Проверка орфографии.
+    Spelling(crate::spelling::SpellAction),
     /// «Рецензирование → Сравнить»: выбрать прежнюю версию документа и
     /// отметить разницу с ней исправлениями.
     Compare,
@@ -321,6 +323,8 @@ pub struct RibbonInfo {
     pub active_comment: bool,
     /// Запись исправлений включена.
     pub track_revisions: bool,
+    /// Ошибки правописания подчёркиваются.
+    pub spelling: bool,
     /// В документе есть исправления.
     pub revisions: bool,
     /// Курсор в таблице.

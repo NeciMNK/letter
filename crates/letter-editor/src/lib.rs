@@ -82,7 +82,8 @@ pub use section::{
     set_title_page,
 };
 pub use selection::{
-    Selection, SelectionRect, paragraph_at, select_all, selection_rects, word_at, word_only_at,
+    Selection, SelectionRect, line_range_rects, paragraph_at, select_all, selection_rects, word_at,
+    word_only_at,
 };
 pub use table::{
     BorderPreset, can_merge, delete_columns, delete_rows, delete_table, in_table, insert_columns,

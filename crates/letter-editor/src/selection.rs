@@ -217,6 +217,20 @@ fn mark_width(line: &PageLine) -> f32 {
 }
 
 /// Куски строки с текстом от `from` до `to`.
+/// Прямоугольники куска `from..to` строки `line` на листе `page`
+/// (например, слова с ошибкой); соседние склеены.
+pub fn line_range_rects(
+    line: &PageLine,
+    page: usize,
+    from: usize,
+    to: usize,
+) -> Vec<SelectionRect> {
+    let mut out = Vec::new();
+    line_rects(line, page, from, to, &mut out);
+    merge(&mut out);
+    out
+}
+
 fn line_rects(line: &PageLine, page: usize, from: usize, to: usize, out: &mut Vec<SelectionRect>) {
     if from >= to {
         return;
