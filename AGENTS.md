@@ -34,6 +34,7 @@
 - `crates/letter-text` — TXT, HTML, Markdown.
 - `crates/letter-odt` — ODT (OpenDocument, LibreOffice).
 - `crates/letter-layout` — вёрстка.
+- `crates/letter-spell` — проверка орфографии (словари Hunspell ru/en в `dictionaries/`).
 - `crates/letter-render` — отрисовка.
 - `crates/letter-editor` — курсор, команды, отмена.
 - `crates/letter-app` — окно и интерфейс, бинарник `letter`.

@@ -30,8 +30,8 @@ use letter_editor::{
     Command, FieldContext, History, ListKind, Motion, PictureBox, PictureWrap, Position, RunFormat,
     Selection, anchor_with_wrap, bookmark_position, bookmark_range, bookmarks,
     can_continue_numbering, caret, copy_range, find_all, find_next, formatting_at, hit_test,
-    language_at, link_at, list_kind, move_cursor, moved_anchor, paragraph_at, picture_at_point,
-    picture_ref, select_all, selected_picture, selection_rects, word_at,
+    language_at, line_range_rects, link_at, list_kind, move_cursor, moved_anchor, paragraph_at,
+    picture_at_point, picture_ref, select_all, selected_picture, selection_rects, word_at,
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
 use letter_model::{
@@ -54,6 +54,7 @@ use crate::picture::{Handle, PictureDrag};
 use crate::ribbon::{Ribbon, RibbonCommand, RibbonInfo};
 use crate::ruler::{self, RULER_SIZE, RulerParagraph, RulerState};
 use crate::settings::Settings;
+use crate::spelling::SpellAction;
 use crate::symbols::SymbolDialog;
 use crate::theme::{Palette, ThemeChoice};
 use crate::view::{
@@ -762,6 +763,10 @@ pub struct Viewer {
     zoom_before_read: Option<Zoom>,
     /// Показывать область примечаний.
     show_comments: bool,
+    /// Проверка орфографии.
+    spelling: crate::spelling::Spelling,
+    /// Слово с ошибкой под правой кнопкой (для меню).
+    misspelling: Option<crate::spelling::Misspelling>,
     /// Область примечаний.
     comment_pane: CommentPane,
     /// Примечания на экране в прошлом кадре: номер и конец куска текста.
@@ -996,6 +1001,11 @@ impl Viewer {
             navigation: Default::default(),
             zoom_before_read: None,
             show_comments: true,
+            spelling: crate::spelling::Spelling::new(
+                dir.as_ref().map(|d| d.join("dictionary.txt")),
+                !cfg!(test),
+            ),
+            misspelling: None,
             comment_pane: CommentPane::default(),
             comment_anchors: Vec::new(),
             nav_found: None,
@@ -2172,6 +2182,7 @@ impl Viewer {
                 .and_then(|d| d.comment_places.as_ref())
                 .is_some_and(|(_, p)| !p.is_empty()),
             show_comments: self.show_comments,
+            spelling: self.spelling.show,
             active_comment: self.comment_pane.active.is_some(),
             marks: self.show_marks,
             fonts: self.font_names.clone(),
@@ -2315,6 +2326,11 @@ impl Viewer {
                     }
                 }
                 RibbonCommand::GoToRevision { forward } => self.go_to_revision(forward),
+                RibbonCommand::Spelling(action) => {
+                    if let Some(action) = self.spell_action(action) {
+                        actions.push(action);
+                    }
+                }
                 RibbonCommand::Compare => {
                     if let Some(path) = self.pick_original() {
                         actions.extend(self.compare_action(&path));
@@ -2682,6 +2698,67 @@ impl Viewer {
 
     /// «Назад» и «Далее»: делает активным соседнее примечание и ставит
     /// курсор в начало его куска текста.
+    /// Выполняет действие проверки орфографии; правку документа
+    /// возвращает.
+    fn spell_action(&mut self, action: SpellAction) -> Option<Action> {
+        match action {
+            SpellAction::Next => self.go_to_misspelling(),
+            SpellAction::ToggleShow => self.spelling.show = !self.spelling.show,
+            SpellAction::Ignore(word) => self.spelling.ignore(&word),
+            SpellAction::Add(word) => self.spelling.add(&word),
+            SpellAction::Replace {
+                paragraph,
+                range,
+                with,
+            } => {
+                let document = self.document.as_mut()?;
+                document.anchor = Position::new(paragraph, range.start);
+                document.cursor = Position::new(paragraph, range.end);
+                return Some(Action::Edit(Command::Type(with)));
+            }
+        }
+        None
+    }
+
+    /// F7: выделяет следующую ошибку после выделения (по кругу).
+    fn go_to_misspelling(&mut self) {
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        if document.story.is_some() {
+            return;
+        }
+        // Текст каждого абзаца из вёрстки, по порядку.
+        let mut texts: std::collections::BTreeMap<usize, Arc<str>> = Default::default();
+        for line in document.layout.pages.iter().flat_map(|p| &p.lines) {
+            texts
+                .entry(line.paragraph)
+                .or_insert_with(|| Arc::clone(&line.text));
+        }
+        self.spelling.show = true;
+        let from = Selection::new(document.anchor, document.cursor).end();
+        let mut first = None;
+        for (&paragraph, text) in &texts {
+            for range in self.spelling.errors(text).iter() {
+                let found = (paragraph, range.clone());
+                if (paragraph, range.start) >= (from.paragraph, from.offset) {
+                    document.anchor = Position::new(paragraph, range.start);
+                    document.cursor = Position::new(paragraph, range.end);
+                    document.history.seal();
+                    self.reveal_cursor = true;
+                    return;
+                }
+                first.get_or_insert(found);
+            }
+        }
+        if let Some((paragraph, range)) = first {
+            document.anchor = Position::new(paragraph, range.start);
+            document.cursor = Position::new(paragraph, range.end);
+            document.history.seal();
+            self.reveal_cursor = true;
+        }
+    }
+
     /// Выделяет следующее (`forward`) или предыдущее исправление.
     fn go_to_revision(&mut self, forward: bool) {
         let Some(document) = &mut self.document else {
@@ -3010,6 +3087,8 @@ impl Viewer {
             document,
             show_marks,
             picture_drag,
+            spelling,
+            misspelling,
             ..
         } = self;
         let Some(document) = document else {
@@ -3287,6 +3366,21 @@ impl Viewer {
                 let inside = !selection.is_empty()
                     && key(position) >= key(selection.start())
                     && key(position) <= key(selection.end());
+                if secondary && response.hovered() {
+                    // Слово с ошибкой под указателем — варианты в меню.
+                    let text = document
+                        .layout
+                        .pages
+                        .iter()
+                        .flat_map(|p| &p.lines)
+                        .find(|l| l.paragraph == position.paragraph)
+                        .map(|l| Arc::clone(&l.text));
+                    *misspelling = text
+                        .filter(|_| document.story.is_none() && document.view.editable())
+                        .and_then(|t| {
+                            spelling.misspelling_at(position.paragraph, &t, position.offset)
+                        });
+                }
                 if secondary && response.hovered() && !inside {
                     document.cursor = position;
                     document.anchor = position;
@@ -3320,6 +3414,9 @@ impl Viewer {
             let numbered = (list_kind(&document.doc, paragraph) == Some(ListKind::Numbered))
                 .then(|| can_continue_numbering(&document.doc, paragraph));
             response.context_menu(|ui| {
+                if let Some(found) = misspelling.as_ref() {
+                    crate::context_menu::spelling_items(ui, found, &mut menu);
+                }
                 crate::context_menu::context_menu(ui, has_selection, numbered, on_link, &mut menu);
             });
 
@@ -3334,6 +3431,38 @@ impl Viewer {
                     if let Some(header) = document.story.as_ref().and_then(|s| s.header()) {
                         paint_story_frame(ui, page, screen_rect(i), 1.0 / points, header);
                     }
+                }
+            }
+
+            // Ошибки правописания — красная волна под словом.
+            if document.story.is_none() && document.view.editable() {
+                for (i, page) in pages.iter().enumerate() {
+                    if !placement.rects[i].intersects(visible) {
+                        continue;
+                    }
+                    let origin = screen_rect(i).min;
+                    let scale = 1.0 / points;
+                    for line in &page.lines {
+                        let range = &line.line.range;
+                        for error in spelling.errors(&line.text).iter() {
+                            let (from, to) =
+                                (error.start.max(range.start), error.end.min(range.end));
+                            if from >= to {
+                                continue;
+                            }
+                            for r in line_range_rects(line, i, from, to) {
+                                let rect = Rect::from_min_max(
+                                    origin + Vec2::new(r.left, r.top) * scale,
+                                    origin + Vec2::new(r.right, r.bottom) * scale,
+                                );
+                                crate::spelling::paint_wave(ui.painter(), rect, scale * zoom);
+                            }
+                        }
+                    }
+                }
+                if spelling.show && !spelling.ready() {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(250));
                 }
             }
 
@@ -3743,6 +3872,12 @@ fn allowed_in_read_mode(command: &RibbonCommand) -> bool {
             | RibbonCommand::NextComment
             | RibbonCommand::ToggleComments
             | RibbonCommand::GoToRevision { .. }
+            | RibbonCommand::Spelling(
+                SpellAction::Next
+                    | SpellAction::ToggleShow
+                    | SpellAction::Ignore(_)
+                    | SpellAction::Add(_)
+            )
             | RibbonCommand::OpenLink
             | RibbonCommand::OpenPopup(_)
             | RibbonCommand::Focus(_)
@@ -4048,6 +4183,62 @@ mod tests {
                 .is_none()
         );
         assert!(viewer.error.is_some());
+    }
+
+    #[test]
+    fn spelling_errors_are_found_and_fixed() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.new_document();
+        viewer.spelling.load_now();
+        let start = Selection::caret(Position::new(0, 0));
+        viewer.document.as_mut().unwrap().set_selection(start);
+        let text = "Превет, мир. Hello wrold.";
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Edit(Command::Type(text.into()))]);
+        frame(&ctx, &mut viewer, screen());
+        viewer.document.as_mut().unwrap().set_selection(start);
+
+        // F7 — первая ошибка, потом вторая, потом снова первая.
+        let next = || RibbonCommand::Spelling(SpellAction::Next);
+        viewer.run_ribbon(&ctx, vec![next()]);
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(document.anchor, Position::new(0, 0));
+        assert_eq!(document.cursor, Position::new(0, "Превет".len()));
+        viewer.run_ribbon(&ctx, vec![next()]);
+        let wrold = "Превет, мир. Hello ".len();
+        assert_eq!(
+            viewer.document.as_ref().unwrap().anchor,
+            Position::new(0, wrold)
+        );
+        viewer.run_ribbon(&ctx, vec![next()]);
+        assert_eq!(
+            viewer.document.as_ref().unwrap().anchor,
+            Position::new(0, 0)
+        );
+
+        // Замена из меню и «Пропустить все».
+        let replace = SpellAction::Replace {
+            paragraph: 0,
+            range: 0.."Превет".len(),
+            with: "Привет".into(),
+        };
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Spelling(replace)]);
+        let doc = &viewer.document.as_ref().unwrap().doc;
+        assert_eq!(doc.plain_text(), "Привет, мир. Hello wrold.");
+        let ignore = SpellAction::Ignore("wrold".into());
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Spelling(ignore)]);
+        viewer.document.as_mut().unwrap().set_selection(start);
+        viewer.run_ribbon(&ctx, vec![next()]);
+        assert_eq!(
+            viewer.document.as_ref().unwrap().cursor,
+            Position::new(0, 0)
+        );
+
+        // Показ ошибок выключается.
+        assert!(viewer.ribbon_info().spelling);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Spelling(SpellAction::ToggleShow)]);
+        assert!(!viewer.ribbon_info().spelling);
+        frame(&ctx, &mut viewer, screen());
     }
 
     #[test]

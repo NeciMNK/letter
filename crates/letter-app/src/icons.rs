@@ -95,6 +95,10 @@ pub enum Icon {
     RejectAll,
     /// Сравнить версии: две ветки.
     Compare,
+    /// Правописание: буквы с галочкой.
+    SpellCheck,
+    /// Показывать ошибки правописания: глаз.
+    ShowErrors,
     /// Открыть окно группы ленты: стрелка в угол.
     Launcher,
     /// Вставить с исходным оформлением.
@@ -258,6 +262,8 @@ impl Icon {
             Icon::Reject => ("circle-x", '\u{E084}'),
             Icon::RejectAll => ("list-x", '\u{E240}'),
             Icon::Compare => ("git-compare", '\u{E359}'),
+            Icon::SpellCheck => ("spell-check", '\u{E49A}'),
+            Icon::ShowErrors => ("eye", '\u{E0BA}'),
             Icon::Launcher => ("arrow-down-right", '\u{E045}'),
             Icon::PasteKeep => ("clipboard-pen-line", '\u{E308}'),
             Icon::PasteMerge => ("clipboard-list", '\u{E086}'),
@@ -477,7 +483,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 77] = [
+    const ALL: [Icon; 79] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -523,6 +529,8 @@ mod tests {
         Icon::Reject,
         Icon::RejectAll,
         Icon::Compare,
+        Icon::SpellCheck,
+        Icon::ShowErrors,
         Icon::Launcher,
         Icon::PasteKeep,
         Icon::PasteMerge,

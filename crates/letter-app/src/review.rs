@@ -1,5 +1,7 @@
 //! Вкладка «Рецензирование»:
 //!
+//! - «Правописание» — к следующей ошибке (F7), показать или скрыть
+//!   подчёркивание ошибок;
 //! - «Примечания» — создать, удалить, перейти к предыдущему и следующему,
 //!   показать или скрыть область примечаний;
 //! - «Запись исправлений» — включить или выключить запись правки;
@@ -14,10 +16,13 @@ use crate::i18n::tr;
 use crate::icons::{Icon, icon_button};
 use crate::keytips::{self, Level, TipAction};
 use crate::ribbon::{RibbonCommand, RibbonInfo, group};
+use crate::spelling::SpellAction;
 
 /// Подсказки клавиш вкладки «Рецензирование» (для проверки).
 #[cfg(test)]
-pub const KEYTIPS: [&str; 13] = [
+pub const KEYTIPS: [&str; 15] = [
+    "keytip-review-spelling",
+    "keytip-review-show-errors",
     "keytip-review-new",
     "keytip-review-delete",
     "keytip-review-previous",
@@ -71,6 +76,29 @@ fn buttons(ui: &mut Ui, buttons: Vec<Button>, out: &mut Vec<RibbonCommand>) {
 
 /// Вкладка «Рецензирование».
 pub fn review(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+    group(ui, tr("group-proofing"), |ui| {
+        let list = vec![
+            (
+                Icon::SpellCheck,
+                "spelling",
+                "spelling-hint",
+                "keytip-review-spelling",
+                RibbonCommand::Spelling(SpellAction::Next),
+                info.has_document && info.story.is_none(),
+                false,
+            ),
+            (
+                Icon::ShowErrors,
+                "spelling-show",
+                "spelling-show-hint",
+                "keytip-review-show-errors",
+                RibbonCommand::Spelling(SpellAction::ToggleShow),
+                info.has_document,
+                info.spelling,
+            ),
+        ];
+        buttons(ui, list, out);
+    });
     group(ui, tr("group-comments"), |ui| {
         // Примечание ставится в основной текст, не в колонтитул.
         let can_add = info.has_document && info.story.is_none() && info.editable;

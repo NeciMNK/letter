@@ -96,6 +96,47 @@ pub fn context_menu(
     }
 }
 
+/// Начало меню над словом с ошибкой: варианты исправления, «Пропустить
+/// все», «Добавить в словарь».
+pub fn spelling_items(
+    ui: &mut Ui,
+    found: &crate::spelling::Misspelling,
+    out: &mut Vec<RibbonCommand>,
+) {
+    use crate::spelling::SpellAction;
+    ui.set_min_width(200.0);
+    if found.suggestions.is_empty() {
+        ui.add_enabled(
+            false,
+            eframe::egui::Button::new(tr("spelling-no-suggestions")),
+        );
+    }
+    for suggestion in &found.suggestions {
+        let text = eframe::egui::RichText::new(suggestion).strong();
+        if ui.button(text).clicked() {
+            out.push(RibbonCommand::Spelling(SpellAction::Replace {
+                paragraph: found.paragraph,
+                range: found.range.clone(),
+                with: suggestion.clone(),
+            }));
+            ui.close();
+        }
+    }
+    if ui.button(tr("spelling-ignore")).clicked() {
+        out.push(RibbonCommand::Spelling(SpellAction::Ignore(
+            found.word.clone(),
+        )));
+        ui.close();
+    }
+    if ui.button(tr("spelling-add")).clicked() {
+        out.push(RibbonCommand::Spelling(SpellAction::Add(
+            found.word.clone(),
+        )));
+        ui.close();
+    }
+    ui.separator();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

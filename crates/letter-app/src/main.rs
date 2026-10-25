@@ -35,6 +35,7 @@ mod ribbon;
 mod ruler;
 mod settings;
 mod shortcuts;
+mod spelling;
 mod story;
 mod styles;
 mod symbols;
