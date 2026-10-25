@@ -145,6 +145,11 @@ fn docx_survives_conversion_to_rtf() {
                     })
                     .collect()
             };
+            // Исправления в RTF пока не пишутся: фрагменты, которые
+            // отличались только исправлением, сливаются.
+            if p.runs().any(|r| r.props.revision.is_some()) {
+                continue;
+            }
             for (r, s) in runs(p).iter().zip(runs(q).iter()) {
                 let (x, y) = (
                     docx.resolve_run(&p.props, &r.props),

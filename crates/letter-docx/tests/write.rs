@@ -33,6 +33,7 @@ const FIXTURES: &[&str] = &[
     "links.docx",
     "notes.docx",
     "comments.docx",
+    "revisions.docx",
     "borders.docx",
     "watermark.docx",
     "header-footer.docx",
@@ -207,6 +208,7 @@ fn everything() -> Document {
         position: Some(-6),
         kerning: Some(HalfPoints(24)),
         link: None,
+        revision: None,
         // Порядок как в схеме: при записи элементы всё равно встанут так.
         unknown: vec![
             RawXml::new(

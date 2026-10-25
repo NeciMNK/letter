@@ -1435,7 +1435,10 @@ fn prepare(
     let mut floats = Vec::new();
     let mut notes = Vec::new();
     for run in paragraph.runs() {
-        let resolved = doc.resolve_run_in(&paragraph.props, &run.props, table);
+        let mut resolved = doc.resolve_run_in(&paragraph.props, &run.props, table);
+        if let Some(revision) = &run.props.revision {
+            crate::revisions::mark_revision(&mut resolved, revision);
+        }
         let mut text = String::new();
         for item in &run.content {
             match item {

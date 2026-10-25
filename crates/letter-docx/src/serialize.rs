@@ -8,8 +8,9 @@
 use letter_model::{
     Block, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind, FirstLineIndent,
     HeaderFooterKind, Hyperlink, Inline, LineSpacing, Note, NoteKind, Orientation,
-    PageBorderDisplay, PageBorders, Paragraph, ParagraphProps, RawXml, Run, RunContent, RunFonts,
-    RunProps, Section, SectionProps, SectionStart, Style, StyleKind, Styles, VerticalAlign,
+    PageBorderDisplay, PageBorders, Paragraph, ParagraphProps, RawXml, RevisionKind, Run,
+    RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Style, StyleKind, Styles,
+    VerticalAlign,
 };
 
 use crate::document::{W_NS, is_w_ns};
@@ -299,14 +300,85 @@ pub(crate) fn block_xml(block: &Block) -> String {
 
 fn paragraph(p: &Paragraph, section: Option<&SectionProps>) -> String {
     let mut out = paragraph_props(&p.props, section);
+    out.push_str(&content_xml(&p.content));
+    element("w:p", &out)
+}
+
+/// Отметки, которые могут стоять внутри `w:hyperlink`, `w:ins`, `w:del`.
+fn is_marker(inline: &Inline) -> bool {
+    matches!(
+        inline,
+        Inline::BookmarkStart(_)
+            | Inline::BookmarkEnd(_)
+            | Inline::CommentStart(_)
+            | Inline::CommentEnd(_)
+    )
+}
+
+/// Содержимое абзаца: соседние фрагменты с одним исправлением — внутри
+/// одного `w:ins` или `w:del`, а в них соседние фрагменты с одной
+/// ссылкой — внутри одного `w:hyperlink`.
+fn content_xml(content: &[Inline]) -> String {
+    fn revision(inline: &Inline) -> Option<&letter_model::Revision> {
+        match inline {
+            Inline::Run(run) => run.props.revision.as_ref(),
+            _ => None,
+        }
+    }
+    let mut out = String::new();
     let mut i = 0;
-    while i < p.content.len() {
-        let link = match &p.content[i] {
+    while i < content.len() {
+        let Some(current) = revision(&content[i]) else {
+            let end = (i..content.len())
+                .find(|&k| revision(&content[k]).is_some())
+                .unwrap_or(content.len());
+            out.push_str(&links_xml(&content[i..end]));
+            i = end;
+            continue;
+        };
+        let mut last = i;
+        let mut k = i + 1;
+        while let Some(next) = content.get(k) {
+            match revision(next) {
+                Some(r) if r == current => last = k,
+                None if is_marker(next) => {}
+                _ => break,
+            }
+            k += 1;
+        }
+        let name = match current.kind {
+            RevisionKind::Insert => "w:ins",
+            RevisionKind::Delete => "w:del",
+        };
+        let mut attrs = format!(
+            r#" w:id="{}" w:author="{}""#,
+            escape_attr(&current.id),
+            escape_attr(&current.author)
+        );
+        if let Some(date) = &current.date {
+            attrs.push_str(&format!(r#" w:date="{}""#, escape_attr(date)));
+        }
+        out.push_str(&format!(
+            "<{name}{attrs}>{}</{name}>",
+            links_xml(&content[i..=last])
+        ));
+        i = last + 1;
+    }
+    out
+}
+
+/// Элементы абзаца; соседние фрагменты с одной ссылкой — внутри одного
+/// `w:hyperlink`.
+fn links_xml(content: &[Inline]) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < content.len() {
+        let link = match &content[i] {
             Inline::Run(run) => run.props.link.as_ref(),
             _ => None,
         };
         let Some(link) = link else {
-            out.push_str(&inline_xml(&p.content[i]));
+            out.push_str(&inline_xml(&content[i]));
             i += 1;
             continue;
         };
@@ -314,25 +386,22 @@ fn paragraph(p: &Paragraph, section: Option<&SectionProps>) -> String {
         // внутри одного `w:hyperlink`.
         let mut end = i + 1;
         let mut last_run = i;
-        while let Some(next) = p.content.get(end) {
+        while let Some(next) = content.get(end) {
             match next {
                 Inline::Run(run) if run.props.link.as_ref() == Some(link) => last_run = end,
-                Inline::BookmarkStart(_)
-                | Inline::BookmarkEnd(_)
-                | Inline::CommentStart(_)
-                | Inline::CommentEnd(_) => {}
+                other if is_marker(other) => {}
                 _ => break,
             }
             end += 1;
         }
-        let inner: String = p.content[i..=last_run].iter().map(inline_xml).collect();
+        let inner: String = content[i..=last_run].iter().map(inline_xml).collect();
         out.push_str(&format!(
             "<w:hyperlink{}>{inner}</w:hyperlink>",
             hyperlink_attributes(link)
         ));
         i = last_run + 1;
     }
-    element("w:p", &out)
+    out
 }
 
 fn inline_xml(inline: &Inline) -> String {
@@ -486,8 +555,24 @@ thread_local! {
 
 fn run_xml(run: &Run) -> String {
     let mut out = run_props(&run.props);
+    // Удалённый текст пишется в `w:delText` и `w:delInstrText`.
+    let deleted = run
+        .props
+        .revision
+        .as_ref()
+        .is_some_and(|r| r.kind == RevisionKind::Delete);
     for item in &run.content {
         match item {
+            RunContent::Text(text) if deleted => out.push_str(
+                &text_xml(text)
+                    .replace("<w:t>", "<w:delText>")
+                    .replace("<w:t ", "<w:delText ")
+                    .replace("</w:t>", "</w:delText>"),
+            ),
+            RunContent::FieldCode(code) if deleted => out.push_str(&format!(
+                r#"<w:delInstrText xml:space="preserve">{}</w:delInstrText>"#,
+                escape_text(code)
+            )),
             RunContent::Text(text) => out.push_str(&text_xml(text)),
             RunContent::Tab => out.push_str("<w:tab/>"),
             RunContent::Symbol(s) => out.push_str(&format!(

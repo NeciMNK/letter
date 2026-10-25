@@ -20,6 +20,7 @@ pub mod fonts;
 pub mod lines;
 mod notes;
 pub mod pages;
+mod revisions;
 pub mod shaping;
 pub mod spacing;
 mod table;
@@ -34,6 +35,7 @@ pub use pages::{
     CellArea, DocumentLayout, Float, LayoutCache, Margins, Page, PageLine, PageNote, PageStory,
     PageWatermark, Shape, ShapeKind, baseline_rise, layout_document, layout_document_cached,
 };
+pub use revisions::{mark_revision, revision_color};
 pub use shaping::{FontMetrics, ShapedGlyph, ShapedRun, Shaper, TextStyle};
 pub use spacing::{
     LineBox, LineRule, ParagraphBlock, ParagraphSpacing, PlacedParagraph, effective_spacing,
