@@ -7,13 +7,13 @@
 //! пока не бывает: Backspace в начале абзаца при записи только сдвигает
 //! курсор.
 
-use letter_model::{Document, Inline, Revision, RevisionKind, Run};
+use letter_model::{Block, Document, Inline, Paragraph, Revision, RevisionKind, Run};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::Position;
 use crate::edit::{
     clamp_offset, item_len, paragraph_count, paragraph_mut, paragraph_ref, plain_text,
-    split_content, text_len, tidy,
+    split_content, text_len, tidy, top_level,
 };
 
 /// Кто и когда правит при записи исправлений.
@@ -25,19 +25,15 @@ pub struct Reviewer {
     pub date: Option<String>,
 }
 
-/// Меняет фрагменты абзаца `index` между `from` и `to` (смещения):
-/// `change` получает каждый такой фрагмент и говорит, оставить ли его.
+/// Меняет фрагменты абзаца между `from` и `to` (смещения): `change`
+/// получает каждый такой фрагмент и говорит, оставить ли его.
 /// Возвращает, сколько байт текста убрано.
-fn change_runs(
-    doc: &mut Document,
-    index: usize,
+pub(crate) fn change_paragraph(
+    paragraph: &mut Paragraph,
     from: usize,
     to: usize,
     change: &mut impl FnMut(&mut Run) -> bool,
 ) -> usize {
-    let Some(paragraph) = paragraph_mut(doc, index) else {
-        return 0;
-    };
     let from = clamp_offset(paragraph, from);
     let to = clamp_offset(paragraph, to).max(from);
     let tail = split_content(paragraph, to);
@@ -63,6 +59,20 @@ fn change_runs(
     paragraph.content.extend(tail);
     tidy(paragraph);
     removed
+}
+
+/// [`change_paragraph`] для абзаца номер `index`.
+fn change_runs(
+    doc: &mut Document,
+    index: usize,
+    from: usize,
+    to: usize,
+    change: &mut impl FnMut(&mut Run) -> bool,
+) -> usize {
+    match paragraph_mut(doc, index) {
+        Some(paragraph) => change_paragraph(paragraph, from, to, change),
+        None => 0,
+    }
 }
 
 /// Вызывает [`change_runs`] для каждого абзаца от `start` до `end`.
@@ -102,7 +112,7 @@ fn ordered(a: Position, b: Position) -> (Position, Position) {
 /// Номер для нового исправления: больше всех номеров исправлений,
 /// примечаний и закладок документа (Word требует, чтобы они не
 /// совпадали).
-fn next_id(doc: &Document) -> String {
+pub(crate) fn next_id(doc: &Document) -> String {
     let mut next = 0u64;
     let mut take = |id: &str| {
         if let Ok(n) = id.parse::<u64>() {
@@ -293,6 +303,10 @@ pub fn resolve_revisions(
     id: Option<&str>,
     accept: bool,
 ) {
+    let (start, end) = ordered(start, end);
+    let lengths: Vec<usize> = (start.paragraph..=end.paragraph)
+        .map(|i| paragraph_ref(doc, i).map_or(0, text_len))
+        .collect();
     change_range(doc, start, end, |run| {
         let Some(revision) = &run.props.revision else {
             return true;
@@ -304,6 +318,23 @@ pub fn resolve_revisions(
         run.props.revision = None;
         keep
     });
+    // Абзац, весь текст которого был удалён или вставлен, уходит вместе
+    // с текстом (знак абзаца исправлением пока не бывает).
+    for (i, before) in lengths.into_iter().enumerate().rev() {
+        let index = start.paragraph + i;
+        if before == 0 || paragraph_ref(doc, index).is_none_or(|p| text_len(p) > 0) {
+            continue;
+        }
+        let Some((section, block)) = top_level(doc, index) else {
+            continue;
+        };
+        let Some(blocks) = doc.sections.get_mut(section).map(|s| &mut s.blocks) else {
+            continue;
+        };
+        if blocks.len() > 1 && matches!(blocks.get(block), Some(Block::Paragraph(_))) {
+            blocks.remove(block);
+        }
+    }
 }
 
 /// Исправление у места `at` (во фрагменте, где стоит курсор, или сразу
