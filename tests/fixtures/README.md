@@ -77,7 +77,7 @@ soffice --headless --convert-to odt ../docx/имя.docx
 
 Файлы Word 97–2003 (.doc) для проверки чтения (задача F8.1): `plain-text`,
 `bold-italic`, `ru-en`, `table`, `headings`, `lists`, `pages`,
-`header-footer`. Они сохранены программой LibreOffice из одноимённых
+`header-footer`, `sections`, `headers`, `borders`. Они сохранены программой LibreOffice из одноимённых
 файлов `docx/` и распространяются по лицензии проекта (MIT). Чтобы
 пересоздать:
 
@@ -85,3 +85,6 @@ soffice --headless --convert-to odt ../docx/имя.docx
 cd tests/fixtures/doc
 soffice --headless --convert-to 'doc:MS Word 97' ../docx/имя.docx
 ```
+
+`nested.doc` (таблица во вложенной таблице) сохранён LibreOffice из
+`nested.html` рядом (та же команда с `nested.html`).

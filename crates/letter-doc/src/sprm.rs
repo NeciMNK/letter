@@ -8,6 +8,7 @@ use letter_model::{
     RunProps, TabLeader, TabStop, TabStopKind, Twips, Underline, VerticalAlign,
 };
 
+use crate::border::{brc, brc80, shd, shd80};
 use crate::fib::u16_at;
 
 /// Свойство: код и значение.
@@ -292,6 +293,27 @@ pub(crate) fn apply_paragraph(props: &mut ParagraphProps, list: &[Sprm]) {
                 });
             }
             0xC60D | code::P_CHG_TABS => change_tabs(&mut props.tabs, sprm.operand),
+            0x6424..=0x6428 | 0xC64E..=0xC652 => {
+                let line = if sprm.code < 0xC000 {
+                    brc80(sprm.operand)
+                } else {
+                    brc(sprm.operand.get(1..).unwrap_or(&[]))
+                };
+                let borders = props.borders.get_or_insert_with(Default::default);
+                let side = match sprm.code {
+                    0x6424 | 0xC64E => &mut borders.top,
+                    0x6425 | 0xC64F => &mut borders.left,
+                    0x6426 | 0xC650 => &mut borders.bottom,
+                    0x6427 | 0xC651 => &mut borders.right,
+                    _ => &mut borders.between,
+                };
+                *side = line;
+                if borders.is_empty() {
+                    props.borders = None;
+                }
+            }
+            0x442D => props.shading = shd80(sprm.operand),
+            0xC64D => props.shading = shd(sprm.operand.get(1..).unwrap_or(&[])),
             _ => {}
         }
     }
