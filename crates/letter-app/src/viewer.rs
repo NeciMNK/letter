@@ -59,6 +59,7 @@ use crate::view::{
     MAX_ZOOM, MIN_ZOOM, PAGE_GAP, Zoom, anchored_offset, clamp_zoom, current_page, page_width_zoom,
     place_pages, step_zoom,
 };
+use crate::view_mode::{ViewMode, trim_pages, view_document};
 use letter_editor::CoverPage;
 
 /// Образец текста для окна «Шрифт»: одна строка с оформлением `props`
@@ -184,6 +185,14 @@ struct OpenDocument {
     /// Открытый для правки колонтитул: тогда `doc`, `history` и `layout`
     /// — колонтитула, а сам документ отложен здесь.
     story: Option<Box<StoryEdit>>,
+    /// Режим просмотра, в котором свёрстан документ.
+    view: ViewMode,
+    /// Ширина окна в пунктах документа, под которую свёрстан
+    /// веб-документ.
+    web_width: f32,
+    /// Вёрстка по листам для печати в режимах без листов; сбрасывается
+    /// при каждой новой вёрстке.
+    paper: Option<DocumentLayout>,
 }
 
 /// Статистика документа и выделения для строки состояния.
@@ -221,6 +230,49 @@ impl OpenDocument {
             goal_x: None,
             counts: None,
             story: None,
+            view: ViewMode::Print,
+            web_width: 0.0,
+            paper: None,
+        }
+    }
+
+    /// Переключает режим просмотра и верстает документ заново.
+    fn set_view(
+        &mut self,
+        view: ViewMode,
+        web_width: f32,
+        shaper: &mut Shaper,
+        library: &FontLibrary,
+    ) {
+        let changed = view != self.view
+            || (view == ViewMode::Web && (web_width - self.web_width).abs() >= 1.0);
+        if !changed {
+            return;
+        }
+        if view != ViewMode::Print {
+            // Колонтитулы правятся только в разметке страницы.
+            self.end_story(shaper, library);
+        }
+        self.view = view;
+        self.web_width = web_width;
+        self.relayout(shaper, library);
+    }
+
+    /// Верстает документ по листам для печати и PDF, если на экране он
+    /// без листов (веб-документ, черновик). См. [`OpenDocument::paper`].
+    fn refresh_paper(&mut self, shaper: &mut Shaper, library: &FontLibrary) {
+        if self.view.is_continuous() && self.paper.is_none() {
+            self.paper = Some(letter_layout::layout_document(&self.doc, shaper, library));
+        }
+    }
+
+    /// Вёрстка по листам, как на бумаге: для печати, PDF и просмотра
+    /// перед печатью. В режимах без листов — та, что посчитана
+    /// [`OpenDocument::refresh_paper`].
+    fn paper(&self) -> &DocumentLayout {
+        match (&self.paper, self.view.is_continuous()) {
+            (Some(paper), true) => paper,
+            _ => &self.layout,
         }
     }
 
@@ -277,6 +329,7 @@ impl OpenDocument {
 
     /// Верстает документ заново после правки.
     fn relayout(&mut self, shaper: &mut Shaper, library: &FontLibrary) {
+        self.paper = None;
         match &mut self.story {
             Some(story) => {
                 story.write_back(&self.doc);
@@ -284,9 +337,16 @@ impl OpenDocument {
                     layout_document_cached(&story.body, shaper, library, &mut self.cache);
                 self.layout = story.edit_layout();
             }
-            None => {
-                self.layout = layout_document_cached(&self.doc, shaper, library, &mut self.cache);
-            }
+            None => match view_document(&self.doc, self.view, self.web_width) {
+                Some(copy) => {
+                    self.layout = layout_document_cached(&copy, shaper, library, &mut self.cache);
+                    trim_pages(&mut self.layout);
+                }
+                None => {
+                    self.layout =
+                        layout_document_cached(&self.doc, shaper, library, &mut self.cache);
+                }
+            },
         }
     }
 
@@ -307,6 +367,8 @@ impl OpenDocument {
         if self.story.is_some() {
             self.end_story(shaper, library);
         }
+        // Колонтитулы правятся на листах, как в Word.
+        self.set_view(ViewMode::Print, 0.0, shaper, library);
         let Some(shown) = self.layout.pages.get(page) else {
             return;
         };
@@ -345,6 +407,7 @@ impl OpenDocument {
         if self.story.is_some() {
             self.end_story(shaper, library);
         }
+        self.set_view(ViewMode::Print, 0.0, shaper, library);
         let Some(page) = self
             .layout
             .pages
@@ -647,6 +710,8 @@ pub struct Viewer {
     scroll_to: Option<(usize, f32)>,
     /// Область навигации.
     navigation: crate::navigation::NavigationPane,
+    /// Масштаб до входа в режим чтения: вернётся при выходе.
+    zoom_before_read: Option<Zoom>,
     /// Найденное для области навигации: строка поиска, состояние
     /// документа и результат (чтобы не искать каждый кадр).
     nav_found: Option<(String, u64, Vec<letter_editor::Found>)>,
@@ -875,6 +940,7 @@ impl Viewer {
             reveal_cursor: false,
             scroll_to: None,
             navigation: Default::default(),
+            zoom_before_read: None,
             nav_found: None,
             clipboard: Clipboard::new(Box::new(SystemBuffer::default())),
             ribbon: Ribbon::default(),
@@ -920,6 +986,9 @@ impl Viewer {
         let mut cache = LayoutCache::default();
         let layout = layout_document_cached(&doc, &mut self.shaper, &self.library, &mut cache);
         self.document = Some(OpenDocument::new(path, doc, layout, cache));
+        if let Some(zoom) = self.zoom_before_read.take() {
+            self.zoom = zoom;
+        }
         if let Some(autosave) = &self.autosave {
             autosave.clear();
         }
@@ -961,11 +1030,11 @@ impl Viewer {
                     name: document.name(),
                     path: document.path.clone(),
                     modified: document.modified(),
-                    pages: document.layout.pages.len(),
-                    current_page: letter_editor::caret(&document.layout, document.cursor)
+                    pages: document.paper().pages.len(),
+                    current_page: letter_editor::caret(document.paper(), document.cursor)
                         .map_or(self.current_page, |c| c.page),
                     page_sizes: document
-                        .layout
+                        .paper()
                         .pages
                         .iter()
                         .map(|p| (p.width, p.height))
@@ -1108,7 +1177,8 @@ impl Viewer {
         };
         // В PDF — сам документ, а не открытый колонтитул.
         document.end_story(&mut self.shaper, &self.library);
-        match files::write_pdf(&document.doc, &document.layout, &self.library, path) {
+        document.refresh_paper(&mut self.shaper, &self.library);
+        match files::write_pdf(&document.doc, document.paper(), &self.library, path) {
             Ok(()) => true,
             Err(e) => {
                 self.report(tr("error-save"), e);
@@ -1125,10 +1195,11 @@ impl Viewer {
             return false;
         };
         document.end_story(&mut self.shaper, &self.library);
+        document.refresh_paper(&mut self.shaper, &self.library);
         let pages: Vec<_> = job
             .pages
             .iter()
-            .filter_map(|&i| document.layout.pages.get(i).cloned())
+            .filter_map(|&i| document.paper().pages.get(i).cloned())
             .collect();
         if pages.is_empty() {
             return false;
@@ -1256,6 +1327,7 @@ impl Viewer {
                 // Колонтитул закрывается: печатается и виден весь документ.
                 if let Some(document) = &mut self.document {
                     document.end_story(&mut self.shaper, &self.library);
+                    document.refresh_paper(&mut self.shaper, &self.library);
                 }
                 if self.printers.is_none() {
                     self.printers = Some(crate::print::PrinterList::start());
@@ -1267,7 +1339,7 @@ impl Viewer {
             let info = self.backstage_info();
             let (library, painter, document) = (&self.library, &mut self.painter, &self.document);
             let mut preview = |p: &egui::Painter, index: usize, rect: egui::Rect| {
-                if let Some(page) = document.as_ref().and_then(|d| d.layout.pages.get(index)) {
+                if let Some(page) = document.as_ref().and_then(|d| d.paper().pages.get(index)) {
                     painter.paint_page(p, library, page, rect);
                 }
             };
@@ -1276,11 +1348,14 @@ impl Viewer {
                 .inner;
             self.run_ribbon(&ctx, commands);
         } else {
-            let info = self.ribbon_info();
-            let commands = egui::Panel::top("ribbon")
-                .show(ui, |ui| self.ribbon.ui(ui, &info))
-                .inner;
-            self.run_ribbon(&ctx, commands);
+            // В режиме чтения ленты нет, как в Word.
+            if self.view_mode() != ViewMode::Read {
+                let info = self.ribbon_info();
+                let commands = egui::Panel::top("ribbon")
+                    .show(ui, |ui| self.ribbon.ui(ui, &info))
+                    .inner;
+                self.run_ribbon(&ctx, commands);
+            }
             if let Some(action) = self.find.ui(&ctx) {
                 self.find_action(&ctx, action);
             }
@@ -1395,15 +1470,67 @@ impl Viewer {
 
     /// Масштаб при ширине видимой части `view_width`.
     fn effective_zoom(&self, view_width: f32) -> f32 {
+        let view = self.view_mode();
         match self.zoom {
             Zoom::Fixed(z) => clamp_zoom(z),
+            // Веб-документ и так во всю ширину окна.
+            Zoom::PageWidth if view == ViewMode::Web => 1.0,
             Zoom::PageWidth => {
-                let widest = self.document.as_ref().map_or(0.0, |d| {
-                    d.layout.pages.iter().map(|p| p.width).fold(0.0, f32::max)
-                });
-                page_width_zoom(widest, view_width)
+                let pages = self
+                    .document
+                    .as_ref()
+                    .map_or(&[][..], |d| &d.layout.pages[..]);
+                let widest = pages.iter().map(|p| p.width).fold(0.0, f32::max);
+                let zoom = page_width_zoom(widest, view_width);
+                if view != ViewMode::Read {
+                    return zoom;
+                }
+                // В режиме чтения лист виден целиком.
+                let tallest = pages.iter().map(|p| p.height).fold(0.0, f32::max);
+                if tallest <= 0.0 || self.view_size.y <= 0.0 {
+                    return zoom;
+                }
+                let fit = (self.view_size.y - 2.0 * PAGE_GAP) / (tallest * SCREEN_PIXELS_PER_POINT);
+                zoom.min(clamp_zoom(fit))
             }
         }
+    }
+
+    /// Режим просмотра открытого документа.
+    pub fn view_mode(&self) -> ViewMode {
+        self.document.as_ref().map_or(ViewMode::Print, |d| d.view)
+    }
+
+    /// Ширина веб-документа, пт, при масштабе `zoom` и ширине видимой
+    /// части `view_width`.
+    fn web_width(zoom: f32, view_width: f32) -> f32 {
+        (view_width - 2.0 * PAGE_GAP) / (zoom * SCREEN_PIXELS_PER_POINT)
+    }
+
+    /// Переключает режим просмотра («Вид → Режимы», кнопки в строке
+    /// состояния).
+    fn set_view_mode(&mut self, mode: ViewMode) {
+        let old = self.view_mode();
+        if self.document.is_none() || mode == old {
+            return;
+        }
+        // В режиме чтения лист целиком; при выходе — прежний масштаб.
+        if mode == ViewMode::Read {
+            self.zoom_before_read = Some(self.zoom);
+            self.zoom = Zoom::PageWidth;
+        } else if let Some(zoom) = self.zoom_before_read.take() {
+            self.zoom = zoom;
+        }
+        let zoom = match self.zoom {
+            Zoom::Fixed(z) => clamp_zoom(z),
+            Zoom::PageWidth => 1.0,
+        };
+        let width = Viewer::web_width(zoom, self.view_size.x);
+        if let Some(document) = &mut self.document {
+            document.set_view(mode, width, &mut self.shaper, &self.library);
+        }
+        self.pending_offset = Some(Vec2::ZERO);
+        self.reveal_cursor = true;
     }
 
     /// Меняет масштаб так, чтобы точка `anchor` видимой части (по
@@ -1459,6 +1586,13 @@ impl Viewer {
         let screen = self.view_size.y * points;
         // Клавиши достаются полю ввода (например, размер шрифта на ленте).
         if self.document.is_none() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        // Esc выходит из режима чтения.
+        if self.view_mode() == ViewMode::Read
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            self.set_view_mode(ViewMode::Print);
             return;
         }
         // Esc кончает правку колонтитула.
@@ -1529,6 +1663,7 @@ impl Viewer {
         if actions.is_empty() {
             return;
         }
+        let editable = self.view_mode().editable();
         let Some(document) = &mut self.document else {
             return;
         };
@@ -1536,6 +1671,10 @@ impl Viewer {
         // движением курсора и в конце.
         let mut stale = false;
         for action in actions {
+            // В режиме чтения документ только читают.
+            if !editable && !matches!(action, Action::Move(..) | Action::SelectAll | Action::Copy) {
+                continue;
+            }
             match action.clone() {
                 Action::Move(motion, extend) => {
                     if std::mem::take(&mut stale) {
@@ -1940,6 +2079,7 @@ impl Viewer {
             page_width: self.zoom == Zoom::PageWidth,
             ruler: self.show_ruler,
             navigation: self.navigation.open,
+            view: self.view_mode(),
             marks: self.show_marks,
             fonts: self.font_names.clone(),
             ..RibbonInfo::default()
@@ -1998,6 +2138,9 @@ impl Viewer {
     fn run_ribbon(&mut self, ctx: &Context, commands: Vec<RibbonCommand>) {
         let mut actions = Vec::new();
         for command in commands {
+            if !self.view_mode().editable() && !allowed_in_read_mode(&command) {
+                continue;
+            }
             match command {
                 RibbonCommand::New => self.request(Intent::New),
                 RibbonCommand::Open => self.open_requested = true,
@@ -2056,6 +2199,7 @@ impl Viewer {
                 RibbonCommand::PageWidth => self.set_zoom(Zoom::PageWidth, None),
                 RibbonCommand::ToggleRuler => self.show_ruler = !self.show_ruler,
                 RibbonCommand::ToggleNavigation => self.navigation.open = !self.navigation.open,
+                RibbonCommand::ViewMode(mode) => self.set_view_mode(mode),
                 RibbonCommand::ToggleMarks => self.show_marks = !self.show_marks,
                 RibbonCommand::Paragraph(format) => {
                     actions.push(Action::Edit(Command::Paragraph(format)));
@@ -2262,7 +2406,7 @@ impl Viewer {
     /// Область документа: линейки сверху и слева, листы.
     fn document_area(&mut self, ui: &mut egui::Ui) {
         let full = ui.available_rect_before_wrap();
-        if !self.show_ruler || self.document.is_none() {
+        if !self.show_ruler || self.document.is_none() || self.view_mode() == ViewMode::Read {
             self.pages(ui);
             return;
         }
@@ -2404,12 +2548,21 @@ impl Viewer {
                     self.set_zoom(Zoom::PageWidth, None);
                 }
                 ui.separator();
-                // Режимы просмотра справа налево; пока есть только
-                // разметка страницы, остальные появятся в фазе 6.
+                // Режимы просмотра справа налево.
                 let size = egui::vec2(22.0, 18.0);
-                icons::icon_button(ui, Icon::WebLayout, tr("view-web-soon"), size, false, false);
-                icons::icon_button(ui, Icon::PrintLayout, tr("view-print"), size, true, true);
-                icons::icon_button(ui, Icon::ReadMode, tr("view-read-soon"), size, false, false);
+                let view = self.view_mode();
+                let enabled = self.document.is_some();
+                let modes = [
+                    (ViewMode::Web, Icon::WebLayout, "view-web"),
+                    (ViewMode::Print, Icon::PrintLayout, "view-print"),
+                    (ViewMode::Read, Icon::ReadMode, "view-read"),
+                ];
+                for (mode, icon, name) in modes {
+                    if icons::icon_button(ui, icon, tr(name), size, enabled, view == mode).clicked()
+                    {
+                        self.set_view_mode(mode);
+                    }
+                }
             });
         });
     }
@@ -2491,6 +2644,13 @@ impl Viewer {
         }
 
         let zoom = self.zoom();
+        // Веб-документ верстается под ширину окна.
+        if let Some(document) = &mut self.document
+            && document.view == ViewMode::Web
+        {
+            let width = Viewer::web_width(zoom, area_rect.width());
+            document.set_view(ViewMode::Web, width, &mut self.shaper, &self.library);
+        }
         let Viewer {
             library,
             painter,
@@ -2611,7 +2771,10 @@ impl Viewer {
                 ui.ctx().set_cursor_icon(Handle::MOVE.cursor());
             }
             let mut on_picture = false;
+            // Размер и место рисунка в режиме чтения не меняются.
+            let editable = document.view.editable();
             if press
+                && editable
                 && response.hovered()
                 && let Some((p, handle)) = handle_under(pointer)
                 && let Some(start) = pointer
@@ -2624,6 +2787,7 @@ impl Viewer {
                     offset: Vec2::ZERO,
                 });
             } else if press
+                && editable
                 && response.hovered()
                 && let Some(p) = move_under(pointer)
                 && let Some(start) = pointer
@@ -2864,8 +3028,9 @@ impl Viewer {
 
             if let Some(c) = caret(&document.layout, document.cursor) {
                 let (blink, next) = caret_phase(now - document.cursor_since);
-                // При выделении курсор не рисуется, как в Word.
-                let shown = blink && selection.is_empty();
+                // При выделении и в режиме чтения курсор не рисуется,
+                // как в Word.
+                let shown = blink && selection.is_empty() && document.view.editable();
                 if c.page < placement.rects.len() {
                     let page = screen_rect(c.page);
                     let scale = 1.0 / points;
@@ -2897,6 +3062,10 @@ impl Viewer {
         self.ruler_page = ruler_page;
         if reveal {
             self.reveal_cursor = true;
+        }
+        // В режиме чтения колонтитулы и сноски не открываются для правки.
+        if !self.view_mode().editable() {
+            story_request = None;
         }
         if let (Some(request), Some(document)) = (story_request, &mut self.document) {
             let open = match request {
@@ -3158,6 +3327,39 @@ fn nearest_page(rects: &[Rect], point: Pos2) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// Команды, которые работают в режиме чтения: файл, вид, поиск,
+/// копирование. Правка документа там выключена.
+fn allowed_in_read_mode(command: &RibbonCommand) -> bool {
+    matches!(
+        command,
+        RibbonCommand::New
+            | RibbonCommand::Open
+            | RibbonCommand::OpenRecent(_)
+            | RibbonCommand::Save
+            | RibbonCommand::SaveAs
+            | RibbonCommand::SaveAsFormat(_)
+            | RibbonCommand::Exit
+            | RibbonCommand::Backstage
+            | RibbonCommand::PrintPreview
+            | RibbonCommand::Print(_)
+            | RibbonCommand::CloseDocument
+            | RibbonCommand::ChangeSettings(_)
+            | RibbonCommand::Copy
+            | RibbonCommand::SelectAll
+            | RibbonCommand::Find
+            | RibbonCommand::ZoomIn
+            | RibbonCommand::ZoomOut
+            | RibbonCommand::ZoomReset
+            | RibbonCommand::PageWidth
+            | RibbonCommand::ToggleRuler
+            | RibbonCommand::ToggleNavigation
+            | RibbonCommand::ViewMode(_)
+            | RibbonCommand::OpenLink
+            | RibbonCommand::OpenPopup(_)
+            | RibbonCommand::Focus(_)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3275,6 +3477,103 @@ mod tests {
         // Тень, лист и буквы добавились к меню и строке состояния.
         assert!(drawn >= empty + 3, "{empty} → {drawn}");
         assert_eq!(viewer.current_page, 0);
+    }
+
+    #[test]
+    fn view_modes_switch_layout_and_zoom() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        let mut doc = files::blank();
+        doc.sections[0].blocks = (0..120)
+            .map(|i| {
+                letter_model::Paragraph::text(format!("Абзац {i} с текстом подлиннее.")).into()
+            })
+            .collect();
+        viewer.show(None, doc);
+        frame(&ctx, &mut viewer, screen());
+        let pages = viewer.page_count();
+        assert!(pages >= 3);
+        assert_eq!(viewer.ribbon_info().view, ViewMode::Print);
+
+        // Веб-документ: один лист во всю ширину окна.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Web)]);
+        frame(&ctx, &mut viewer, screen());
+        assert_eq!(viewer.view_mode(), ViewMode::Web);
+        assert_eq!(viewer.page_count(), 1);
+        let width = |viewer: &Viewer| viewer.document.as_ref().unwrap().layout.pages[0].width;
+        let wide = width(&viewer);
+        let mut narrow = screen();
+        narrow.screen_rect = Some(Rect::from_min_size(Pos2::ZERO, vec2(600.0, 800.0)));
+        frame(&ctx, &mut viewer, narrow);
+        assert!(width(&viewer) < wide - 100.0, "{wide} → {}", width(&viewer));
+        // Печать и PDF — по листам, как в разметке страницы.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::PrintPreview]);
+        frame(&ctx, &mut viewer, screen());
+        let info = viewer.backstage_info();
+        assert_eq!(info.document.unwrap().pages, pages);
+        viewer.backstage.open = false;
+        let pdf = std::env::temp_dir().join(format!("letter-web-{}.pdf", std::process::id()));
+        assert!(viewer.save_pdf(&pdf));
+        let bytes = std::fs::read(&pdf).unwrap();
+        let _ = std::fs::remove_file(&pdf);
+        let count = bytes.windows(10).filter(|w| w == b"/Type /Pag").count();
+        assert!(count > pages, "{count}");
+
+        // Черновик: тоже без листов, строки как на бумаге.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Draft)]);
+        frame(&ctx, &mut viewer, screen());
+        assert_eq!(viewer.page_count(), 1);
+
+        // Разметка страницы возвращает листы.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Print)]);
+        assert_eq!(viewer.page_count(), pages);
+    }
+
+    #[test]
+    fn read_mode_shows_whole_pages_and_blocks_editing() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let before = viewer.document.as_ref().unwrap().doc.plain_text();
+        viewer.set_zoom(Zoom::Fixed(1.5), None);
+
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Read)]);
+        frame(&ctx, &mut viewer, screen());
+        assert_eq!(viewer.view_mode(), ViewMode::Read);
+        // Лист целиком по высоте окна.
+        let document = viewer.document.as_ref().unwrap();
+        let height = document.layout.pages[0].height * viewer.zoom() * SCREEN_PIXELS_PER_POINT;
+        assert!(
+            height <= viewer.view_size.y,
+            "{height} > {}",
+            viewer.view_size.y
+        );
+
+        // Набор текста и команды правки не меняют документ.
+        let mut typing = screen();
+        typing.events = vec![Event::Text("abc".into())];
+        frame(&ctx, &mut viewer, typing);
+        viewer.run_ribbon(
+            &ctx,
+            vec![
+                RibbonCommand::Edit(letter_editor::Command::Type("x".into())),
+                RibbonCommand::Paste,
+            ],
+        );
+        frame(&ctx, &mut viewer, key(Key::Enter, Modifiers::NONE));
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(document.doc.plain_text(), before);
+        assert!(!document.history.can_undo());
+
+        // Esc — обратно в разметку страницы с прежним масштабом.
+        frame(&ctx, &mut viewer, key(Key::Escape, Modifiers::NONE));
+        assert_eq!(viewer.view_mode(), ViewMode::Print);
+        assert_eq!(viewer.zoom, Zoom::Fixed(1.5));
+        let mut typing = screen();
+        typing.events = vec![Event::Text("abc".into())];
+        frame(&ctx, &mut viewer, typing);
+        assert_ne!(viewer.document.as_ref().unwrap().doc.plain_text(), before);
     }
 
     #[test]
@@ -4913,6 +5212,15 @@ mod tests {
         h.run();
         h.get_by_label("Число слов: 1 из 3");
         h.get_by_label("Разметка страницы");
-        h.get_by_label("Режим чтения (скоро)");
+        // Кнопки режимов просмотра.
+        h.get_by_label("Режим чтения").click();
+        h.run();
+        assert_eq!(h.state().view_mode(), ViewMode::Read);
+        h.get_by_label("Веб-документ").click();
+        h.run();
+        assert_eq!(h.state().view_mode(), ViewMode::Web);
+        h.get_by_label("Разметка страницы").click();
+        h.run();
+        assert_eq!(h.state().view_mode(), ViewMode::Print);
     }
 }

@@ -181,6 +181,8 @@ pub enum RibbonCommand {
     ToggleRuler,
     /// «Вид → Область навигации»: показать или скрыть.
     ToggleNavigation,
+    /// «Вид → Режимы»: режим просмотра.
+    ViewMode(crate::view_mode::ViewMode),
     /// Ctrl+Backspace и Ctrl+Delete: удалить слово до или после курсора.
     DeleteWord {
         /// Слово после курсора.
@@ -286,6 +288,8 @@ pub struct RibbonInfo {
     pub ruler: bool,
     /// Область навигации показана.
     pub navigation: bool,
+    /// Режим просмотра.
+    pub view: crate::view_mode::ViewMode,
     /// Курсор в таблице.
     pub in_table: bool,
     /// Выделено несколько ячеек таблицы: их можно объединить.
@@ -572,7 +576,11 @@ pub(crate) fn group_with_launcher(
 
 /// Подсказки клавиш вкладки «Вид» (для проверки).
 #[cfg(test)]
-pub const VIEW_KEYTIPS: [&str; 5] = [
+pub const VIEW_KEYTIPS: [&str; 9] = [
+    "keytip-view-read",
+    "keytip-view-print",
+    "keytip-view-web",
+    "keytip-view-draft",
     "keytip-view-ruler",
     "keytip-view-zoom-in",
     "keytip-view-zoom-out",
@@ -602,6 +610,45 @@ fn command_button(
 
 /// Вкладка «Вид».
 fn view(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+    use crate::view_mode::ViewMode;
+    group(ui, tr("group-views"), |ui| {
+        let modes = [
+            (
+                ViewMode::Read,
+                Icon::ReadMode,
+                "view-read",
+                "keytip-view-read",
+            ),
+            (
+                ViewMode::Print,
+                Icon::PrintLayout,
+                "view-print",
+                "keytip-view-print",
+            ),
+            (
+                ViewMode::Web,
+                Icon::WebLayout,
+                "view-web",
+                "keytip-view-web",
+            ),
+            (
+                ViewMode::Draft,
+                Icon::Draft,
+                "view-draft",
+                "keytip-view-draft",
+            ),
+        ];
+        for (mode, icon, name, keytip) in modes {
+            let response = ui.add_enabled(
+                info.has_document,
+                egui::Button::selectable(
+                    info.view == mode,
+                    (crate::icons::text(ui, icon, 16.0), tr(name)),
+                ),
+            );
+            command_button(ui, response, keytip, RibbonCommand::ViewMode(mode), out);
+        }
+    });
     group(ui, tr("group-show"), |ui| {
         let mut ruler = info.ruler;
         let response = ui.checkbox(&mut ruler, tr("ruler"));
