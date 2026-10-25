@@ -431,6 +431,33 @@ def comments() -> Document:
     return doc
 
 
+def revisions() -> Document:
+    """Исправления: вставка и удаление двух авторов (у одной правки —
+    атрибут `w16du:dateUtc`, как пишет Word 365)."""
+    from docx.oxml import parse_xml
+
+    doc = new_document("Исправления")
+    w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    w16du = "http://schemas.microsoft.com/office/word/2023/wordml/word16du"
+    p = doc.add_paragraph("The cat ")
+    p._p.append(
+        parse_xml(
+            f'<w:del xmlns:w="{w}" w:id="1" w:author="Анна" w:date="2026-10-25T09:00:00Z">'
+            '<w:r><w:delText xml:space="preserve">sat on </w:delText></w:r></w:del>'
+        )
+    )
+    p._p.append(
+        parse_xml(
+            f'<w:ins xmlns:w="{w}" xmlns:w16du="{w16du}" w:id="2" w:author="Boris" '
+            'w:date="2026-10-25T09:05:00Z" w16du:dateUtc="2026-10-25T09:05:00Z">'
+            "<w:r><w:rPr><w:b/></w:rPr><w:t xml:space=\"preserve\">jumped over </w:t></w:r></w:ins>"
+        )
+    )
+    p.add_run("the mat.")
+    doc.add_paragraph("Unchanged paragraph.")
+    return doc
+
+
 def headers() -> Document:
     """Колонтитулы: особый для первой страницы, разные для чётных
     и нечётных; второй раздел берёт верхний колонтитул первого, а нижний
@@ -600,6 +627,7 @@ FIXTURES = {
     "links.docx": links,
     "notes.docx": notes,
     "comments.docx": comments,
+    "revisions.docx": revisions,
     "borders.docx": borders,
     "watermark.docx": watermark,
 }

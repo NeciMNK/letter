@@ -8,9 +8,9 @@ use letter_model::{
     Block, Bookmark, BreakKind, Color, Columns, Document, FieldChar, FieldCharKind,
     FirstLineIndent, HalfPoints, HeaderFooter, HeaderFooterKind, HeaderFooters, Hyperlink,
     Indentation, Inline, LineSpacing, Note, NoteKind, NoteReference, NumberingRef, Orientation,
-    PageBorderDisplay, PageBorders, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml, Run,
-    RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart, Spacing, Symbol, TabStop,
-    ThemeColor, Twips, Underline, VerticalAlign,
+    PageBorderDisplay, PageBorders, PageMargins, PageSize, Paragraph, ParagraphProps, RawXml,
+    Revision, RevisionKind, Run, RunContent, RunFonts, RunProps, Section, SectionProps,
+    SectionStart, Spacing, Symbol, TabStop, ThemeColor, Twips, Underline, VerticalAlign,
 };
 
 use crate::ReadError;
@@ -141,6 +141,8 @@ fn read_paragraph(p: &Element, allow_section: bool) -> (Paragraph, Option<Sectio
             paragraph.content.extend(runs.into_iter().map(Inline::Run));
         } else if let Some(items) = read_hyperlink(child) {
             paragraph.content.extend(items);
+        } else if let Some(items) = read_revision(child) {
+            paragraph.content.extend(items);
         } else if let Some(mark) = read_bookmark(child) {
             paragraph.content.push(mark);
         } else {
@@ -213,6 +215,61 @@ fn read_hyperlink(element: &Element) -> Option<Vec<Inline>> {
             items.push(with_link(read_run(child)));
         } else if let Some(runs) = simple_field(child) {
             items.extend(runs.into_iter().map(with_link));
+        } else if let Some(inner) = read_revision(child) {
+            items.extend(inner.into_iter().map(|item| match item {
+                Inline::Run(run) => with_link(run),
+                other => other,
+            }));
+        } else {
+            items.push(read_bookmark(child)?);
+        }
+    }
+    Some(items)
+}
+
+/// Вставка `w:ins` или удаление `w:del`: её фрагменты получают
+/// исправление в оформлении. Исправление с чем-то, кроме фрагментов,
+/// ссылок, простых полей и закладок (например, удаление внутри вставки),
+/// остаётся как есть.
+fn read_revision(element: &Element) -> Option<Vec<Inline>> {
+    let kind = if element.is_w("ins") {
+        RevisionKind::Insert
+    } else if element.is_w("del") {
+        RevisionKind::Delete
+    } else {
+        return None;
+    };
+    // Атрибуты других пространств имён (`w16du:dateUtc`) не мешают.
+    let known = element.attrs.iter().all(|a| {
+        !(a.ns.is_none() || is_w_ns(a.ns.as_deref()))
+            || matches!(a.local.as_str(), "id" | "author" | "date")
+    });
+    if !known {
+        return None;
+    }
+    let revision = Revision {
+        kind,
+        id: element.w_attr("id")?.to_string(),
+        author: element.w_attr("author").unwrap_or_default().to_string(),
+        date: element.w_attr("date").map(str::to_string),
+    };
+    let mark = |mut run: Run| {
+        run.props.revision = Some(revision.clone());
+        Inline::Run(run)
+    };
+    let mut items = Vec::new();
+    for child in element.elements() {
+        if child.is_w("r") {
+            items.push(mark(read_run(child)));
+        } else if let Some(runs) = simple_field(child) {
+            items.extend(runs.into_iter().map(mark));
+        } else if child.is_w("hyperlink") {
+            for item in read_hyperlink(child)? {
+                items.push(match item {
+                    Inline::Run(run) => mark(run),
+                    other => other,
+                });
+            }
         } else {
             items.push(read_bookmark(child)?);
         }
@@ -408,7 +465,9 @@ fn read_run(r: &Element) -> Run {
                     run.props = read_run_props(child);
                     continue;
                 }
-                "t" => RunContent::Text(child.text()),
+                // Удалённый текст (внутри `w:del`) — тоже текст: он виден
+                // зачёркнутым, пока удаление не принято.
+                "t" | "delText" => RunContent::Text(child.text()),
                 "tab" if child.attrs.is_empty() => RunContent::Tab,
                 "noBreakHyphen" if child.attrs.is_empty() => RunContent::Text("\u{2011}".into()),
                 "softHyphen" if child.attrs.is_empty() => RunContent::Text("\u{ad}".into()),
@@ -450,7 +509,7 @@ fn read_run(r: &Element) -> Run {
                     Some(c) => RunContent::FieldChar(c),
                     None => RunContent::Unknown(child.raw()),
                 },
-                "instrText"
+                "instrText" | "delInstrText"
                     if child.elements().next().is_none()
                         && child.attrs.iter().all(|a| a.local == "space") =>
                 {

@@ -544,6 +544,13 @@ fn paragraph_props(props: &ParagraphProps) -> String {
 /// Краткое описание оформления фрагмента: ` [ж, к, 14 пт, Arial]`.
 fn run_props(props: &RunProps) -> String {
     let mut parts = Vec::new();
+    if let Some(revision) = &props.revision {
+        let kind = match revision.kind {
+            letter_model::RevisionKind::Insert => "вставка",
+            letter_model::RevisionKind::Delete => "удаление",
+        };
+        parts.push(format!("{kind} {:?}", revision.author));
+    }
     if let Some(style) = &props.style {
         parts.push(format!("стиль {style}"));
     }

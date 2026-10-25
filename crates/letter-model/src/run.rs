@@ -217,8 +217,36 @@ pub struct RunProps {
     /// фрагменты с одной ссылкой записываются внутри одного
     /// `w:hyperlink`; в `w:rPr` ссылка не пишется.
     pub link: Option<Hyperlink>,
+    /// Исправление, частью которого является фрагмент (вставлен или
+    /// удалён при записи исправлений). В .docx соседние фрагменты с одним
+    /// исправлением записываются внутри одного `w:ins` или `w:del`;
+    /// в `w:rPr` не пишется.
+    pub revision: Option<Revision>,
     /// Свойства, которые программа пока не понимает, в порядке из файла.
     pub unknown: Vec<RawXml>,
+}
+
+/// Вид исправления.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RevisionKind {
+    /// Вставка (`w:ins`).
+    Insert,
+    /// Удаление (`w:del`): текст ещё виден зачёркнутым, пока удаление
+    /// не принято.
+    Delete,
+}
+
+/// Исправление: кто и когда вставил или удалил текст.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Revision {
+    /// Вставка или удаление.
+    pub kind: RevisionKind,
+    /// Номер (`w:id`).
+    pub id: String,
+    /// Автор.
+    pub author: String,
+    /// Когда, как в файле: `2026-10-25T12:00:00Z`.
+    pub date: Option<String>,
 }
 
 /// Гиперссылка: адрес в интернете (или файл) либо закладка в документе.
