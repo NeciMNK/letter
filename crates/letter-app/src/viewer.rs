@@ -43,6 +43,7 @@ use letter_render::{MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, formatting_m
 use crate::backstage::{Backstage, BackstageInfo, DocumentInfo, Page};
 use crate::bookmark_dialog::{BookmarkAction, BookmarkDialog};
 use crate::clipboard::{Clipboard, PasteMode, SystemBuffer};
+use crate::comments::{CommentPane, PaneAction, Target, Thread};
 use crate::files::{self, Autosave, OPEN_FILTERS, Recent, Recovered, SAVE_FILTERS};
 use crate::find::{FindAction, FindDialog};
 use crate::font_dialog::{FontDialog, FontValues};
@@ -60,6 +61,7 @@ use crate::view::{
     place_pages, step_zoom,
 };
 use crate::view_mode::{ViewMode, trim_pages, view_document};
+use letter_editor::CommentPlace;
 use letter_editor::CoverPage;
 
 /// Образец текста для окна «Шрифт»: одна строка с оформлением `props`
@@ -193,6 +195,9 @@ struct OpenDocument {
     /// Вёрстка по листам для печати в режимах без листов; сбрасывается
     /// при каждой новой вёрстке.
     paper: Option<DocumentLayout>,
+    /// Места примечаний в тексте и состояние документа, для которого они
+    /// найдены.
+    comment_places: Option<(u64, Vec<CommentPlace>)>,
 }
 
 /// Статистика документа и выделения для строки состояния.
@@ -233,6 +238,7 @@ impl OpenDocument {
             view: ViewMode::Print,
             web_width: 0.0,
             paper: None,
+            comment_places: None,
         }
     }
 
@@ -256,6 +262,24 @@ impl OpenDocument {
         self.view = view;
         self.web_width = web_width;
         self.relayout(shaper, library);
+    }
+
+    /// Примечания в тексте (пусто, пока открыт колонтитул или сноска).
+    fn comment_places(&mut self) -> &[CommentPlace] {
+        if self.story.is_some() || self.doc.comments.is_empty() {
+            return &[];
+        }
+        let state = self.history.state();
+        if self
+            .comment_places
+            .as_ref()
+            .is_none_or(|(s, _)| *s != state)
+        {
+            self.comment_places = Some((state, letter_editor::comment_places(&self.doc)));
+        }
+        self.comment_places
+            .as_ref()
+            .map_or(&[], |(_, p)| p.as_slice())
     }
 
     /// Верстает документ по листам для печати и PDF, если на экране он
@@ -712,6 +736,12 @@ pub struct Viewer {
     navigation: crate::navigation::NavigationPane,
     /// Масштаб до входа в режим чтения: вернётся при выходе.
     zoom_before_read: Option<Zoom>,
+    /// Показывать область примечаний.
+    show_comments: bool,
+    /// Область примечаний.
+    comment_pane: CommentPane,
+    /// Примечания на экране в прошлом кадре: номер и конец куска текста.
+    comment_anchors: Vec<(String, Pos2)>,
     /// Найденное для области навигации: строка поиска, состояние
     /// документа и результат (чтобы не искать каждый кадр).
     nav_found: Option<(String, u64, Vec<letter_editor::Found>)>,
@@ -941,6 +971,9 @@ impl Viewer {
             scroll_to: None,
             navigation: Default::default(),
             zoom_before_read: None,
+            show_comments: true,
+            comment_pane: CommentPane::default(),
+            comment_anchors: Vec::new(),
             nav_found: None,
             clipboard: Clipboard::new(Box::new(SystemBuffer::default())),
             ribbon: Ribbon::default(),
@@ -2080,6 +2113,14 @@ impl Viewer {
             ruler: self.show_ruler,
             navigation: self.navigation.open,
             view: self.view_mode(),
+            editable: self.view_mode().editable(),
+            comments: self
+                .document
+                .as_ref()
+                .and_then(|d| d.comment_places.as_ref())
+                .is_some_and(|(_, p)| !p.is_empty()),
+            show_comments: self.show_comments,
+            active_comment: self.comment_pane.active.is_some(),
             marks: self.show_marks,
             fonts: self.font_names.clone(),
             ..RibbonInfo::default()
@@ -2200,6 +2241,19 @@ impl Viewer {
                 RibbonCommand::ToggleRuler => self.show_ruler = !self.show_ruler,
                 RibbonCommand::ToggleNavigation => self.navigation.open = !self.navigation.open,
                 RibbonCommand::ViewMode(mode) => self.set_view_mode(mode),
+                RibbonCommand::NewComment => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    self.new_comment(ctx);
+                }
+                RibbonCommand::DeleteComment => {
+                    if let Some(id) = self.comment_pane.active.take() {
+                        self.comment_pane.draft = None;
+                        actions.push(Action::Edit(Command::DeleteComment(id)));
+                    }
+                }
+                RibbonCommand::PreviousComment => self.go_to_comment(false),
+                RibbonCommand::NextComment => self.go_to_comment(true),
+                RibbonCommand::ToggleComments => self.show_comments = !self.show_comments,
                 RibbonCommand::ToggleMarks => self.show_marks = !self.show_marks,
                 RibbonCommand::Paragraph(format) => {
                     actions.push(Action::Edit(Command::Paragraph(format)));
@@ -2405,6 +2459,211 @@ impl Viewer {
 
     /// Область документа: линейки сверху и слева, листы.
     fn document_area(&mut self, ui: &mut egui::Ui) {
+        let full = ui.available_rect_before_wrap();
+        if !self.comments_visible() {
+            self.comment_anchors.clear();
+            self.rulers_and_pages(ui);
+            return;
+        }
+        let width = crate::comments::PANE_WIDTH.min(full.width() / 2.0);
+        let pane = Rect::from_min_max(pos2(full.right() - width, full.top()), full.max);
+        let rest = Rect::from_min_max(full.min, pos2(pane.left(), full.bottom()));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rest));
+        self.rulers_and_pages(&mut child);
+        self.comments_ui(ui, pane);
+    }
+
+    /// Показывать ли область примечаний: она включена и в тексте есть
+    /// примечания.
+    fn comments_visible(&mut self) -> bool {
+        self.show_comments
+            && self
+                .document
+                .as_mut()
+                .is_some_and(|d| !d.comment_places().is_empty())
+    }
+
+    /// Область примечаний в `rect`.
+    fn comments_ui(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        let doc = &document.doc;
+        let comment = |id: &str| doc.comments.iter().find(|c| c.id == id);
+        let mut threads: Vec<Thread> = Vec::new();
+        for (id, anchor) in &self.comment_anchors {
+            // Ответы показываются в карточке исходного примечания.
+            if comment(id)
+                .and_then(|c| c.parent.as_deref())
+                .is_some_and(|p| self.comment_anchors.iter().any(|(other, _)| other == p))
+            {
+                continue;
+            }
+            let entries = letter_editor::thread_ids(doc, id)
+                .into_iter()
+                .filter(|i| self.comment_anchors.iter().any(|(other, _)| other == i))
+                .filter_map(|i| comment(&i))
+                .map(|c| crate::comments::Entry {
+                    id: c.id.clone(),
+                    author: c.author.clone(),
+                    date: c.date.clone(),
+                    text: c.plain_text(),
+                })
+                .collect();
+            threads.push(Thread {
+                entries,
+                done: comment(id).is_some_and(|c| c.done),
+                anchor: *anchor,
+            });
+        }
+        let editable = self.view_mode().editable();
+        let actions = self.comment_pane.ui(ui, rect, &threads, editable);
+        for action in actions {
+            self.comment_action(ui.ctx(), action);
+        }
+    }
+
+    /// Выполняет то, что пользователь сделал в области примечаний.
+    fn comment_action(&mut self, ctx: &Context, action: PaneAction) {
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        let command = match action {
+            PaneAction::Select(_) => return,
+            PaneAction::Delete(id) => {
+                self.comment_pane.active = None;
+                Command::DeleteComment(id)
+            }
+            PaneAction::Resolve(id, done) => {
+                let Some(mut comment) = document.doc.comments.iter().find(|c| c.id == id).cloned()
+                else {
+                    return;
+                };
+                comment.done = done;
+                Command::SetComment(Box::new(comment))
+            }
+            PaneAction::Commit(Target::Comment(id), text) => {
+                let Some(mut comment) = document.doc.comments.iter().find(|c| c.id == id).cloned()
+                else {
+                    return;
+                };
+                if comment.plain_text() == text {
+                    return;
+                }
+                comment.blocks = letter_editor::comment_blocks(&mut document.doc, &text);
+                Command::SetComment(Box::new(comment))
+            }
+            PaneAction::Commit(Target::Reply(parent), text) => {
+                if text.is_empty() {
+                    return;
+                }
+                let author = crate::comments::author();
+                Command::ReplyComment {
+                    parent,
+                    reply: Box::new(letter_model::Comment {
+                        initials: Some(crate::comments::initials(&author)),
+                        author,
+                        date: Some(crate::comments::now_iso()),
+                        blocks: letter_editor::comment_blocks(&mut document.doc, &text),
+                        ..Default::default()
+                    }),
+                }
+            }
+        };
+        self.run_ribbon(ctx, vec![RibbonCommand::Edit(command)]);
+    }
+
+    /// «Создать примечание»: к выделенному, а без выделения — к слову
+    /// у курсора. Новое примечание сразу открыто для набора.
+    fn new_comment(&mut self, ctx: &Context) {
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        if document.story.is_some() {
+            return;
+        }
+        if document.selection().is_empty() {
+            let word = letter_editor::word_only_at(&document.layout, document.cursor);
+            document.anchor = word.anchor;
+            document.cursor = word.focus;
+        }
+        let author = crate::comments::author();
+        let comment = letter_model::Comment {
+            initials: Some(crate::comments::initials(&author)),
+            author,
+            date: Some(crate::comments::now_iso()),
+            blocks: letter_editor::comment_blocks(&mut document.doc, ""),
+            ..Default::default()
+        };
+        let before = document.doc.comments.len();
+        self.run_ribbon(
+            ctx,
+            vec![RibbonCommand::Edit(Command::InsertComment(Box::new(
+                comment,
+            )))],
+        );
+        let Some(document) = &self.document else {
+            return;
+        };
+        if document.doc.comments.len() > before
+            && let Some(id) = document.doc.comments.last().map(|c| c.id.clone())
+        {
+            self.show_comments = true;
+            self.comment_pane.active = Some(id.clone());
+            self.comment_pane.start(Target::Comment(id), String::new());
+        }
+    }
+
+    /// «Назад» и «Далее»: делает активным соседнее примечание и ставит
+    /// курсор в начало его куска текста.
+    fn go_to_comment(&mut self, forward: bool) {
+        let active = self.comment_pane.active.clone();
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        let cursor = document.cursor;
+        let doc = &document.doc;
+        let roots: Vec<CommentPlace> = document
+            .comment_places
+            .as_ref()
+            .map(|(_, places)| places.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| {
+                doc.comments
+                    .iter()
+                    .find(|c| c.id == p.id)
+                    .is_none_or(|c| c.parent.is_none())
+            })
+            .collect();
+        if roots.is_empty() {
+            return;
+        }
+        let key = |p: Position| (p.paragraph, p.offset);
+        let current = active.and_then(|id| roots.iter().position(|p| p.id == id));
+        let next = match (current, forward) {
+            (Some(i), true) => (i + 1) % roots.len(),
+            (Some(i), false) => (i + roots.len() - 1) % roots.len(),
+            (None, true) => roots
+                .iter()
+                .position(|p| key(p.start) > key(cursor))
+                .unwrap_or(0),
+            (None, false) => roots
+                .iter()
+                .rposition(|p| key(p.start) < key(cursor))
+                .unwrap_or(roots.len() - 1),
+        };
+        let place = &roots[next];
+        document.anchor = place.start;
+        document.cursor = place.start;
+        document.history.seal();
+        self.comment_pane.active = Some(place.id.clone());
+        self.comment_pane.draft = None;
+        self.show_comments = true;
+        self.reveal_cursor = true;
+    }
+
+    fn rulers_and_pages(&mut self, ui: &mut egui::Ui) {
         let full = ui.available_rect_before_wrap();
         if !self.show_ruler || self.document.is_none() || self.view_mode() == ViewMode::Read {
             self.pages(ui);
@@ -2644,6 +2903,12 @@ impl Viewer {
         }
 
         let zoom = self.zoom();
+        let places = match &mut self.document {
+            Some(document) if self.show_comments => document.comment_places().to_vec(),
+            _ => Vec::new(),
+        };
+        let active_comment = self.comment_pane.active.clone();
+        let mut anchors = Vec::new();
         // Веб-документ верстается под ширину окна.
         if let Some(document) = &mut self.document
             && document.view == ViewMode::Web
@@ -2999,6 +3264,37 @@ impl Viewer {
                 };
                 crate::picture::paint_frame(ui.painter(), rect);
             }
+            // Куски текста с примечаниями и места для линий к карточкам.
+            for place in &places {
+                let active = active_comment.as_deref() == Some(place.id.as_str());
+                let color = if active {
+                    crate::comments::ACTIVE_RANGE_COLOR
+                } else {
+                    crate::comments::RANGE_COLOR
+                };
+                let range = Selection {
+                    anchor: place.start,
+                    focus: place.end,
+                };
+                for r in selection_rects(&document.layout, range) {
+                    if r.page < placement.rects.len() {
+                        let page = screen_rect(r.page);
+                        let scale = 1.0 / points;
+                        let rect = Rect::from_min_max(
+                            page.min + Vec2::new(r.left, r.top) * scale,
+                            page.min + Vec2::new(r.right, r.bottom) * scale,
+                        );
+                        ui.painter().rect_filled(rect, 0.0, color);
+                    }
+                }
+                if let Some(c) = caret(&document.layout, place.end)
+                    && c.page < placement.rects.len()
+                {
+                    let page = screen_rect(c.page);
+                    let at = page.min + Vec2::new(c.x, c.top + c.height) / points;
+                    anchors.push((place.id.clone(), at));
+                }
+            }
             let rects = if framed.is_some() {
                 Vec::new()
             } else {
@@ -3060,6 +3356,7 @@ impl Viewer {
             }
         });
         self.ruler_page = ruler_page;
+        self.comment_anchors = anchors;
         if reveal {
             self.reveal_cursor = true;
         }
@@ -3354,6 +3651,9 @@ fn allowed_in_read_mode(command: &RibbonCommand) -> bool {
             | RibbonCommand::ToggleRuler
             | RibbonCommand::ToggleNavigation
             | RibbonCommand::ViewMode(_)
+            | RibbonCommand::PreviousComment
+            | RibbonCommand::NextComment
+            | RibbonCommand::ToggleComments
             | RibbonCommand::OpenLink
             | RibbonCommand::OpenPopup(_)
             | RibbonCommand::Focus(_)
@@ -3477,6 +3777,91 @@ mod tests {
         // Тень, лист и буквы добавились к меню и строке состояния.
         assert!(drawn >= empty + 3, "{empty} → {drawn}");
         assert_eq!(viewer.current_page, 0);
+    }
+
+    #[test]
+    fn comments_are_shown_added_answered_and_deleted() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("comments.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        // Три примечания на месте: два обсуждения (ответ — в первом).
+        assert_eq!(viewer.comment_anchors.len(), 3);
+        assert!(viewer.ribbon_info().comments);
+        let text = |v: &Viewer, id: &str| {
+            v.document
+                .as_ref()
+                .unwrap()
+                .doc
+                .comments
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap()
+                .plain_text()
+        };
+
+        // «Далее» с начала документа — первое обсуждение.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::NextComment]);
+        assert_eq!(viewer.comment_pane.active.as_deref(), Some("0"));
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::NextComment]);
+        assert_eq!(viewer.comment_pane.active.as_deref(), Some("1"));
+        assert_eq!(
+            viewer.cursor().unwrap().offset,
+            "The first claim needs a source. ".len()
+        );
+
+        // Новое примечание к слову у курсора, сразу открыто для набора.
+        viewer.document.as_mut().unwrap().cursor = Position::new(0, "The fi".len());
+        viewer.document.as_mut().unwrap().anchor = Position::new(0, "The fi".len());
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::NewComment]);
+        let id = viewer.comment_pane.active.clone().unwrap();
+        assert_eq!(id, "3");
+        assert!(viewer.comment_pane.draft.is_some());
+        viewer.comment_action(
+            &ctx,
+            PaneAction::Commit(Target::Comment(id.clone()), "Слово?".into()),
+        );
+        assert_eq!(text(&viewer, &id), "Слово?");
+        let places = viewer.document.as_mut().unwrap().comment_places().to_vec();
+        let place = places.iter().find(|p| p.id == id).unwrap();
+        assert_eq!((place.start.offset, place.end.offset), (4, 9));
+
+        // Ответ, «решено», удаление с ответом и отмена удаления.
+        viewer.comment_action(
+            &ctx,
+            PaneAction::Commit(Target::Reply(id.clone()), "Да".into()),
+        );
+        assert_eq!(text(&viewer, "4"), "Да");
+        viewer.comment_action(&ctx, PaneAction::Resolve(id.clone(), true));
+        assert!(viewer.document.as_ref().unwrap().doc.comments[3].done);
+        frame(&ctx, &mut viewer, screen());
+        assert_eq!(viewer.comment_anchors.len(), 5);
+        viewer.comment_pane.active = Some(id.clone());
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::DeleteComment]);
+        frame(&ctx, &mut viewer, screen());
+        assert_eq!(viewer.comment_anchors.len(), 3);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
+        frame(&ctx, &mut viewer, screen());
+        assert_eq!(viewer.comment_anchors.len(), 5);
+
+        // Скрытая область — без примечаний на экране.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ToggleComments]);
+        frame(&ctx, &mut viewer, screen());
+        assert!(viewer.comment_anchors.is_empty());
+
+        // Сохраняются в файл.
+        let dir = crate::files::tests::temp_dir("comments");
+        let path = dir.join("c.docx");
+        assert!(viewer.save_to(&path));
+        let again = letter_docx::read_file(&path).unwrap();
+        assert_eq!(again.comments.len(), 5);
+        assert_eq!(again.comments[4].parent.as_deref(), Some("3"));
+        assert!(again.comments[3].done);
+
+        // В режиме чтения новое примечание не создаётся.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Read)]);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::NewComment]);
+        assert_eq!(viewer.document.as_ref().unwrap().doc.comments.len(), 5);
     }
 
     #[test]

@@ -15,6 +15,7 @@
 
 pub mod caret;
 pub mod clipboard;
+pub mod comments;
 pub mod cover;
 pub mod edit;
 pub mod fields;
@@ -36,6 +37,10 @@ pub mod watermark;
 
 pub use caret::{Caret, CaretStop, caret, hit_test, line_stops, position_in_line};
 pub use clipboard::{copy_range, insert_fragment, insert_plain_text};
+pub use comments::{
+    COMMENT_REFERENCE_STYLE, COMMENT_TEXT_STYLE, CommentPlace, comment_blocks, comment_places,
+    delete_comment, insert_comment, reply_to_comment, thread_ids,
+};
 pub use cover::{CoverLayout, CoverPage, insert_cover_page};
 pub use edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, paragraph_count,
@@ -69,7 +74,9 @@ pub use section::{
     insert_section_break, page_number_runs, section_props, set_header_footer, set_page_setup,
     set_title_page,
 };
-pub use selection::{Selection, SelectionRect, paragraph_at, select_all, selection_rects, word_at};
+pub use selection::{
+    Selection, SelectionRect, paragraph_at, select_all, selection_rects, word_at, word_only_at,
+};
 pub use table::{
     BorderPreset, can_merge, delete_columns, delete_rows, delete_table, in_table, insert_columns,
     insert_rows, insert_table, merge_cells, next_cell, set_cell_borders, set_cell_shading,

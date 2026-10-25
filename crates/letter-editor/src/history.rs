@@ -8,11 +8,12 @@
 //! Набор текста объединяется в один шаг по словам, как в Word.
 
 use letter_model::{
-    Alignment, Anchor, Block, BreakKind, Color, Document, HeaderFooter, HeaderFooterKind,
+    Alignment, Anchor, Block, BreakKind, Color, Comment, Document, HeaderFooter, HeaderFooterKind,
     Hyperlink, Note, NoteKind, Picture, Section, SectionStart, Settings,
 };
 
 use crate::clipboard::{insert_fragment, insert_plain_text};
+use crate::comments::{delete_comment, insert_comment, reply_to_comment};
 use crate::edit::paragraph_count;
 use crate::edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, split_paragraph,
@@ -194,6 +195,19 @@ pub enum Command {
     },
     /// Обновить поля в абзацах выделенного (F9).
     UpdateFields(Box<FieldContext>),
+    /// «Создать примечание» к выделенному (номер даётся новый).
+    InsertComment(Box<Comment>),
+    /// Ответить на примечание `parent`.
+    ReplyComment {
+        /// Номер исходного примечания.
+        parent: String,
+        /// Ответ (номер даётся новый).
+        reply: Box<Comment>,
+    },
+    /// Удалить примечание с ответами.
+    DeleteComment(String),
+    /// Заменить примечание с тем же номером (новый текст, «решено»).
+    SetComment(Box<Comment>),
     /// «Заменить все»: найденное `query` заменить на `replacement` во
     /// всём документе. Курсор остаётся в том же абзаце (выделение
     /// снимается).
@@ -225,6 +239,11 @@ enum Patch {
         start: usize,
         before: Vec<Section>,
         after: Vec<Section>,
+    },
+    /// Все примечания.
+    Comments {
+        before: Vec<Comment>,
+        after: Vec<Comment>,
     },
     /// Все сноски одного вида.
     Notes {
@@ -288,6 +307,9 @@ impl Patch {
             }
             Patch::Background { before, after } => {
                 doc.background = if undo { *before } else { *after };
+            }
+            Patch::Comments { before, after } => {
+                doc.comments = if undo { before } else { after }.clone();
             }
             Patch::Settings { before, after } => {
                 doc.settings = if undo { before } else { after }.as_ref().clone();
@@ -384,6 +406,17 @@ impl History {
                 }
                 return selection;
             }
+            Command::SetComment(comment) => {
+                let before = doc.comments.clone();
+                if let Some(old) = doc.comments.iter_mut().find(|c| c.id == comment.id) {
+                    *old = *comment;
+                }
+                if doc.comments != before {
+                    let after = doc.comments.clone();
+                    self.push(Patch::Comments { before, after }, selection);
+                }
+                return selection;
+            }
             Command::SetNote { kind, id, blocks } => {
                 let before = notes_mut(doc, kind).clone();
                 if let Some(note) = notes_mut(doc, kind).iter_mut().find(|n| n.id == id) {
@@ -438,6 +471,9 @@ impl History {
                 | Command::AddBookmark(_)
                 | Command::DeleteBookmark(_)
                 | Command::InsertCoverPage(_)
+                | Command::InsertComment(_)
+                | Command::ReplyComment { .. }
+                | Command::DeleteComment(_)
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -449,6 +485,8 @@ impl History {
             Command::ReplaceAll { .. }
             | Command::AddBookmark(_)
             | Command::DeleteBookmark(_)
+            | Command::ReplyComment { .. }
+            | Command::DeleteComment(_)
             | Command::UpdateFields(_)
             | Command::UpdateToc(_)
             | Command::InsertToc(_)
@@ -617,6 +655,18 @@ impl History {
                 delete_bookmark(doc, name);
                 Some(selection)
             }
+            Command::InsertComment(comment) => {
+                insert_comment(doc, start, end, (**comment).clone());
+                Some(selection)
+            }
+            Command::ReplyComment { parent, reply } => {
+                reply_to_comment(doc, parent, (**reply).clone());
+                Some(selection)
+            }
+            Command::DeleteComment(id) => {
+                delete_comment(doc, id);
+                Some(selection)
+            }
             Command::UpdateToc(context) => {
                 let last = paragraph_count(doc).saturating_sub(1);
                 update_tocs(doc, 0, last, context);
@@ -693,6 +743,10 @@ impl History {
             | Command::AddBookmark(_)
             | Command::DeleteBookmark(_)
             | Command::SetNote { .. }
+            | Command::InsertComment(_)
+            | Command::ReplyComment { .. }
+            | Command::DeleteComment(_)
+            | Command::SetComment(_)
             | Command::PageColor(_)
             | Command::AutoHyphenation(_)
             | Command::Watermark(_) => at,
@@ -727,6 +781,7 @@ impl History {
             Patch::Blocks { before, after, .. } => before == after,
             Patch::Sections { before, after, .. } => before == after,
             Patch::Notes { before, after, .. } => before == after,
+            Patch::Comments { before, after } => before == after,
             Patch::Background { before, after } => before == after,
             Patch::Settings { before, after } => before == after,
         };

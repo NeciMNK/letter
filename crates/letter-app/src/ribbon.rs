@@ -181,6 +181,16 @@ pub enum RibbonCommand {
     ToggleRuler,
     /// «Вид → Область навигации»: показать или скрыть.
     ToggleNavigation,
+    /// «Рецензирование → Создать примечание» (Ctrl+Alt+M).
+    NewComment,
+    /// «Удалить» активное примечание.
+    DeleteComment,
+    /// Перейти к предыдущему примечанию.
+    PreviousComment,
+    /// Перейти к следующему примечанию.
+    NextComment,
+    /// Показать или скрыть область примечаний.
+    ToggleComments,
     /// «Вид → Режимы»: режим просмотра.
     ViewMode(crate::view_mode::ViewMode),
     /// Ctrl+Backspace и Ctrl+Delete: удалить слово до или после курсора.
@@ -290,6 +300,14 @@ pub struct RibbonInfo {
     pub navigation: bool,
     /// Режим просмотра.
     pub view: crate::view_mode::ViewMode,
+    /// Документ можно править (не режим чтения).
+    pub editable: bool,
+    /// В документе есть примечания.
+    pub comments: bool,
+    /// Область примечаний показана.
+    pub show_comments: bool,
+    /// Есть активное примечание.
+    pub active_comment: bool,
     /// Курсор в таблице.
     pub in_table: bool,
     /// Выделено несколько ячеек таблицы: их можно объединить.
@@ -382,13 +400,11 @@ impl Ribbon {
                         Tab::Design => crate::design::design(ui, info, &mut out),
                         Tab::References => crate::references::references(ui, info, &mut out),
                         Tab::Layout => crate::layout::layout(ui, info, &mut out),
+                        Tab::Review => crate::review::review(ui, info, &mut out),
                         Tab::TableDesign => crate::insert::table_design(ui, info, &mut out),
                         Tab::TableLayout => crate::insert::table_layout(ui, info, &mut out),
                         Tab::PictureFormat => crate::insert::picture_format(ui, info, &mut out),
                         Tab::HeaderFooter => crate::headers::header_footer(ui, info, &mut out),
-                        _ => {
-                            ui.label(RichText::new(tr("tab-coming-soon")).color(Color32::GRAY));
-                        }
                     });
                 });
         }
