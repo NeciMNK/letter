@@ -39,6 +39,7 @@ mod symbols;
 mod theme;
 mod units;
 mod view;
+mod view_mode;
 mod viewer;
 
 use std::path::PathBuf;

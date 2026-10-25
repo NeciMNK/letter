@@ -71,6 +71,8 @@ pub enum Icon {
     PrintLayout,
     /// Веб-документ: глобус.
     WebLayout,
+    /// Черновик: лист с карандашом.
+    Draft,
     /// Открыть окно группы ленты: стрелка в угол.
     Launcher,
     /// Вставить с исходным оформлением.
@@ -222,6 +224,7 @@ impl Icon {
             Icon::ReadMode => ("book-open", '\u{E05F}'),
             Icon::PrintLayout => ("file-text", '\u{E0CC}'),
             Icon::WebLayout => ("globe", '\u{E0E8}'),
+            Icon::Draft => ("file-pen-line", '\u{E320}'),
             Icon::Launcher => ("arrow-down-right", '\u{E045}'),
             Icon::PasteKeep => ("clipboard-pen-line", '\u{E308}'),
             Icon::PasteMerge => ("clipboard-list", '\u{E086}'),
@@ -441,7 +444,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 65] = [
+    const ALL: [Icon; 66] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -475,6 +478,7 @@ mod tests {
         Icon::ReadMode,
         Icon::PrintLayout,
         Icon::WebLayout,
+        Icon::Draft,
         Icon::Launcher,
         Icon::PasteKeep,
         Icon::PasteMerge,
