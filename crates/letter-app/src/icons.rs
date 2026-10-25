@@ -73,6 +73,16 @@ pub enum Icon {
     WebLayout,
     /// Черновик: лист с карандашом.
     Draft,
+    /// Создать примечание: облачко с плюсом.
+    NewComment,
+    /// Удалить примечание: облачко с крестиком.
+    DeleteComment,
+    /// Показать примечания: два облачка.
+    ShowComments,
+    /// Ответить: стрелка назад.
+    Reply,
+    /// Решить: галочка.
+    Check,
     /// Открыть окно группы ленты: стрелка в угол.
     Launcher,
     /// Вставить с исходным оформлением.
@@ -225,6 +235,11 @@ impl Icon {
             Icon::PrintLayout => ("file-text", '\u{E0CC}'),
             Icon::WebLayout => ("globe", '\u{E0E8}'),
             Icon::Draft => ("file-pen-line", '\u{E320}'),
+            Icon::NewComment => ("message-square-plus", '\u{E40C}'),
+            Icon::DeleteComment => ("message-square-x", '\u{E577}'),
+            Icon::ShowComments => ("messages-square", '\u{E40D}'),
+            Icon::Reply => ("reply", '\u{E22A}'),
+            Icon::Check => ("check", '\u{E06C}'),
             Icon::Launcher => ("arrow-down-right", '\u{E045}'),
             Icon::PasteKeep => ("clipboard-pen-line", '\u{E308}'),
             Icon::PasteMerge => ("clipboard-list", '\u{E086}'),
@@ -444,7 +459,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 66] = [
+    const ALL: [Icon; 71] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -479,6 +494,11 @@ mod tests {
         Icon::PrintLayout,
         Icon::WebLayout,
         Icon::Draft,
+        Icon::NewComment,
+        Icon::DeleteComment,
+        Icon::ShowComments,
+        Icon::Reply,
+        Icon::Check,
         Icon::Launcher,
         Icon::PasteKeep,
         Icon::PasteMerge,

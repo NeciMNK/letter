@@ -117,6 +117,24 @@ pub fn word_at(layout: &DocumentLayout, at: Position) -> Selection {
     )
 }
 
+/// Слово под позицией `at` без пробелов после него: к нему ставится
+/// примечание, когда ничего не выделено.
+pub fn word_only_at(layout: &DocumentLayout, at: Position) -> Selection {
+    let word = word_at(layout, at);
+    let (start, end) = (word.start(), word.end());
+    let Some(text) = paragraph_text(layout, at.paragraph) else {
+        return word;
+    };
+    let Some(piece) = text.get(start.offset..end.offset) else {
+        return word;
+    };
+    let trimmed = piece.trim_end_matches([' ', '\u{a0}']).len();
+    if trimmed == 0 {
+        return word;
+    }
+    Selection::new(start, Position::new(end.paragraph, start.offset + trimmed))
+}
+
 fn is_word(segment: &str) -> bool {
     segment.chars().any(char::is_alphanumeric)
 }
@@ -279,6 +297,16 @@ mod tests {
         assert_eq!(at(15), ((0, 15), (0, 21)));
         // Последнее слово, курсор в конце абзаца.
         assert_eq!(at(26), ((0, 23), (0, 26)));
+        // Для примечания — без пробелов после слова.
+        let doc2 = layout(&["one  two"]);
+        assert_eq!(
+            range(word_only_at(&doc2, Position::new(0, 1))),
+            ((0, 0), (0, 3))
+        );
+        assert_eq!(
+            range(word_only_at(&doc2, Position::new(0, 6))),
+            ((0, 5), (0, 8))
+        );
         let doc = layout(&["one two"]);
         assert_eq!(range(word_at(&doc, Position::new(0, 1))), ((0, 0), (0, 4)));
         // Пустой абзац.

@@ -118,6 +118,7 @@ pub fn table() -> Vec<Shortcut> {
         local(CTRL_ALT, Key::Num1, C::BuiltInStyle("heading 1")),
         local(CTRL_ALT, Key::Num2, C::BuiltInStyle("heading 2")),
         local(CTRL_ALT, Key::Num3, C::BuiltInStyle("heading 3")),
+        local(CTRL_ALT, Key::M, C::NewComment),
     ]
 }
 
