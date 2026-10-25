@@ -58,6 +58,14 @@ const CT_FOOTNOTES: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml";
 const CT_ENDNOTES: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml";
+const REL_COMMENTS: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
+const REL_COMMENTS_EXTENDED: &str =
+    "http://schemas.microsoft.com/office/2011/relationships/commentsExtended";
+const CT_COMMENTS: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml";
+const CT_COMMENTS_EXTENDED: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml";
 const CT_HEADER: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml";
 const CT_FOOTER: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml";
 const REL_IMAGE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
@@ -145,6 +153,61 @@ pub(crate) fn write<W: Write + Seek>(doc: &Document, writer: W) -> Result<(), Wr
         ensure_override(&mut overrides, &name, content_type);
         replaced.push(name.clone());
         parts.push((name, Cow::Owned(xml.into_bytes())));
+    }
+    // Примечания: части строятся заново из модели. Примечания, значки
+    // которых удалили из текста, в файл не идут.
+    let mut referenced = Vec::new();
+    for section in &doc.sections {
+        letter_model::comment_references(&section.blocks, &mut referenced);
+    }
+    for note in doc.footnotes.iter().chain(&doc.endnotes) {
+        letter_model::comment_references(&note.blocks, &mut referenced);
+    }
+    let mut comments = doc.comments.clone();
+    comments.retain(|c| referenced.contains(&c.id));
+    let comments_part = match &source.comments_part {
+        Some((name, root)) => Some((name.clone(), Some(root.as_slice()))),
+        None if !comments.is_empty() => Some((
+            links.find_or_add(
+                &main,
+                REL_COMMENTS,
+                &["/comments"],
+                &join(base, "comments.xml"),
+                false,
+            ),
+            None,
+        )),
+        None => None,
+    };
+    if let Some((name, root)) = comments_part {
+        let para_ids = crate::comments::para_ids(&comments);
+        let extended = match &source.comments_extended_part {
+            Some((name, root)) => Some((name.clone(), Some(root.as_slice()))),
+            None if crate::comments::needs_extended(&comments) => Some((
+                links.find_or_add(
+                    &main,
+                    REL_COMMENTS_EXTENDED,
+                    &["/commentsExtended"],
+                    &join(base, "commentsExtended.xml"),
+                    false,
+                ),
+                None,
+            )),
+            None => None,
+        };
+        for comment in &mut comments {
+            link_hyperlinks(&mut comment.blocks, &name, &mut links);
+        }
+        let xml = crate::comments::comments_xml(&comments, &para_ids, root);
+        ensure_override(&mut overrides, &name, CT_COMMENTS);
+        replaced.push(name.clone());
+        parts.push((name, Cow::Owned(xml.into_bytes())));
+        if let Some((name, root)) = extended {
+            let xml = crate::comments::extended_xml(&comments, &para_ids, root);
+            ensure_override(&mut overrides, &name, CT_COMMENTS_EXTENDED);
+            replaced.push(name.clone());
+            parts.push((name, Cow::Owned(xml.into_bytes())));
+        }
     }
     for (name, data) in media {
         if let Some((_, ext)) = name.rsplit_once('.')

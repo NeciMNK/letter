@@ -392,6 +392,45 @@ def notes() -> Document:
     return doc
 
 
+def comments() -> Document:
+    """Два примечания, ответ на первое и отметка «решено» у второго
+    (часть `commentsExtended`, как у Word 2013+)."""
+    from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
+
+    doc = new_document("Примечания")
+    p = doc.add_paragraph("The first ")
+    first = p.add_run("claim needs")
+    p.add_run(" a source. ")
+    second = p.add_run("Second remark.")
+    a = doc.add_comment(first, text="Where is the source?", author="Анна", initials="А")
+    b = doc.add_comment(second, text="Fixed.", author="Boris", initials="B")
+    reply = doc.add_comment(first, text="Added in chapter 2.", author="Boris", initials="B")
+    w14 = "http://schemas.microsoft.com/office/word/2010/wordml"
+    for comment, para in ((a, "1A2B3C01"), (b, "1A2B3C02"), (reply, "1A2B3C03")):
+        last = comment._comment_elm.findall(qn("w:p"))[-1]
+        last.set(f"{{{w14}}}paraId", para)
+        comment._comment_elm.set(qn("w:date"), "2026-10-25T10:00:00Z")
+    w15 = "http://schemas.microsoft.com/office/word/2012/wordml"
+    xml = (
+        f'<w15:commentsEx xmlns:w15="{w15}">'
+        '<w15:commentEx w15:paraId="1A2B3C01" w15:done="0"/>'
+        '<w15:commentEx w15:paraId="1A2B3C02" w15:done="1"/>'
+        '<w15:commentEx w15:paraId="1A2B3C03" w15:paraIdParent="1A2B3C01" w15:done="0"/>'
+        "</w15:commentsEx>"
+    )
+    part = Part(
+        PackURI("/word/commentsExtended.xml"),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml",
+        xml.encode(),
+        doc.part.package,
+    )
+    doc.part.relate_to(
+        part, "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"
+    )
+    return doc
+
+
 def headers() -> Document:
     """Колонтитулы: особый для первой страницы, разные для чётных
     и нечётных; второй раздел берёт верхний колонтитул первого, а нижний
@@ -560,6 +599,7 @@ FIXTURES = {
     "headers.docx": headers,
     "links.docx": links,
     "notes.docx": notes,
+    "comments.docx": comments,
     "borders.docx": borders,
     "watermark.docx": watermark,
 }

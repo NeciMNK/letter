@@ -150,8 +150,8 @@ fn read_paragraph(p: &Element, allow_section: bool) -> (Paragraph, Option<Sectio
     (paragraph, section)
 }
 
-/// Начало или конец закладки; с другими атрибутами (закладка столбцов
-/// таблицы и т. п.) — `None`.
+/// Начало или конец закладки или куска текста примечания; с другими
+/// атрибутами (закладка столбцов таблицы и т. п.) — `None`.
 fn read_bookmark(element: &Element) -> Option<Inline> {
     if element.elements().next().is_some() {
         return None;
@@ -163,6 +163,10 @@ fn read_bookmark(element: &Element) -> Option<Inline> {
         }))
     } else if element.is_w("bookmarkEnd") && element.only_attrs(&["id"]) {
         Some(Inline::BookmarkEnd(element.w_attr("id")?.to_string()))
+    } else if element.is_w("commentRangeStart") && element.only_attrs(&["id"]) {
+        Some(Inline::CommentStart(element.w_attr("id")?.to_string()))
+    } else if element.is_w("commentRangeEnd") && element.only_attrs(&["id"]) {
+        Some(Inline::CommentEnd(element.w_attr("id")?.to_string()))
     } else {
         None
     }
@@ -429,6 +433,14 @@ fn read_run(r: &Element) -> Run {
                 {
                     match read_note_reference(child) {
                         Some(r) => RunContent::NoteReference(r),
+                        None => RunContent::Unknown(child.raw()),
+                    }
+                }
+                "commentReference"
+                    if child.only_attrs(&["id"]) && child.elements().next().is_none() =>
+                {
+                    match child.w_attr("id") {
+                        Some(id) => RunContent::CommentReference(id.to_string()),
                         None => RunContent::Unknown(child.raw()),
                     }
                 }

@@ -15,6 +15,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod comments;
 mod document;
 mod error;
 mod names;
@@ -99,6 +100,8 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
 
     let images = package.relationships(&main);
     let stories = read_headers_footers(&mut package, &mut doc, &images);
+    let mut source_comments = None;
+    let mut source_comments_extended = None;
     // Сноски: часть, которую не удалось понять, сохранится как есть.
     let mut note_parts = Vec::new();
     for (kind, name) in [
@@ -115,6 +118,21 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
             note_parts.push((kind, part, root.root_attributes()));
         }
     }
+    // Примечания: та же логика, что у сносок.
+    let mut comment_parts = Vec::new();
+    if let Some((part, root)) = read_related_xml(&mut package, &main, "comments")
+        && let Some(comments) = comments::read_comments(&root)
+    {
+        doc.comments = comments;
+        comment_parts.push((part.clone(), root.root_attributes()));
+        source_comments = Some((part, root.root_attributes()));
+        if let Some((part, root)) = read_related_xml(&mut package, &main, "commentsExtended")
+            && comments::read_extended(&root, &mut doc.comments)
+        {
+            comment_parts.push((part.clone(), root.root_attributes()));
+            source_comments_extended = Some((part, root.root_attributes()));
+        }
+    }
     let mut rebuilt = vec![
         Some(main.clone()),
         styles_part.clone(),
@@ -124,6 +142,7 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
     ];
     rebuilt.extend(stories.iter().map(|(name, _)| Some(name.clone())));
     rebuilt.extend(note_parts.iter().map(|(_, name, _)| Some(name.clone())));
+    rebuilt.extend(comment_parts.iter().map(|(name, _)| Some(name.clone())));
     let mut source = read_source(&mut package, &rebuilt)?;
     attach_images(|f| doc.for_each_picture_mut(f), &images, &source);
     let addresses = package.external_links(&main);
@@ -179,6 +198,21 @@ pub fn read<R: Read + Seek>(reader: R) -> Result<Document, ReadError> {
             NoteKind::Endnote => source.endnotes_part = entry,
         }
     }
+    // Картинки и ссылки примечаний — по связям части примечаний.
+    if let Some((name, _)) = &source_comments {
+        let relationships = package.relationships(name);
+        let addresses = package.external_links(name);
+        for comment in &mut doc.comments {
+            attach_links(&mut comment.blocks, &addresses);
+            attach_images(
+                |f| for_each_picture_in(&mut comment.blocks, f),
+                &relationships,
+                &source,
+            );
+        }
+    }
+    source.comments_part = source_comments;
+    source.comments_extended_part = source_comments_extended;
     source.header_footer_parts = stories;
     source.main_part = main;
     source.styles_part = styles_part;

@@ -57,6 +57,9 @@ pub enum RunContent {
     /// ([`RunContent::FieldCode`]), разделитель, результат (обычный текст)
     /// и конец, по порядку в фрагментах абзаца; см. [`crate::fields`].
     FieldChar(FieldChar),
+    /// Значок примечания (`w:commentReference`) с номером примечания.
+    /// Места в тексте не занимает.
+    CommentReference(String),
     /// Кусок кода поля (`w:instrText`), например « PAGE \* MERGEFORMAT ».
     /// Места в тексте не занимает.
     FieldCode(String),
@@ -89,6 +92,7 @@ impl RunContent {
             }
             RunContent::NoteReference(r) if !r.custom_mark => OBJECT_CHAR.len_utf8(),
             RunContent::NoteReference(_)
+            | RunContent::CommentReference(_)
             | RunContent::Unknown(_)
             | RunContent::FieldChar(_)
             | RunContent::FieldCode(_) => 0,
@@ -106,6 +110,7 @@ impl RunContent {
             }
             RunContent::NoteReference(r) if !r.custom_mark => out.push(OBJECT_CHAR),
             RunContent::NoteReference(_)
+            | RunContent::CommentReference(_)
             | RunContent::Unknown(_)
             | RunContent::FieldChar(_)
             | RunContent::FieldCode(_) => {}

@@ -39,6 +39,11 @@ pub struct SourcePackage {
     pub footnotes_part: Option<(String, Vec<(String, String)>)>,
     /// То же для концевых сносок.
     pub endnotes_part: Option<(String, Vec<(String, String)>)>,
+    /// То же для примечаний (`word/comments.xml`).
+    pub comments_part: Option<(String, Vec<(String, String)>)>,
+    /// Часть ответов и отметок «решено» (`word/commentsExtended.xml`),
+    /// прочитанная в модель, и атрибуты её корня.
+    pub comments_extended_part: Option<(String, Vec<(String, String)>)>,
     /// Типы содержимого по расширению имени (`Default` в `[Content_Types].xml`):
     /// пары «расширение — тип».
     pub default_content_types: Vec<(String, String)>,
