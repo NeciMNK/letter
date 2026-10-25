@@ -6,7 +6,7 @@ use letter_editor::{DateTime, format_date};
 use crate::i18n::{Language, language, tr};
 use crate::icons::Icon;
 use crate::insert::menu_button;
-use crate::ribbon::{RibbonCommand, RibbonInfo, group};
+use crate::ribbon::{RibbonCommand, RibbonInfo, row_group};
 
 /// Образцы даты и времени в меню «Дата и время» (ключ `\@` поля).
 const DATE_FORMATS_RU: [&str; 9] = [
@@ -65,7 +65,7 @@ pub fn date_field_code(picture: &str) -> String {
 /// Группа «Текст».
 pub fn text_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     let enabled = info.has_document;
-    group(ui, tr("group-text"), |ui| {
+    row_group(ui, tr("group-text"), |ui| {
         menu_button(
             ui,
             Icon::DateTime,

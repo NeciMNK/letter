@@ -30,7 +30,7 @@ pub const KEYTIPS: [&str; 6] = [
 pub fn review(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     let enabled = info.has_document && info.story.is_none();
     group(ui, tr("group-comments"), |ui| {
-        ui.horizontal(|ui| comment_buttons(ui, info, enabled, out));
+        ui.horizontal_top(|ui| comment_buttons(ui, info, enabled, out));
     });
 }
 
@@ -48,7 +48,7 @@ fn comment_buttons(ui: &mut Ui, info: &RibbonInfo, enabled: bool, out: &mut Vec<
             RibbonCommand::NewComment,
             out,
         );
-        ui.label(name);
+        crate::ribbon::big_label(ui, name);
     });
     ui.vertical(|ui| {
         let has = enabled && info.has_comments;
@@ -111,7 +111,7 @@ fn comment_buttons(ui: &mut Ui, info: &RibbonInfo, enabled: bool, out: &mut Vec<
             RibbonCommand::ToggleComments,
             out,
         );
-        ui.label(name);
+        crate::ribbon::big_label(ui, name);
     });
 }
 

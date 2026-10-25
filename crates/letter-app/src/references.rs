@@ -10,7 +10,7 @@ use crate::i18n::tr;
 use crate::icons::{Icon, icon_button, icon_text_button};
 use crate::insert::menu_button;
 use crate::keytips::{self, Level, TipAction};
-use crate::ribbon::{RibbonCommand, RibbonInfo, group};
+use crate::ribbon::{RibbonCommand, RibbonInfo, row_group};
 
 /// Подсказки клавиш вкладки «Ссылки» (для проверки).
 #[cfg(test)]
@@ -43,7 +43,7 @@ fn small_menu(
 pub fn references(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     // В колонтитул сноску не вставить, как и в Word.
     let enabled = info.has_document && info.story.is_none();
-    group(ui, tr("group-toc"), |ui| {
+    row_group(ui, tr("group-toc"), |ui| {
         menu_button(
             ui,
             Icon::Contents,
@@ -108,7 +108,7 @@ pub fn references(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) 
             }
         });
     });
-    group(ui, tr("group-footnotes"), |ui| {
+    row_group(ui, tr("group-footnotes"), |ui| {
         let buttons = [
             (
                 NoteKind::Footnote,
@@ -140,7 +140,7 @@ pub fn references(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) 
                 if response.clicked() {
                     out.push(command);
                 }
-                ui.label(tr(label));
+                crate::ribbon::big_label(ui, tr(label));
             });
         }
         small_menu(

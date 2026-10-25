@@ -7,7 +7,7 @@ use crate::i18n::tr;
 use crate::icons::{Icon, icon_text_button};
 use crate::insert::menu_button;
 use crate::keytips::{self, Level, TipAction};
-use crate::ribbon::{RibbonCommand, RibbonInfo, group};
+use crate::ribbon::{RibbonCommand, RibbonInfo, group, row_group};
 
 /// Подсказки клавиш вкладки «Колонтитулы» (для проверки).
 #[cfg(test)]
@@ -33,14 +33,14 @@ pub enum PageNumberPlace {
 
 /// Группа «Колонтитулы» вкладки «Вставка».
 pub fn insert_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
-    group(ui, tr("group-header-footer"), |ui| {
+    row_group(ui, tr("group-header-footer"), |ui| {
         buttons(ui, info, out, "keytip-insert");
     });
 }
 
 /// Вкладка «Колонтитулы».
 pub fn header_footer(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
-    group(ui, tr("group-header-footer"), |ui| {
+    row_group(ui, tr("group-header-footer"), |ui| {
         buttons(ui, info, out, "keytip-hf");
     });
     group(ui, tr("group-options"), |ui| {
@@ -121,7 +121,7 @@ fn buttons(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>, prefix:
             if response.clicked() {
                 out.push(command);
             }
-            ui.label(tr(label));
+            crate::ribbon::big_label(ui, tr(label));
         });
     }
     menu_button(
