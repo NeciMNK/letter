@@ -318,6 +318,7 @@ fn content(
                 | RunContent::FieldCode(_)
                 | RunContent::NoteReference(_)
                 | RunContent::NoteMark(_)
+                | RunContent::CommentReference(_)
                 | RunContent::Unknown(_) => {}
             }
         }

@@ -1516,8 +1516,12 @@ fn prepare(
                     spans.push(TextSpan::label(symbol.unicode().to_string(), style));
                     span_props.push(resolved.clone());
                 }
-                // Код поля не виден, видно только его результат.
-                RunContent::FieldChar(_) | RunContent::FieldCode(_) | RunContent::Unknown(_) => {}
+                // Код поля не виден, видно только его результат; значок
+                // примечания рисуется на полях отдельно.
+                RunContent::FieldChar(_)
+                | RunContent::FieldCode(_)
+                | RunContent::CommentReference(_)
+                | RunContent::Unknown(_) => {}
             }
         }
         push_text(&mut spans, &mut span_props, &text, &resolved);

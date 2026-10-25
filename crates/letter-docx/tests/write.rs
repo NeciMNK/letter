@@ -32,6 +32,7 @@ const FIXTURES: &[&str] = &[
     "headers.docx",
     "links.docx",
     "notes.docx",
+    "comments.docx",
     "borders.docx",
     "watermark.docx",
     "header-footer.docx",
@@ -92,12 +93,13 @@ fn untouched_parts_are_copied_byte_for_byte() {
             let copy = after
                 .get(part)
                 .unwrap_or_else(|| panic!("{name}: part {part} lost"));
-            // Колонтитулы и сноски тоже строятся заново из модели.
+            // Колонтитулы, сноски и примечания тоже строятся заново из модели.
             let story = [
                 "word/header",
                 "word/footer",
                 "word/footnotes",
                 "word/endnotes",
+                "word/comments",
             ]
             .iter()
             .any(|prefix| part.starts_with(prefix));

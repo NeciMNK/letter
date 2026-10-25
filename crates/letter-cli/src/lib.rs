@@ -340,6 +340,22 @@ pub fn dump(doc: &Document) -> String {
             }
         }
     }
+    for comment in &doc.comments {
+        let mut line = format!("Примечание {} от {:?}", comment.id, comment.author);
+        if let Some(date) = &comment.date {
+            let _ = write!(line, ", {date}");
+        }
+        if let Some(parent) = &comment.parent {
+            let _ = write!(line, ", ответ на {parent}");
+        }
+        if comment.done {
+            line.push_str(", решено");
+        }
+        let _ = writeln!(out, "{line}");
+        for block in &comment.blocks {
+            dump_block(&mut out, 1, block);
+        }
+    }
     out
 }
 
@@ -392,6 +408,12 @@ fn dump_paragraph(out: &mut String, depth: usize, p: &Paragraph) {
             Inline::BookmarkEnd(id) => {
                 let _ = writeln!(out, "{}Конец закладки ({id})", indent(depth + 1));
             }
+            Inline::CommentStart(id) => {
+                let _ = writeln!(out, "{}Начало примечания ({id})", indent(depth + 1));
+            }
+            Inline::CommentEnd(id) => {
+                let _ = writeln!(out, "{}Конец примечания ({id})", indent(depth + 1));
+            }
             Inline::Unknown(raw) => {
                 let _ = writeln!(out, "{}Непонятое <{}>", indent(depth + 1), raw.name());
             }
@@ -409,6 +431,9 @@ fn dump_run(out: &mut String, depth: usize, run: &Run) {
             }
             RunContent::Unknown(raw) => {
                 let _ = write!(content, "<{}>", raw.name());
+            }
+            RunContent::CommentReference(id) => {
+                let _ = write!(content, "<примечание {id}>");
             }
             RunContent::Picture(picture) => {
                 let _ = write!(
