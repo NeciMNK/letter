@@ -191,6 +191,14 @@ pub enum RibbonCommand {
     NextComment,
     /// Показать или скрыть область примечаний.
     ToggleComments,
+    /// «Рецензирование → Исправления» (Ctrl+Shift+E): включить или
+    /// выключить запись исправлений.
+    ToggleTrackRevisions,
+    /// Перейти к следующему (`forward`) или предыдущему исправлению.
+    GoToRevision {
+        /// Вперёд.
+        forward: bool,
+    },
     /// «Вид → Режимы»: режим просмотра.
     ViewMode(crate::view_mode::ViewMode),
     /// Ctrl+Backspace и Ctrl+Delete: удалить слово до или после курсора.
@@ -308,6 +316,10 @@ pub struct RibbonInfo {
     pub show_comments: bool,
     /// Есть активное примечание.
     pub active_comment: bool,
+    /// Запись исправлений включена.
+    pub track_revisions: bool,
+    /// В документе есть исправления.
+    pub revisions: bool,
     /// Курсор в таблице.
     pub in_table: bool,
     /// Выделено несколько ячеек таблицы: их можно объединить.

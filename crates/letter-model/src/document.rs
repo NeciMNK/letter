@@ -149,6 +149,9 @@ pub struct Settings {
     /// «Переносы в словах из прописных букв» выключены
     /// (`w:doNotHyphenateCaps`).
     pub do_not_hyphenate_caps: bool,
+    /// Запись исправлений включена (`w:trackRevisions`): правка
+    /// помечается вставками и удалениями.
+    pub track_revisions: bool,
 }
 
 impl Default for Settings {
@@ -163,6 +166,7 @@ impl Default for Settings {
             hyphenation_zone: Twips(360),
             consecutive_hyphen_limit: 0,
             do_not_hyphenate_caps: false,
+            track_revisions: false,
         }
     }
 }

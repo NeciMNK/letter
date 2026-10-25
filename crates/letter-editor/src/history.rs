@@ -12,13 +12,14 @@ use letter_model::{
     Hyperlink, Note, NoteKind, Picture, Section, SectionStart, Settings,
 };
 
+use crate::Position;
 use crate::clipboard::{insert_fragment, insert_plain_text};
 use crate::comments::{delete_comment, insert_comment, reply_to_comment};
-use crate::edit::paragraph_count;
 use crate::edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, split_paragraph,
     top_level,
 };
+use crate::edit::{paragraph_count, paragraph_ref, text_len};
 use crate::fields::{FieldContext, update_fields};
 use crate::format::{
     ParagraphFormat, RunFormat, align_paragraphs, apply_style, format_paragraphs, format_runs,
@@ -30,6 +31,10 @@ use crate::lists::{
 };
 use crate::notes::{insert_note, notes_mut};
 use crate::picture::{insert_picture, resize_picture, set_picture_anchor};
+use crate::revisions::{
+    Reviewer, clear_revisions, mark_deleted, mark_inserted, now_iso, resolve_revisions,
+    revision_at, revision_range, track_delete_backward, track_delete_forward,
+};
 use crate::search::{SearchOptions, clamp, replace_all};
 use crate::section::{
     PageSetup, insert_break, insert_section_break, set_header_footer, set_page_setup,
@@ -48,6 +53,16 @@ use crate::watermark::set_watermark;
 pub enum Command {
     /// Набрать текст (заменяет выделенное).
     Type(String),
+    /// Включить или выключить запись исправлений.
+    TrackRevisions(bool),
+    /// Принять (`accept`) или отклонить исправления: в выделении, а без
+    /// выделения — исправление у курсора; `all` — все в документе.
+    ResolveRevisions {
+        /// Принять (иначе — отклонить).
+        accept: bool,
+        /// Все исправления документа.
+        all: bool,
+    },
     /// Enter: новый абзац.
     SplitParagraph,
     /// Shift+Enter: разрыв строки.
@@ -340,12 +355,20 @@ pub struct History {
     sealed: bool,
     /// Последний выданный номер состояния.
     last_id: u64,
+    /// Кто правит (для записи исправлений).
+    reviewer: Reviewer,
 }
 
 impl History {
     /// Пустая история.
     pub fn new() -> History {
         History::default()
+    }
+
+    /// Задаёт, от чьего имени записываются исправления. Если дата не
+    /// задана, берётся время правки.
+    pub fn set_reviewer(&mut self, reviewer: Reviewer) {
+        self.reviewer = reviewer;
     }
 
     /// Выполняет `command` над выделением `selection` и возвращает новое
@@ -378,6 +401,15 @@ impl History {
                         },
                         selection,
                     );
+                }
+                return selection;
+            }
+            Command::TrackRevisions(on) => {
+                if doc.settings.track_revisions != on {
+                    let before = Box::new(doc.settings.clone());
+                    doc.settings.track_revisions = on;
+                    let after = Box::new(doc.settings.clone());
+                    self.push(Patch::Settings { before, after }, selection);
                 }
                 return selection;
             }
@@ -474,6 +506,7 @@ impl History {
                 | Command::InsertComment(_)
                 | Command::ReplyComment { .. }
                 | Command::DeleteComment(_)
+                | Command::ResolveRevisions { .. }
         );
         let erasing = !selection.is_empty() && !formatting;
         let (first, last) = match command {
@@ -487,6 +520,7 @@ impl History {
             | Command::DeleteBookmark(_)
             | Command::ReplyComment { .. }
             | Command::DeleteComment(_)
+            | Command::ResolveRevisions { .. }
             | Command::UpdateFields(_)
             | Command::UpdateToc(_)
             | Command::InsertToc(_)
@@ -531,7 +565,14 @@ impl History {
             Saved::Sections(doc.sections[from.0..=to.0].to_vec())
         };
 
-        let at = if erasing {
+        let tracking = doc.settings.track_revisions;
+        let mut reviewer = self.reviewer.clone();
+        if tracking && reviewer.date.is_none() {
+            reviewer.date = Some(now_iso());
+        }
+        let at = if erasing && tracking {
+            mark_deleted(doc, start, end, &reviewer)
+        } else if erasing {
             delete_range(doc, start, end)
         } else {
             selection.focus
@@ -667,6 +708,24 @@ impl History {
                 delete_comment(doc, id);
                 Some(selection)
             }
+            Command::ResolveRevisions { accept, all } => {
+                let range = if *all {
+                    let last = paragraph_count(doc).saturating_sub(1);
+                    let end = paragraph_ref(doc, last).map_or(0, text_len);
+                    Some((Position::new(0, 0), Position::new(last, end), None))
+                } else if selection.is_empty() {
+                    revision_at(doc, selection.focus).and_then(|r| {
+                        let (from, to) = revision_range(doc, &r.id)?;
+                        Some((from, to, Some(r.id)))
+                    })
+                } else {
+                    Some((start, end, None))
+                };
+                if let Some((from, to, id)) = range {
+                    resolve_revisions(doc, from, to, id.as_deref(), *accept);
+                }
+                Some(Selection::caret(clamp(doc, selection.focus)))
+            }
             Command::UpdateToc(context) => {
                 let last = paragraph_count(doc).saturating_sub(1);
                 update_tocs(doc, 0, last, context);
@@ -698,6 +757,8 @@ impl History {
             Command::SplitParagraph => split_paragraph(doc, at),
             Command::LineBreak => insert_line_break(doc, at),
             Command::DeleteBackward | Command::DeleteForward if erasing => at,
+            Command::DeleteBackward if tracking => track_delete_backward(doc, at, &reviewer),
+            Command::DeleteForward if tracking => track_delete_forward(doc, at, &reviewer),
             Command::DeleteBackward => delete_backward(doc, at),
             Command::DeleteForward => delete_forward(doc, at),
             Command::Paste(fragment) => insert_fragment(doc, at, fragment),
@@ -747,10 +808,31 @@ impl History {
             | Command::ReplyComment { .. }
             | Command::DeleteComment(_)
             | Command::SetComment(_)
+            | Command::TrackRevisions(_)
+            | Command::ResolveRevisions { .. }
             | Command::PageColor(_)
             | Command::AutoHyphenation(_)
             | Command::Watermark(_) => at,
         };
+        // Набранное и вставленное при записи исправлений — вставка, а без
+        // записи — обычный текст, даже рядом с чужим исправлением.
+        let inserted = matches!(
+            command,
+            Command::Type(_)
+                | Command::Link { text: Some(_), .. }
+                | Command::SplitParagraph
+                | Command::LineBreak
+                | Command::Paste(_)
+                | Command::PasteText(_)
+                | Command::Break(_)
+        );
+        if inserted && after.is_none() {
+            if tracking {
+                mark_inserted(doc, at, focus, &reviewer);
+            } else if !matches!(command, Command::Paste(_)) {
+                clear_revisions(doc, at, focus);
+            }
+        }
         let after = after.unwrap_or(Selection::caret(focus));
 
         let patch = match saved {

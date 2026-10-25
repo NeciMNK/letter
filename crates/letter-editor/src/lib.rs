@@ -28,6 +28,7 @@ pub mod notes;
 pub mod outline;
 pub mod picture;
 pub mod position;
+pub mod revisions;
 pub mod search;
 pub mod section;
 pub mod selection;
@@ -68,6 +69,10 @@ pub use picture::{
     selected_picture, set_picture_anchor,
 };
 pub use position::{Affinity, Position};
+pub use revisions::{
+    Reviewer, clear_revisions, has_revisions, mark_deleted, mark_inserted, next_revision, now_iso,
+    resolve_revisions, revision_at, revision_range,
+};
 pub use search::{Found, SearchOptions, find_all, find_next, found_context, replace_all};
 pub use section::{
     ColumnPreset, PageBorderPreset, PageSetup, header_footer_source, insert_break,

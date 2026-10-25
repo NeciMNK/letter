@@ -359,14 +359,7 @@ pub fn initials(name: &str) -> String {
 
 /// Текущее время для даты примечания, UTC: `2026-10-25T12:00:00Z`.
 pub fn now_iso() -> String {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
-    let t = letter_editor::DateTime::from_unix(seconds, 0);
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        t.year, t.month, t.day, t.hour, t.minute, t.second
-    )
+    letter_editor::now_iso()
 }
 
 #[cfg(test)]
