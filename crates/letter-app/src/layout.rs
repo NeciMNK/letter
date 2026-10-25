@@ -11,7 +11,7 @@ use crate::i18n::tr;
 use crate::icons::Icon;
 use crate::insert::menu_button;
 use crate::keytips::{self, Level, TipAction};
-use crate::ribbon::{RibbonCommand, RibbonInfo, group};
+use crate::ribbon::{RibbonCommand, RibbonInfo, group, row_group};
 use crate::units::{cm_field, pt_field};
 
 /// Подсказки клавиш вкладки «Макет» (для проверки).
@@ -54,7 +54,7 @@ pub fn layout(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
         out.push(RibbonCommand::Edit(command));
         ui.close();
     };
-    group(ui, tr("group-page-setup"), |ui| {
+    row_group(ui, tr("group-page-setup"), |ui| {
         let margins = section.and_then(|s| s.margins).unwrap_or_default();
         menu_button(
             ui,

@@ -8,7 +8,7 @@ use letter_model::Color;
 use crate::i18n::tr;
 use crate::icons::Icon;
 use crate::insert::{menu_button, shading_palette};
-use crate::ribbon::{RibbonCommand, RibbonInfo, group};
+use crate::ribbon::{RibbonCommand, RibbonInfo, row_group};
 
 /// Подсказки клавиш вкладки «Конструктор» (для проверки).
 #[cfg(test)]
@@ -32,7 +32,7 @@ const WATERMARKS: [&str; 5] = [
 pub fn design(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     // Пока открыт колонтитул, страница не меняется.
     let enabled = info.has_document && info.story.is_none();
-    group(ui, tr("group-page-background"), |ui| {
+    row_group(ui, tr("group-page-background"), |ui| {
         menu_button(
             ui,
             Icon::Watermark,

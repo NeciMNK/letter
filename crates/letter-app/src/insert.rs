@@ -10,7 +10,7 @@ use letter_model::Color;
 use crate::i18n::tr;
 use crate::icons::{Icon, icon_button, icon_text_button};
 use crate::keytips::{self, Level, TipAction};
-use crate::ribbon::{RibbonCommand, RibbonInfo, group};
+use crate::ribbon::{RibbonCommand, RibbonInfo, big_label, group, row_group};
 use crate::theme::Palette;
 
 /// Сколько столбцов и строк в сетке выбора размера таблицы.
@@ -80,7 +80,7 @@ pub fn insert(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 TipAction::Popup(popup),
             );
             egui::Popup::menu(&response).show(|ui| table_picker(ui, out));
-            ui.label(tr("table"));
+            big_label(ui, tr("table"));
         });
     });
     group(ui, tr("group-illustrations"), |ui| {
@@ -105,10 +105,10 @@ pub fn insert(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
             if response.clicked() {
                 out.push(command);
             }
-            ui.label(tr("pictures"));
+            big_label(ui, tr("pictures"));
         });
     });
-    group(ui, tr("group-links"), |ui| {
+    row_group(ui, tr("group-links"), |ui| {
         ui.vertical(|ui| {
             let response = icon_button(ui, Icon::Link, tr("link"), vec2(44.0, 34.0), doc, false)
                 .on_hover_text(tr("link-hint"));
@@ -123,7 +123,7 @@ pub fn insert(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
             if response.clicked() {
                 out.push(command);
             }
-            ui.label(tr("link"));
+            big_label(ui, tr("link"));
         });
         ui.vertical(|ui| {
             let response = icon_button(
@@ -146,7 +146,7 @@ pub fn insert(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
             if response.clicked() {
                 out.push(command);
             }
-            ui.label(tr("bookmark"));
+            big_label(ui, tr("bookmark"));
         });
     });
     crate::headers::insert_group(ui, info, out);
@@ -158,7 +158,7 @@ pub fn insert(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
 /// страницы. В колонтитуле недоступна.
 fn pages_group(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     let enabled = info.has_document && info.story.is_none();
-    group(ui, tr("group-pages"), |ui| {
+    row_group(ui, tr("group-pages"), |ui| {
         menu_button(
             ui,
             Icon::CoverPage,
@@ -223,7 +223,7 @@ fn command_button(
         if response.clicked() {
             out.push(command);
         }
-        ui.label(label);
+        big_label(ui, label);
     });
 }
 
@@ -306,7 +306,7 @@ pub fn table_layout(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>
         if response.clicked() {
             out.push(command);
         }
-        ui.label(tr("merge-cells"));
+        big_label(ui, tr("merge-cells"));
     });
     group(ui, tr("group-rows-columns"), |ui| {
         ui.horizontal(|ui| {
@@ -340,7 +340,7 @@ pub fn table_layout(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>
                         }
                     }
                 });
-                ui.label(tr("table-delete"));
+                big_label(ui, tr("table-delete"));
             });
             ui.vertical(|ui| {
                 for (icon, label, key, command) in [
@@ -421,7 +421,7 @@ pub(crate) fn menu_button(
         let popup = egui::Popup::default_response_id(&response);
         keytips::tip(ui, &response, Level::Commands, key, TipAction::Popup(popup));
         egui::Popup::menu(&response).show(menu);
-        ui.label(label);
+        big_label(ui, label);
     });
 }
 

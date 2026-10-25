@@ -93,6 +93,13 @@ pub fn outlining(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                             }
                         })
                         .response;
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::Role::ComboBox,
+                            true,
+                            tr("outline-show-level"),
+                        )
+                    });
                     let popup = egui::Popup::default_response_id(&response);
                     keytips::tip(
                         ui,

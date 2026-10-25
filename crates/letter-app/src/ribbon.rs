@@ -20,8 +20,10 @@ use crate::home::{HomeState, home};
 use crate::icons::{Icon, icon_button};
 use letter_model::Alignment;
 
-/// Высота области с группами команд, точки экрана.
-const BODY_HEIGHT: f32 = 78.0;
+/// Высота области с группами команд, точки экрана. Одна на всех
+/// вкладках, как в Word: в неё входят три ряда маленьких кнопок или
+/// большая кнопка с подписью, и подпись группы снизу.
+pub(crate) const BODY_HEIGHT: f32 = 90.0;
 
 /// Фон ленты и выделенной вкладки.
 pub(crate) const ACCENT: Color32 = Color32::from_rgb(43, 87, 154);
@@ -468,29 +470,43 @@ impl Ribbon {
                 .stroke(Stroke::new(1.0, colors.border))
                 .inner_margin(egui::Margin::symmetric(4, 2))
                 .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    ui.set_min_height(BODY_HEIGHT);
-                    ui.set_max_height(BODY_HEIGHT);
-                    ui.horizontal(|ui| match self.tab {
-                        Tab::Home => home(ui, &mut self.home, info, &mut out),
-                        Tab::View => view(ui, info, &mut out),
-                        Tab::Insert => crate::insert::insert(ui, info, &mut out),
-                        Tab::Design => crate::design::design(ui, info, &mut out),
-                        Tab::References => crate::references::references(ui, info, &mut out),
-                        Tab::Review => crate::review::review(ui, info, &mut out),
-                        Tab::Layout => crate::layout::layout(ui, info, &mut out),
-                        Tab::TableDesign => crate::insert::table_design(ui, info, &mut out),
-                        Tab::TableLayout => crate::insert::table_layout(ui, info, &mut out),
-                        Tab::PictureFormat => crate::insert::picture_format(ui, info, &mut out),
-                        Tab::HeaderFooter => crate::headers::header_footer(ui, info, &mut out),
-                        Tab::Outline => crate::outlining::outlining(ui, info, &mut out),
-                    });
+                    // Высота ленты постоянная: что не влезло по высоте,
+                    // обрезается, а по ширине — прокручивается.
+                    let size = vec2(ui.available_width(), BODY_HEIGHT);
+                    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                    let mut body = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(rect)
+                            .layout(Layout::left_to_right(Align::Min)),
+                    );
+                    body.set_clip_rect(rect.intersect(ui.clip_rect()));
+                    egui::ScrollArea::horizontal()
+                        .id_salt("ribbon-body")
+                        .show(&mut body, |ui| self.body(ui, info, &mut out));
                 });
         }
         if self.keytips.active() {
             keytips::paint(ui.ctx(), &keytips::collected(ui.ctx()), &self.keytips.typed);
         }
         out
+    }
+
+    /// Группы команд открытой вкладки.
+    fn body(&mut self, ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+        ui.horizontal_top(|ui| match self.tab {
+            Tab::Home => home(ui, &mut self.home, info, out),
+            Tab::View => view(ui, info, out),
+            Tab::Insert => crate::insert::insert(ui, info, out),
+            Tab::Design => crate::design::design(ui, info, out),
+            Tab::References => crate::references::references(ui, info, out),
+            Tab::Review => crate::review::review(ui, info, out),
+            Tab::Layout => crate::layout::layout(ui, info, out),
+            Tab::TableDesign => crate::insert::table_design(ui, info, out),
+            Tab::TableLayout => crate::insert::table_layout(ui, info, out),
+            Tab::PictureFormat => crate::insert::picture_format(ui, info, out),
+            Tab::HeaderFooter => crate::headers::header_footer(ui, info, out),
+            Tab::Outline => crate::outlining::outlining(ui, info, out),
+        });
     }
 
     /// Меню «Файл» и вкладки.
@@ -592,6 +608,39 @@ fn quick_access(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 out.push(command);
             }
         }
+    });
+}
+
+/// Подпись под большой кнопкой: длинная — в две строки, как в Word,
+/// чтобы кнопки в группе были уже.
+pub(crate) fn big_label(ui: &mut Ui, text: &str) {
+    ui.label(two_lines(text));
+}
+
+/// Делит подпись на две строки по пробелу, ближайшему к середине.
+/// Подпись из одного слова остаётся как есть.
+pub(crate) fn two_lines(text: &str) -> String {
+    let middle = text.chars().count() / 2;
+    let split = text
+        .char_indices()
+        .enumerate()
+        .filter(|(_, (_, c))| *c == ' ')
+        .min_by_key(|(n, _)| n.abs_diff(middle))
+        .map(|(_, (at, _))| at);
+    match split {
+        Some(at) => format!("{}\n{}", &text[..at], &text[at + 1..]),
+        None => text.to_owned(),
+    }
+}
+
+/// Группа из кнопок в ряд (большие кнопки и столбики маленьких),
+/// как большинство групп Word.
+pub(crate) fn row_group(ui: &mut Ui, caption: &str, content: impl FnOnce(&mut Ui)) {
+    group(ui, caption, |ui| {
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            content(ui);
+        });
     });
 }
 
@@ -973,6 +1022,57 @@ mod tests {
         h.get_by_label("Повторить").click();
         h.run();
         assert!(h.state().out.is_empty());
+    }
+
+    #[test]
+    fn long_labels_take_two_lines() {
+        assert_eq!(two_lines("Титульная страница"), "Титульная\nстраница");
+        assert_eq!(
+            two_lines("Вставить концевую сноску"),
+            "Вставить\nконцевую сноску"
+        );
+        assert_eq!(two_lines("Поля"), "Поля");
+    }
+
+    /// Лента одной высоты на всех вкладках, даже на узком окне.
+    #[test]
+    fn ribbon_height_is_the_same_on_every_tab() {
+        let info = RibbonInfo {
+            in_table: true,
+            picture_wrap: Some(letter_editor::PictureWrap::InLine),
+            story: Some(true),
+            view_mode: crate::view::ViewMode::Outline,
+            ..document()
+        };
+        let mut h = Harness::builder()
+            .with_size(vec2(600.0, 400.0))
+            .build_ui_state(
+                |ui, state: &mut (Ribbon, RibbonInfo, f32)| {
+                    let top = ui.cursor().top();
+                    state.0.ui(ui, &state.1);
+                    state.2 = ui.cursor().top() - top;
+                },
+                (Ribbon::default(), info, 0.0),
+            );
+        h.run();
+        let tabs = Tab::ALL.into_iter().chain([
+            Tab::TableDesign,
+            Tab::TableLayout,
+            Tab::PictureFormat,
+            Tab::HeaderFooter,
+            Tab::Outline,
+        ]);
+        let mut heights = Vec::new();
+        for tab in tabs {
+            h.state_mut().0.tab = tab;
+            h.run();
+            assert_eq!(h.state().0.tab, tab);
+            heights.push((tab, h.state().2));
+        }
+        let first = heights[0].1;
+        for (tab, height) in heights {
+            assert!((height - first).abs() < 0.5, "{tab:?}: {height} ≠ {first}");
+        }
     }
 
     #[test]
