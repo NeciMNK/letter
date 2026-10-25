@@ -35,8 +35,8 @@ use letter_editor::{
 };
 use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
 use letter_model::{
-    Alignment, BreakKind, Document, FieldChar, FieldCharKind, NoteKind, Paragraph, Run, RunContent,
-    Statistics,
+    Alignment, BreakKind, Document, FieldChar, FieldCharKind, NoteKind, Paragraph, Protection, Run,
+    RunContent, Statistics,
 };
 use letter_render::{MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, formatting_marks};
 
@@ -252,6 +252,17 @@ impl OpenDocument {
             comment_places: None,
             revisions: std::cell::Cell::new(None),
         }
+    }
+
+    /// Можно ли править текст (см. [`Viewer::editable`]).
+    fn editable(&self) -> bool {
+        self.view.editable()
+            && self
+                .doc
+                .settings
+                .protection
+                .as_ref()
+                .is_none_or(|p| !p.blocks_editing())
     }
 
     /// Есть ли в документе исправления.
@@ -784,6 +795,8 @@ pub struct Viewer {
     show_marks: bool,
     /// Открыто окно «Статистика» (щелчок по числу слов).
     statistics_open: bool,
+    /// Окно «Ограничить редактирование».
+    protect_dialog: Option<crate::protect::ProtectDialog>,
     /// Лист для линеек (с курсором) и где он на экране в прошлом кадре.
     ruler_page: Option<(usize, Rect)>,
     /// Горизонтальная линейка: вид новой табуляции, перетаскивание.
@@ -1013,6 +1026,7 @@ impl Viewer {
             ribbon: Ribbon::default(),
             show_marks: false,
             statistics_open: false,
+            protect_dialog: None,
             ruler_page: None,
             ruler_state: RulerState::default(),
             paragraph_dialog: ParagraphDialog::default(),
@@ -1485,6 +1499,7 @@ impl Viewer {
                 .show(ui, |ui| self.document_area(ui));
         }
         self.statistics_window(&ctx);
+        self.protect_window(&ctx);
         self.error_window(&ctx);
         self.save_changes_window(&ctx);
         self.recovery_window(&ctx);
@@ -1564,6 +1579,36 @@ impl Viewer {
     }
 
     /// Режим просмотра открытого документа.
+    /// Можно ли править текст: не режим чтения и не защищённый
+    /// документ.
+    fn editable(&self) -> bool {
+        self.document.as_ref().is_none_or(OpenDocument::editable)
+    }
+
+    /// Можно ли добавлять и менять примечания.
+    fn comments_editable(&self) -> bool {
+        self.view_mode().editable()
+            && self.document.as_ref().is_none_or(|d| {
+                d.doc
+                    .settings
+                    .protection
+                    .as_ref()
+                    .is_none_or(Protection::allows_comments)
+            })
+    }
+
+    /// Правка записывается исправлениями принудительно (защита «только
+    /// исправления»): запись не выключить, исправления не принять.
+    fn tracking_forced(&self) -> bool {
+        self.document.as_ref().is_some_and(|d| {
+            d.doc
+                .settings
+                .protection
+                .as_ref()
+                .is_some_and(Protection::forces_tracking)
+        })
+    }
+
     pub fn view_mode(&self) -> ViewMode {
         self.document.as_ref().map_or(ViewMode::Print, |d| d.view)
     }
@@ -1730,7 +1775,8 @@ impl Viewer {
         if actions.is_empty() {
             return;
         }
-        let editable = self.view_mode().editable();
+        let editable = self.editable();
+        let comments = self.comments_editable();
         let Some(document) = &mut self.document else {
             return;
         };
@@ -1739,7 +1785,22 @@ impl Viewer {
         let mut stale = false;
         for action in actions {
             // В режиме чтения документ только читают.
-            if !editable && !matches!(action, Action::Move(..) | Action::SelectAll | Action::Copy) {
+            let comment = matches!(
+                action,
+                Action::Edit(
+                    Command::InsertComment(_)
+                        | Command::ReplyComment { .. }
+                        | Command::DeleteComment(_)
+                        | Command::SetComment(_)
+                )
+            );
+            // Защиту можно снять и в защищённом документе.
+            let protect = matches!(action, Action::Edit(Command::Protect(_)));
+            if !editable
+                && !(comment && comments)
+                && !protect
+                && !matches!(action, Action::Move(..) | Action::SelectAll | Action::Copy)
+            {
                 continue;
             }
             match action.clone() {
@@ -2175,7 +2236,16 @@ impl Viewer {
             ruler: self.show_ruler,
             navigation: self.navigation.open,
             view: self.view_mode(),
-            editable: self.view_mode().editable(),
+            editable: self.editable(),
+            comments_editable: self.comments_editable(),
+            tracking_forced: self.tracking_forced(),
+            protected: self.document.as_ref().is_some_and(|d| {
+                d.doc
+                    .settings
+                    .protection
+                    .as_ref()
+                    .is_some_and(|p| p.enforced)
+            }),
             comments: self
                 .document
                 .as_ref()
@@ -2245,6 +2315,32 @@ impl Viewer {
         let mut actions = Vec::new();
         for command in commands {
             if !self.view_mode().editable() && !allowed_in_read_mode(&command) {
+                continue;
+            }
+            // Защищённый документ: только чтение, примечания (если
+            // разрешены) и снятие защиты.
+            let comment_command = matches!(
+                command,
+                RibbonCommand::NewComment
+                    | RibbonCommand::DeleteComment
+                    | RibbonCommand::Edit(
+                        Command::InsertComment(_)
+                            | Command::ReplyComment { .. }
+                            | Command::DeleteComment(_)
+                            | Command::SetComment(_)
+                    )
+            );
+            let tracking_command = matches!(
+                command,
+                RibbonCommand::ToggleTrackRevisions
+                    | RibbonCommand::Edit(Command::ResolveRevisions { .. })
+            );
+            if (!self.editable()
+                && !allowed_in_read_mode(&command)
+                && !(comment_command && self.comments_editable())
+                && command != RibbonCommand::ProtectDialog)
+                || (tracking_command && self.tracking_forced())
+            {
                 continue;
             }
             match command {
@@ -2326,6 +2422,16 @@ impl Viewer {
                     }
                 }
                 RibbonCommand::GoToRevision { forward } => self.go_to_revision(forward),
+                RibbonCommand::ProtectDialog => {
+                    if self.document.is_some() {
+                        self.protect_dialog = Some(Default::default());
+                    }
+                }
+                RibbonCommand::WordCount => {
+                    if self.document.is_some() {
+                        self.statistics_open = true;
+                    }
+                }
                 RibbonCommand::Spelling(action) => {
                     if let Some(action) = self.spell_action(action) {
                         actions.push(action);
@@ -2598,7 +2704,7 @@ impl Viewer {
                 anchor: *anchor,
             });
         }
-        let editable = self.view_mode().editable();
+        let editable = self.comments_editable();
         let actions = self.comment_pane.ui(ui, rect, &threads, editable);
         for action in actions {
             self.comment_action(ui.ctx(), action);
@@ -2991,6 +3097,28 @@ impl Viewer {
         });
     }
 
+    /// Окно «Ограничить редактирование».
+    fn protect_window(&mut self, ctx: &Context) {
+        let Some(dialog) = &mut self.protect_dialog else {
+            return;
+        };
+        let Some(document) = &self.document else {
+            self.protect_dialog = None;
+            return;
+        };
+        let current = document.doc.settings.protection.clone();
+        let (result, done) = dialog.ui(ctx, current.as_ref());
+        if done {
+            self.protect_dialog = None;
+        }
+        let command = match result {
+            Some(crate::protect::ProtectResult::Protect(p)) => Command::Protect(Some(Box::new(p))),
+            Some(crate::protect::ProtectResult::Unprotect) => Command::Protect(None),
+            None => return,
+        };
+        self.apply_actions(ctx, vec![Action::Edit(command)]);
+    }
+
     /// Окно «Статистика»: страницы, слова, знаки, абзацы — документа
     /// или выделения.
     fn statistics_window(&mut self, ctx: &Context) {
@@ -3004,6 +3132,8 @@ impl Viewer {
         };
         let counts = document.counts();
         let stats = counts.selected.unwrap_or(counts.total);
+        // Строки основного текста, как в Word (без колонтитулов и сносок).
+        let lines: usize = document.paper().pages.iter().map(|p| p.lines.len()).sum();
         let mut open = true;
         let mut close = false;
         egui::Window::new(tr("word-count"))
@@ -3034,6 +3164,9 @@ impl Viewer {
                             stats.characters_with_spaces.to_string(),
                         );
                         row(tr("stats-paragraphs"), stats.paragraphs.to_string());
+                        if counts.selected.is_none() {
+                            row(tr("stats-lines"), lines.to_string());
+                        }
                     });
                 ui.separator();
                 if ui.button(tr("close")).clicked() {
@@ -3094,6 +3227,7 @@ impl Viewer {
         let Some(document) = document else {
             return;
         };
+        let doc_editable = document.editable();
         let pages = match &document.story {
             Some(story) => &story.display.pages,
             None => &document.layout.pages,
@@ -3204,7 +3338,7 @@ impl Viewer {
             }
             let mut on_picture = false;
             // Размер и место рисунка в режиме чтения не меняются.
-            let editable = document.view.editable();
+            let editable = doc_editable;
             if press
                 && editable
                 && response.hovered()
@@ -3376,7 +3510,7 @@ impl Viewer {
                         .find(|l| l.paragraph == position.paragraph)
                         .map(|l| Arc::clone(&l.text));
                     *misspelling = text
-                        .filter(|_| document.story.is_none() && document.view.editable())
+                        .filter(|_| document.story.is_none() && doc_editable)
                         .and_then(|t| {
                             spelling.misspelling_at(position.paragraph, &t, position.offset)
                         });
@@ -3435,7 +3569,7 @@ impl Viewer {
             }
 
             // Ошибки правописания — красная волна под словом.
-            if document.story.is_none() && document.view.editable() {
+            if document.story.is_none() && doc_editable {
                 for (i, page) in pages.iter().enumerate() {
                     if !placement.rects[i].intersects(visible) {
                         continue;
@@ -3578,7 +3712,7 @@ impl Viewer {
             self.reveal_cursor = true;
         }
         // В режиме чтения колонтитулы и сноски не открываются для правки.
-        if !self.view_mode().editable() {
+        if !self.editable() {
             story_request = None;
         }
         if let (Some(request), Some(document)) = (story_request, &mut self.document) {
@@ -4239,6 +4373,88 @@ mod tests {
         viewer.run_ribbon(&ctx, vec![RibbonCommand::Spelling(SpellAction::ToggleShow)]);
         assert!(!viewer.ribbon_info().spelling);
         frame(&ctx, &mut viewer, screen());
+    }
+
+    #[test]
+    fn protected_documents_limit_editing() {
+        use letter_model::{Protection, ProtectionKind};
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("headings.docx")).unwrap();
+        let text = |v: &Viewer| v.document.as_ref().unwrap().doc.plain_text();
+        let original = text(&viewer);
+        let protect = |kind| {
+            let protection = Protection {
+                kind,
+                enforced: true,
+                password: letter_docx::protect_password("1"),
+            };
+            RibbonCommand::Edit(Command::Protect(Some(Box::new(protection))))
+        };
+        let typing = || RibbonCommand::Edit(Command::Type("x".into()));
+        let start = Selection::caret(Position::new(0, 0));
+
+        // Только чтение: набор и примечания не проходят.
+        viewer.run_ribbon(&ctx, vec![protect(ProtectionKind::ReadOnly)]);
+        let info = viewer.ribbon_info();
+        assert!(info.protected && !info.editable && !info.comments_editable);
+        viewer.document.as_mut().unwrap().set_selection(start);
+        viewer.run_ribbon(&ctx, vec![typing(), RibbonCommand::NewComment]);
+        assert_eq!(text(&viewer), original);
+        assert!(viewer.document.as_ref().unwrap().doc.comments.is_empty());
+
+        // Сохраняется в файл с хешем пароля.
+        let dir = crate::files::tests::temp_dir("protect");
+        let path = dir.join("p.docx");
+        assert!(viewer.save_to(&path));
+        let again = letter_docx::read_file(&path).unwrap();
+        let saved = again.settings.protection.unwrap();
+        assert!(saved.blocks_editing());
+        assert!(letter_docx::check_password(&saved.password.unwrap(), "1"));
+
+        // Снятие защиты через окно: неверный пароль не подходит.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ProtectDialog]);
+        let current = viewer
+            .document
+            .as_ref()
+            .unwrap()
+            .doc
+            .settings
+            .protection
+            .clone();
+        let mut dialog = viewer.protect_dialog.take().unwrap();
+        dialog.password = "2".into();
+        assert_eq!(dialog.submit(current.as_ref()), None);
+        dialog.password = "1".into();
+        assert_eq!(
+            dialog.submit(current.as_ref()),
+            Some(crate::protect::ProtectResult::Unprotect)
+        );
+        viewer.apply_actions(&ctx, vec![Action::Edit(Command::Protect(None))]);
+        assert!(viewer.ribbon_info().editable);
+
+        // Только примечания: примечание можно, текст нельзя.
+        viewer.run_ribbon(&ctx, vec![protect(ProtectionKind::Comments)]);
+        viewer.document.as_mut().unwrap().set_selection(start);
+        viewer.run_ribbon(&ctx, vec![typing(), RibbonCommand::NewComment]);
+        assert_eq!(text(&viewer), original);
+        assert_eq!(viewer.document.as_ref().unwrap().doc.comments.len(), 1);
+        viewer.apply_actions(&ctx, vec![Action::Edit(Command::Protect(None))]);
+
+        // Только исправления: правка записывается, выключить запись нельзя.
+        viewer.run_ribbon(&ctx, vec![protect(ProtectionKind::TrackedChanges)]);
+        assert!(viewer.ribbon_info().track_revisions);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ToggleTrackRevisions]);
+        assert!(viewer.ribbon_info().track_revisions);
+        viewer.document.as_mut().unwrap().set_selection(start);
+        viewer.run_ribbon(&ctx, vec![typing()]);
+        assert!(viewer.ribbon_info().revisions);
+        let accept = Command::ResolveRevisions {
+            accept: true,
+            all: true,
+        };
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Edit(accept)]);
+        assert!(viewer.ribbon_info().revisions);
     }
 
     #[test]

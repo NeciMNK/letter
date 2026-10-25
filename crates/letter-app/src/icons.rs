@@ -99,6 +99,12 @@ pub enum Icon {
     SpellCheck,
     /// Показывать ошибки правописания: глаз.
     ShowErrors,
+    /// Статистика: цифры на листе.
+    WordCount,
+    /// Защитить документ: замок.
+    Lock,
+    /// Снять защиту: открытый замок.
+    Unlock,
     /// Открыть окно группы ленты: стрелка в угол.
     Launcher,
     /// Вставить с исходным оформлением.
@@ -264,6 +270,9 @@ impl Icon {
             Icon::Compare => ("git-compare", '\u{E359}'),
             Icon::SpellCheck => ("spell-check", '\u{E49A}'),
             Icon::ShowErrors => ("eye", '\u{E0BA}'),
+            Icon::WordCount => ("file-digit", '\u{E0C4}'),
+            Icon::Lock => ("lock", '\u{E10B}'),
+            Icon::Unlock => ("lock-open", '\u{E10C}'),
             Icon::Launcher => ("arrow-down-right", '\u{E045}'),
             Icon::PasteKeep => ("clipboard-pen-line", '\u{E308}'),
             Icon::PasteMerge => ("clipboard-list", '\u{E086}'),
@@ -483,7 +492,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 79] = [
+    const ALL: [Icon; 82] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -531,6 +540,9 @@ mod tests {
         Icon::Compare,
         Icon::SpellCheck,
         Icon::ShowErrors,
+        Icon::WordCount,
+        Icon::Lock,
+        Icon::Unlock,
         Icon::Launcher,
         Icon::PasteKeep,
         Icon::PasteMerge,

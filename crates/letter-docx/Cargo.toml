@@ -12,7 +12,12 @@ publish = false
 workspace = true
 
 [dependencies]
+# Случайная «соль» для пароля защиты документа.
+getrandom = "0.3"
 letter-model.workspace = true
 quick-xml = "0.42"
+# Хеш пароля защиты документа (SHA-1 у Word 2007, SHA-512 у новых).
+sha1 = "0.11"
+sha2 = "0.11"
 thiserror = "2"
 zip = { version = "9", default-features = false, features = ["deflate"] }

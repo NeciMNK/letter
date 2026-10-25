@@ -79,6 +79,7 @@ pub(crate) fn updated_settings(
             && a.consecutive_hyphen_limit == b.consecutive_hyphen_limit
             && a.do_not_hyphenate_caps == b.do_not_hyphenate_caps
             && a.track_revisions == b.track_revisions
+            && a.protection == b.protection
     };
     if same(&current, settings) && (has_flag || !background) {
         return None;
@@ -92,7 +93,11 @@ pub(crate) fn updated_settings(
         None => format!("<{prefix}{name}/>"),
     };
     // Наши элементы: имя и новое содержимое (`None` — убрать).
-    let ours: [(&str, Option<String>); 6] = [
+    let protection = settings
+        .protection
+        .as_ref()
+        .map(|p| crate::protection::protection_xml(p, &prefix));
+    let ours: [(&str, Option<String>); 7] = [
         (
             "displayBackgroundShape",
             (background || has_flag).then(|| w("displayBackgroundShape", None)),
@@ -101,6 +106,7 @@ pub(crate) fn updated_settings(
             "trackRevisions",
             settings.track_revisions.then(|| w("trackRevisions", None)),
         ),
+        ("documentProtection", protection),
         (
             "autoHyphenation",
             settings
@@ -189,6 +195,9 @@ pub(crate) fn read_settings(root: &Element) -> Settings {
             }
             "autoHyphenation" => settings.auto_hyphenation = toggle(child).unwrap_or(false),
             "trackRevisions" => settings.track_revisions = toggle(child).unwrap_or(true),
+            "documentProtection" => {
+                settings.protection = Some(crate::protection::read_protection(child));
+            }
             "doNotHyphenateCaps" => {
                 settings.do_not_hyphenate_caps = toggle(child).unwrap_or(false);
             }
@@ -279,6 +288,51 @@ mod tests {
         let off =
             updated_settings(Some(xml.as_bytes()), &Settings::default(), false).unwrap_or_default();
         assert!(!off.contains("trackRevisions"), "{off}");
+    }
+
+    #[test]
+    fn protection_round_trips() {
+        use letter_model::{Protection, ProtectionKind};
+        let word = r#"<w:documentProtection w:edit="trackedChanges" w:enforcement="1" w:cryptProviderType="rsaFull" w:cryptAlgorithmClass="hash" w:cryptAlgorithmType="typeAny" w:cryptAlgorithmSid="4" w:cryptSpinCount="100000" w:hash="MUHbcmpC9AnlLsd9v3lW0j30y6E=" w:salt="2Z+i7o/0EZyUNakVeWzU/w=="/>"#;
+        let read_back = read(word);
+        let protection = read_back.protection.clone().unwrap();
+        assert_eq!(protection.kind, ProtectionKind::TrackedChanges);
+        assert!(protection.enforced && protection.forces_tracking());
+        let password = protection.password.clone().unwrap();
+        assert!(crate::check_password(&password, "Example"));
+        // Записывается так же и читается обратно.
+        let xml = updated_settings(None, &read_back, false).unwrap_or_default();
+        assert_eq!(
+            read_settings(&xml::parse(xml.as_bytes()).unwrap()),
+            read_back
+        );
+        // Новый вид (`w:hashValue`) тоже понимается.
+        let named = read(
+            r#"<w:documentProtection w:edit="readOnly" w:enforcement="true" w:algorithmName="SHA-512" w:hashValue="x" w:saltValue="y" w:spinCount="5"/>"#,
+        );
+        let p = named.protection.clone().unwrap();
+        assert!(p.blocks_editing() && !p.allows_comments());
+        assert!(
+            p.password
+                .as_ref()
+                .is_some_and(|h| h.named && h.spin_count == 5)
+        );
+        let xml = updated_settings(None, &named, false).unwrap_or_default();
+        assert_eq!(read_settings(&xml::parse(xml.as_bytes()).unwrap()), named);
+        // Без пароля; снятая защита убирает элемент.
+        let plain = Settings {
+            protection: Some(Protection {
+                kind: ProtectionKind::Comments,
+                enforced: true,
+                password: None,
+            }),
+            ..Settings::default()
+        };
+        let xml = updated_settings(None, &plain, false).unwrap_or_default();
+        assert!(xml.contains(r#"<w:documentProtection w:edit="comments" w:enforcement="1"/>"#));
+        let off =
+            updated_settings(Some(xml.as_bytes()), &Settings::default(), false).unwrap_or_default();
+        assert!(!off.contains("documentProtection"), "{off}");
     }
 
     #[test]

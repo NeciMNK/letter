@@ -1,13 +1,14 @@
 //! Вкладка «Рецензирование»:
 //!
 //! - «Правописание» — к следующей ошибке (F7), показать или скрыть
-//!   подчёркивание ошибок;
+//!   подчёркивание ошибок, статистика;
 //! - «Примечания» — создать, удалить, перейти к предыдущему и следующему,
 //!   показать или скрыть область примечаний;
 //! - «Запись исправлений» — включить или выключить запись правки;
 //! - «Изменения» — принять или отклонить исправления, перейти к
 //!   предыдущему и следующему;
-//! - «Сравнение» — отметить исправлениями разницу с прежней версией.
+//! - «Сравнение» — отметить исправлениями разницу с прежней версией;
+//! - «Защитить» — ограничить редактирование.
 
 use eframe::egui::{Ui, vec2};
 use letter_editor::Command;
@@ -20,7 +21,9 @@ use crate::spelling::SpellAction;
 
 /// Подсказки клавиш вкладки «Рецензирование» (для проверки).
 #[cfg(test)]
-pub const KEYTIPS: [&str; 15] = [
+pub const KEYTIPS: [&str; 17] = [
+    "keytip-review-word-count",
+    "keytip-review-protect",
     "keytip-review-spelling",
     "keytip-review-show-errors",
     "keytip-review-new",
@@ -96,12 +99,21 @@ pub fn review(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 info.has_document,
                 info.spelling,
             ),
+            (
+                Icon::WordCount,
+                "word-count-button",
+                "word-count-hint",
+                "keytip-review-word-count",
+                RibbonCommand::WordCount,
+                info.has_document,
+                false,
+            ),
         ];
         buttons(ui, list, out);
     });
     group(ui, tr("group-comments"), |ui| {
         // Примечание ставится в основной текст, не в колонтитул.
-        let can_add = info.has_document && info.story.is_none() && info.editable;
+        let can_add = info.has_document && info.story.is_none() && info.comments_editable;
         let list = vec![
             (
                 Icon::NewComment,
@@ -118,7 +130,7 @@ pub fn review(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 "comment-delete-hint",
                 "keytip-review-delete",
                 RibbonCommand::DeleteComment,
-                info.active_comment && info.editable,
+                info.active_comment && info.comments_editable,
                 false,
             ),
             (
@@ -158,13 +170,13 @@ pub fn review(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
             "revision-track-hint",
             "keytip-review-track",
             RibbonCommand::ToggleTrackRevisions,
-            info.has_document && info.editable,
+            info.has_document && info.editable && !info.tracking_forced,
             info.track_revisions,
         )];
         buttons(ui, list, out);
     });
     group(ui, tr("group-changes"), |ui| {
-        let can_resolve = info.revisions && info.editable;
+        let can_resolve = info.revisions && info.editable && !info.tracking_forced;
         let resolve = |accept, all| RibbonCommand::Edit(Command::ResolveRevisions { accept, all });
         let list = vec![
             (
@@ -233,6 +245,23 @@ pub fn review(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
             RibbonCommand::Compare,
             info.has_document && info.editable && info.story.is_none(),
             false,
+        )];
+        buttons(ui, list, out);
+    });
+    group(ui, tr("group-protect"), |ui| {
+        let (icon, label) = if info.protected {
+            (Icon::Unlock, "protect-unlock-button")
+        } else {
+            (Icon::Lock, "protect-button")
+        };
+        let list = vec![(
+            icon,
+            label,
+            "protect-hint",
+            "keytip-review-protect",
+            RibbonCommand::ProtectDialog,
+            info.has_document && info.story.is_none(),
+            info.protected,
         )];
         buttons(ui, list, out);
     });

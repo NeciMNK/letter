@@ -152,6 +152,74 @@ pub struct Settings {
     /// Запись исправлений включена (`w:trackRevisions`): правка
     /// помечается вставками и удалениями.
     pub track_revisions: bool,
+    /// «Ограничить редактирование» (`w:documentProtection`).
+    pub protection: Option<Protection>,
+}
+
+/// Что можно делать с защищённым документом.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtectionKind {
+    /// Только чтение.
+    ReadOnly,
+    /// Только примечания.
+    Comments,
+    /// Только исправления: правка всегда записывается.
+    TrackedChanges,
+    /// Только заполнение полей форм.
+    Forms,
+    /// Без ограничений (`none`).
+    None,
+}
+
+/// Защита документа от изменений.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Protection {
+    /// Что разрешено.
+    pub kind: ProtectionKind,
+    /// Защита включена (`w:enforcement`); выключенная только хранится.
+    pub enforced: bool,
+    /// Пароль для снятия защиты (его хеш); `None` — без пароля.
+    pub password: Option<PasswordHash>,
+}
+
+impl Protection {
+    /// Мешает ли защита править текст.
+    pub fn blocks_editing(&self) -> bool {
+        self.enforced
+            && matches!(
+                self.kind,
+                ProtectionKind::ReadOnly | ProtectionKind::Comments | ProtectionKind::Forms
+            )
+    }
+
+    /// Можно ли добавлять и менять примечания.
+    pub fn allows_comments(&self) -> bool {
+        !self.blocks_editing() || self.kind == ProtectionKind::Comments
+    }
+
+    /// Должна ли правка записываться исправлениями.
+    pub fn forces_tracking(&self) -> bool {
+        self.enforced && self.kind == ProtectionKind::TrackedChanges
+    }
+}
+
+/// Хеш пароля защиты, как его хранит Word: алгоритм, хеш и «соль»
+/// (Base64), число повторов.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasswordHash {
+    /// Номер алгоритма по ECMA-376 (`w:cryptAlgorithmSid`): 4 — SHA-1,
+    /// 12 — SHA-256, 13 — SHA-384, 14 — SHA-512. Или имя алгоритма
+    /// (`w:algorithmName`, например `SHA-512`), см. [`PasswordHash::named`].
+    pub algorithm: String,
+    /// Записан в новом виде (`w:algorithmName`, `w:hashValue`…), а не в
+    /// виде Word 2007–2019 (`w:cryptAlgorithmSid`, `w:hash`…).
+    pub named: bool,
+    /// Хеш, Base64.
+    pub hash: String,
+    /// Соль, Base64.
+    pub salt: String,
+    /// Сколько раз повторяется хеширование.
+    pub spin_count: u32,
 }
 
 impl Default for Settings {
@@ -167,6 +235,7 @@ impl Default for Settings {
             consecutive_hyphen_limit: 0,
             do_not_hyphenate_caps: false,
             track_revisions: false,
+            protection: None,
         }
     }
 }

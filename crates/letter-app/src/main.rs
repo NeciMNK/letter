@@ -29,6 +29,7 @@ mod navigation;
 mod paragraph_dialog;
 mod picture;
 mod print;
+mod protect;
 mod references;
 mod review;
 mod ribbon;

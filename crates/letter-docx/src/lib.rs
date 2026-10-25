@@ -23,6 +23,7 @@ mod numbering;
 mod package;
 mod picture;
 mod properties;
+mod protection;
 mod serialize;
 mod settings;
 mod styles;
@@ -43,6 +44,7 @@ use letter_model::{
 };
 
 pub use error::{ReadError, WriteError};
+pub use protection::{SPIN_COUNT, check_password, protect_password};
 
 use package::CONTENT_TYPES_PART;
 

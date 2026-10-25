@@ -125,6 +125,7 @@ pub fn table() -> Vec<Shortcut> {
         local(CTRL_ALT, Key::Num3, C::BuiltInStyle("heading 3")),
         local(CTRL_ALT, Key::M, C::NewComment),
         local(CTRL_SHIFT, Key::E, C::ToggleTrackRevisions),
+        local(CTRL_SHIFT, Key::G, C::WordCount),
     ]
 }
 
