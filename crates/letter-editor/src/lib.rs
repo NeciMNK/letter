@@ -16,6 +16,7 @@
 pub mod caret;
 pub mod clipboard;
 pub mod comments;
+pub mod compare;
 pub mod cover;
 pub mod edit;
 pub mod fields;
@@ -42,6 +43,7 @@ pub use comments::{
     COMMENT_REFERENCE_STYLE, COMMENT_TEXT_STYLE, CommentPlace, comment_blocks, comment_places,
     delete_comment, insert_comment, reply_to_comment, thread_ids,
 };
+pub use compare::compare_documents;
 pub use cover::{CoverLayout, CoverPage, insert_cover_page};
 pub use edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, paragraph_count,

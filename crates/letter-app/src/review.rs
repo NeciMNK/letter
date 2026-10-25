@@ -4,7 +4,8 @@
 //!   показать или скрыть область примечаний;
 //! - «Запись исправлений» — включить или выключить запись правки;
 //! - «Изменения» — принять или отклонить исправления, перейти к
-//!   предыдущему и следующему.
+//!   предыдущему и следующему;
+//! - «Сравнение» — отметить исправлениями разницу с прежней версией.
 
 use eframe::egui::{Ui, vec2};
 use letter_editor::Command;
@@ -16,7 +17,7 @@ use crate::ribbon::{RibbonCommand, RibbonInfo, group};
 
 /// Подсказки клавиш вкладки «Рецензирование» (для проверки).
 #[cfg(test)]
-pub const KEYTIPS: [&str; 12] = [
+pub const KEYTIPS: [&str; 13] = [
     "keytip-review-new",
     "keytip-review-delete",
     "keytip-review-previous",
@@ -29,6 +30,7 @@ pub const KEYTIPS: [&str; 12] = [
     "keytip-review-reject-all",
     "keytip-review-revision-previous",
     "keytip-review-revision-next",
+    "keytip-review-compare",
 ];
 
 /// Кнопка группы: значок, подпись, подсказка, буквы, команда, доступна
@@ -192,6 +194,18 @@ pub fn review(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 false,
             ),
         ];
+        buttons(ui, list, out);
+    });
+    group(ui, tr("group-compare"), |ui| {
+        let list = vec![(
+            Icon::Compare,
+            "compare",
+            "compare-hint",
+            "keytip-review-compare",
+            RibbonCommand::Compare,
+            info.has_document && info.editable && info.story.is_none(),
+            false,
+        )];
         buttons(ui, list, out);
     });
 }

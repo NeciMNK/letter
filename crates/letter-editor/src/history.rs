@@ -15,6 +15,7 @@ use letter_model::{
 use crate::Position;
 use crate::clipboard::{insert_fragment, insert_plain_text};
 use crate::comments::{delete_comment, insert_comment, reply_to_comment};
+use crate::compare::compare_documents;
 use crate::edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, split_paragraph,
     top_level,
@@ -55,6 +56,9 @@ pub enum Command {
     Type(String),
     /// Включить или выключить запись исправлений.
     TrackRevisions(bool),
+    /// «Сравнить»: отметить исправлениями разницу с прежней версией
+    /// документа (см. [`crate::compare_documents`]).
+    CompareWith(Box<Document>),
     /// Принять (`accept`) или отклонить исправления: в выделении, а без
     /// выделения — исправление у курсора; `all` — все в документе.
     ResolveRevisions {
@@ -412,6 +416,24 @@ impl History {
                     self.push(Patch::Settings { before, after }, selection);
                 }
                 return selection;
+            }
+            Command::CompareWith(original) => {
+                let mut reviewer = self.reviewer.clone();
+                reviewer.date.get_or_insert_with(now_iso);
+                let compared = compare_documents(&original, doc, &reviewer);
+                if compared.sections != doc.sections {
+                    let before = std::mem::replace(&mut doc.sections, compared.sections);
+                    let after = doc.sections.clone();
+                    self.push(
+                        Patch::Sections {
+                            start: 0,
+                            before,
+                            after,
+                        },
+                        Selection::caret(Position::default()),
+                    );
+                }
+                return Selection::caret(Position::default());
             }
             Command::AutoHyphenation(on) => {
                 if doc.settings.auto_hyphenation != on {
@@ -809,6 +831,7 @@ impl History {
             | Command::DeleteComment(_)
             | Command::SetComment(_)
             | Command::TrackRevisions(_)
+            | Command::CompareWith(_)
             | Command::ResolveRevisions { .. }
             | Command::PageColor(_)
             | Command::AutoHyphenation(_)

@@ -1957,7 +1957,35 @@ impl Viewer {
                 let command = Command::InsertPicture(Box::new(picture));
                 self.apply_actions(ctx, vec![Action::Edit(command)]);
             }
-            Err(message) => self.report("error-picture", message),
+            Err(message) => self.report(tr("error-picture"), message),
+        }
+    }
+
+    /// «Сравнить»: окно выбора прежней версии документа.
+    fn pick_original(&self) -> Option<PathBuf> {
+        if self.document.as_ref().is_none_or(|d| d.story.is_some()) {
+            return None;
+        }
+        let mut dialog = rfd::FileDialog::new().set_title(tr("compare-title"));
+        for (name, extensions) in OPEN_FILTERS {
+            dialog = dialog.add_filter(tr(name), extensions);
+        }
+        dialog = dialog.add_filter(tr("filter-all-files"), &["*"]);
+        if let Some(dir) = self.dialog_dir() {
+            dialog = dialog.set_directory(dir);
+        }
+        dialog.pick_file()
+    }
+
+    /// Правка «отметить разницу с прежней версией из файла `path`»; при
+    /// ошибке чтения — сообщение пользователю.
+    fn compare_action(&mut self, path: &Path) -> Option<Action> {
+        match files::read(path) {
+            Ok(original) => Some(Action::Edit(Command::CompareWith(Box::new(original)))),
+            Err(e) => {
+                self.report(tr("error-compare"), e);
+                None
+            }
         }
     }
 
@@ -2287,6 +2315,11 @@ impl Viewer {
                     }
                 }
                 RibbonCommand::GoToRevision { forward } => self.go_to_revision(forward),
+                RibbonCommand::Compare => {
+                    if let Some(path) = self.pick_original() {
+                        actions.extend(self.compare_action(&path));
+                    }
+                }
                 RibbonCommand::ToggleMarks => self.show_marks = !self.show_marks,
                 RibbonCommand::Paragraph(format) => {
                     actions.push(Action::Edit(Command::Paragraph(format)));
@@ -3970,6 +4003,51 @@ mod tests {
         assert!(!viewer.ribbon_info().revisions);
         let doc = &viewer.document.as_ref().unwrap().doc;
         assert!(doc.plain_text().starts_with("So The cat jumped"));
+    }
+
+    #[test]
+    fn compare_marks_differences_with_an_earlier_version() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("headings.docx")).unwrap();
+        let original = viewer.document.as_ref().unwrap().doc.clone();
+        // Правим без записи исправлений.
+        viewer
+            .document
+            .as_mut()
+            .unwrap()
+            .set_selection(Selection::caret(Position::new(0, 0)));
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::Edit(Command::Type("New ".into()))],
+        );
+        assert!(!viewer.ribbon_info().revisions);
+        let edited = viewer.document.as_ref().unwrap().doc.plain_text();
+
+        let action = viewer.compare_action(&fixture("headings.docx")).unwrap();
+        viewer.apply_actions(&ctx, vec![action]);
+        assert!(viewer.ribbon_info().revisions);
+        let doc = &viewer.document.as_ref().unwrap().doc;
+        assert_eq!(doc.plain_text(), edited);
+        // Отклонить все — прежняя версия; отмена — снова со вставкой.
+        let reject = Command::ResolveRevisions {
+            accept: false,
+            all: true,
+        };
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Edit(reject)]);
+        let doc = &viewer.document.as_ref().unwrap().doc;
+        assert_eq!(doc.plain_text(), original.plain_text());
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
+        assert!(!viewer.ribbon_info().revisions);
+
+        // Нечитаемый файл — сообщение, документ не меняется.
+        assert!(
+            viewer
+                .compare_action(Path::new("/nonexistent.docx"))
+                .is_none()
+        );
+        assert!(viewer.error.is_some());
     }
 
     #[test]
