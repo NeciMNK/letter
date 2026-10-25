@@ -196,6 +196,10 @@ pub enum RibbonCommand {
     ToggleTrackRevisions,
     /// Проверка орфографии.
     Spelling(crate::spelling::SpellAction),
+    /// «Рецензирование → Статистика» (Ctrl+Shift+G).
+    WordCount,
+    /// «Рецензирование → Ограничить редактирование»: окно защиты.
+    ProtectDialog,
     /// «Рецензирование → Сравнить»: выбрать прежнюю версию документа и
     /// отметить разницу с ней исправлениями.
     Compare,
@@ -325,6 +329,12 @@ pub struct RibbonInfo {
     pub track_revisions: bool,
     /// Ошибки правописания подчёркиваются.
     pub spelling: bool,
+    /// Можно добавлять и менять примечания.
+    pub comments_editable: bool,
+    /// Правка всегда записывается исправлениями (защита).
+    pub tracking_forced: bool,
+    /// Документ защищён.
+    pub protected: bool,
     /// В документе есть исправления.
     pub revisions: bool,
     /// Курсор в таблице.

@@ -40,7 +40,9 @@ mod watermark;
 
 pub use border::{Border, Borders, ParagraphBorders, Shading};
 pub use comment::{Comment, comment_references};
-pub use document::{Document, Settings, for_each_picture_in};
+pub use document::{
+    Document, PasswordHash, Protection, ProtectionKind, Settings, for_each_picture_in,
+};
 pub use field::{Field, alphabetic, fields, roman, set_field_result};
 pub use note::{Note, NoteKind, NoteReference};
 pub use numbering::{

@@ -56,6 +56,10 @@ pub enum Command {
     Type(String),
     /// Включить или выключить запись исправлений.
     TrackRevisions(bool),
+    /// «Ограничить редактирование»: включить защиту (`Some`) или снять
+    /// её (`None`). Защита «только исправления» включает и запись
+    /// исправлений.
+    Protect(Option<Box<letter_model::Protection>>),
     /// «Сравнить»: отметить исправлениями разницу с прежней версией
     /// документа (см. [`crate::compare_documents`]).
     CompareWith(Box<Document>),
@@ -412,6 +416,18 @@ impl History {
                 if doc.settings.track_revisions != on {
                     let before = Box::new(doc.settings.clone());
                     doc.settings.track_revisions = on;
+                    let after = Box::new(doc.settings.clone());
+                    self.push(Patch::Settings { before, after }, selection);
+                }
+                return selection;
+            }
+            Command::Protect(protection) => {
+                let before = Box::new(doc.settings.clone());
+                if protection.as_ref().is_some_and(|p| p.forces_tracking()) {
+                    doc.settings.track_revisions = true;
+                }
+                doc.settings.protection = protection.map(|p| *p);
+                if doc.settings != *before {
                     let after = Box::new(doc.settings.clone());
                     self.push(Patch::Settings { before, after }, selection);
                 }
@@ -832,6 +848,7 @@ impl History {
             | Command::SetComment(_)
             | Command::TrackRevisions(_)
             | Command::CompareWith(_)
+            | Command::Protect(_)
             | Command::ResolveRevisions { .. }
             | Command::PageColor(_)
             | Command::AutoHyphenation(_)
