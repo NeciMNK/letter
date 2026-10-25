@@ -81,21 +81,23 @@ fn cp1252(byte: u8) -> char {
 }
 
 /// Текст от знака `from` до `to` (CP) как UTF-16: по знаку на элемент,
-/// с номером знака. Чего нет в таблице кусков или потоке — пропускается.
-pub(crate) fn text(pieces: &[Piece], stream: &[u8], from: u32, to: u32) -> Vec<(u32, u16)> {
+/// с номером знака (CP) и местом в потоке (FC). Чего нет в таблице кусков
+/// или потоке — пропускается.
+pub(crate) fn text(pieces: &[Piece], stream: &[u8], from: u32, to: u32) -> Vec<(u32, u32, u16)> {
     let mut out = Vec::new();
     for piece in pieces {
         let start = piece.cp_start.max(from);
         let end = piece.cp_end.min(to);
         for cp in start..end {
-            let fc = piece.fc_of(cp) as usize;
+            let fc = piece.fc_of(cp);
+            let at = fc as usize;
             let unit = if piece.compressed {
-                stream.get(fc).map(|&b| cp1252(b) as u16)
+                stream.get(at).map(|&b| cp1252(b) as u16)
             } else {
-                u16_at(stream, fc)
+                u16_at(stream, at)
             };
             if let Some(unit) = unit {
-                out.push((cp, unit));
+                out.push((cp, fc, unit));
             }
         }
     }
@@ -133,7 +135,7 @@ mod tests {
         stream[0x10] = b'H';
         stream[0x11] = 0x93; // “
         stream[0x20..0x22].copy_from_slice(&0x0416u16.to_le_bytes());
-        let units: Vec<u16> = text(&list, &stream, 0, 3).iter().map(|u| u.1).collect();
+        let units: Vec<u16> = text(&list, &stream, 0, 3).iter().map(|u| u.2).collect();
         assert_eq!(String::from_utf16_lossy(&units), "H“Ж");
         assert_eq!(list[1].fc_of(2), 0x20);
         assert!(pieces(&[0x03]).is_err());
