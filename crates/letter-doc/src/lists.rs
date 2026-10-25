@@ -134,6 +134,8 @@ fn number_format(nfc: u8) -> NumberFormat {
         5 => NumberFormat::Ordinal,
         22 => NumberFormat::DecimalZero,
         23 => NumberFormat::Bullet,
+        58 => NumberFormat::RussianLower,
+        59 => NumberFormat::RussianUpper,
         255 => NumberFormat::None,
         n => NumberFormat::Other(format!("nfc{n}")),
     }

@@ -1098,3 +1098,37 @@ fn comments_get_their_parts() {
     let ids: Vec<_> = reopened.comments.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(ids, ["1", "2"]);
 }
+
+#[test]
+fn shapes_without_source_xml_are_written_anew() {
+    let mut doc = read_bytes(&fixture_bytes("shapes.docx")).unwrap();
+    let shapes = |doc: &Document| {
+        let mut out = Vec::new();
+        doc.blocks().for_each(|b| {
+            if let Block::Paragraph(p) = b {
+                for run in p.runs() {
+                    for item in &run.content {
+                        if let RunContent::Picture(picture) = item {
+                            out.push((
+                                picture.width,
+                                picture.height,
+                                picture.anchor.clone(),
+                                picture.shape.as_deref().cloned(),
+                            ));
+                        }
+                    }
+                }
+            }
+        });
+        out
+    };
+    let expected = shapes(&doc);
+    assert_eq!(expected.len(), 6);
+    // Как у фигуры из .doc: исходного XML нет.
+    doc.for_each_picture_mut(|picture| picture.raw = None);
+    let saved = write_bytes(&doc).unwrap();
+    let xml = String::from_utf8(zip_parts(&saved)["word/document.xml"].clone()).unwrap();
+    assert!(!xml.contains("<mc:AlternateContent"));
+    assert!(xml.contains("<wpg:wgp"));
+    assert_eq!(shapes(&read_bytes(&saved).unwrap()), expected);
+}

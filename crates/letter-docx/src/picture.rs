@@ -225,6 +225,9 @@ pub(crate) fn picture_xml(picture: &Picture, id: usize) -> String {
     if let Some(raw) = &picture.raw {
         return patched(raw, picture);
     }
+    if let Some(shape) = &picture.shape {
+        return shape_drawing(picture, shape, id);
+    }
     let Some(relationship) = &picture.relationship else {
         return String::new();
     };
@@ -256,6 +259,25 @@ pub(crate) fn picture_xml(picture: &Picture, id: usize) -> String {
          </pic:blipFill><pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{cx}\" cy=\"{cy}\"/>\
          </a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>\
          </a:graphicData></a:graphic></wp:inline></w:drawing>"
+    );
+    if picture.anchor.is_some() {
+        patched(&RawXml::new(inline), picture)
+    } else {
+        inline
+    }
+}
+
+/// `w:drawing` фигуры без исходного XML (например, из .doc).
+fn shape_drawing(picture: &Picture, shape: &letter_model::Shape, id: usize) -> String {
+    let (cx, cy) = (picture.width, picture.height);
+    let data = crate::shape::graphic_data_xml(shape, cx, cy);
+    let inline = format!(
+        "<w:drawing xmlns:w=\"{}\"><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" \
+         distR=\"0\" xmlns:wp=\"{WP_NS}\"><wp:extent cx=\"{cx}\" cy=\"{cy}\"/>\
+         <wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/>\
+         <wp:docPr id=\"{id}\" name=\"Shape {id}\"/><wp:cNvGraphicFramePr/>\
+         <a:graphic xmlns:a=\"{A_NS}\">{data}</a:graphic></wp:inline></w:drawing>",
+        crate::document::W_NS
     );
     if picture.anchor.is_some() {
         patched(&RawXml::new(inline), picture)

@@ -182,6 +182,15 @@ fn survive_saving_as_docx() {
 }
 
 #[test]
+fn survive_saving_as_new_doc() {
+    for name in FIXTURES {
+        let doc = doc(name);
+        let bytes = letter_doc::write(&doc).unwrap();
+        assert_eq!(lines(&read(&bytes).unwrap()), lines(&doc), "{name}");
+    }
+}
+
+#[test]
 fn broken_files_are_errors_not_crashes() {
     for name in ["formatting", "headers", "tables", "unicode"] {
         let bytes = std::fs::read(path(name)).unwrap();
