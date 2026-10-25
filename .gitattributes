@@ -2,3 +2,5 @@
 *.doc binary
 *.png binary
 *.ttf binary
+*.dic -text
+*.aff -text
