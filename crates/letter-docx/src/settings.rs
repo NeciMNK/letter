@@ -78,6 +78,7 @@ pub(crate) fn updated_settings(
             && a.hyphenation_zone == b.hyphenation_zone
             && a.consecutive_hyphen_limit == b.consecutive_hyphen_limit
             && a.do_not_hyphenate_caps == b.do_not_hyphenate_caps
+            && a.track_revisions == b.track_revisions
     };
     if same(&current, settings) && (has_flag || !background) {
         return None;
@@ -91,10 +92,14 @@ pub(crate) fn updated_settings(
         None => format!("<{prefix}{name}/>"),
     };
     // Наши элементы: имя и новое содержимое (`None` — убрать).
-    let ours: [(&str, Option<String>); 5] = [
+    let ours: [(&str, Option<String>); 6] = [
         (
             "displayBackgroundShape",
             (background || has_flag).then(|| w("displayBackgroundShape", None)),
+        ),
+        (
+            "trackRevisions",
+            settings.track_revisions.then(|| w("trackRevisions", None)),
         ),
         (
             "autoHyphenation",
@@ -183,6 +188,7 @@ pub(crate) fn read_settings(root: &Element) -> Settings {
                 settings.even_and_odd_headers = toggle(child).unwrap_or(false);
             }
             "autoHyphenation" => settings.auto_hyphenation = toggle(child).unwrap_or(false),
+            "trackRevisions" => settings.track_revisions = toggle(child).unwrap_or(true),
             "doNotHyphenateCaps" => {
                 settings.do_not_hyphenate_caps = toggle(child).unwrap_or(false);
             }
@@ -254,6 +260,25 @@ mod tests {
             r#"<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{body}</w:settings>"#
         );
         read_settings(&xml::parse(source.as_bytes()).unwrap())
+    }
+
+    #[test]
+    fn track_revisions_flag_round_trips() {
+        assert!(read("<w:trackRevisions/>").track_revisions);
+        assert!(!read(r#"<w:trackRevisions w:val="0"/>"#).track_revisions);
+        let source = r#"<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:zoom w:percent="100"/><w:defaultTabStop w:val="720"/></w:settings>"#;
+        let on = Settings {
+            track_revisions: true,
+            ..Settings::default()
+        };
+        let xml = updated_settings(Some(source.as_bytes()), &on, false).unwrap_or_default();
+        let flag = xml.find("<w:trackRevisions/>").unwrap_or(usize::MAX);
+        assert!(flag < xml.find("defaultTabStop").unwrap_or(0), "{xml}");
+        assert!(read_settings(&xml::parse(xml.as_bytes()).unwrap()).track_revisions);
+        // Выключили — флаг уходит.
+        let off =
+            updated_settings(Some(xml.as_bytes()), &Settings::default(), false).unwrap_or_default();
+        assert!(!off.contains("trackRevisions"), "{off}");
     }
 
     #[test]

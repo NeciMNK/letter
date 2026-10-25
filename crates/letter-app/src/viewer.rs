@@ -198,6 +198,9 @@ struct OpenDocument {
     /// Места примечаний в тексте и состояние документа, для которого они
     /// найдены.
     comment_places: Option<(u64, Vec<CommentPlace>)>,
+    /// Есть ли в документе исправления, и для какого состояния это
+    /// посчитано.
+    revisions: std::cell::Cell<Option<(u64, bool)>>,
 }
 
 /// Статистика документа и выделения для строки состояния.
@@ -227,7 +230,14 @@ impl OpenDocument {
             saved: 0,
             autosaved: 0,
             doc,
-            history: History::new(),
+            history: {
+                let mut history = History::new();
+                history.set_reviewer(letter_editor::Reviewer {
+                    author: crate::comments::author(),
+                    date: None,
+                });
+                history
+            },
             layout,
             cursor: Position::default(),
             anchor: Position::default(),
@@ -239,6 +249,20 @@ impl OpenDocument {
             web_width: 0.0,
             paper: None,
             comment_places: None,
+            revisions: std::cell::Cell::new(None),
+        }
+    }
+
+    /// Есть ли в документе исправления.
+    fn has_revisions(&self) -> bool {
+        let state = self.history.state();
+        match self.revisions.get() {
+            Some((s, has)) if s == state => has,
+            _ => {
+                let has = letter_editor::has_revisions(&self.doc);
+                self.revisions.set(Some((state, has)));
+                has
+            }
         }
     }
 
@@ -2127,6 +2151,8 @@ impl Viewer {
         };
         if let Some(document) = &self.document {
             info.has_document = true;
+            info.track_revisions = document.doc.settings.track_revisions;
+            info.revisions = document.has_revisions();
             info.can_undo = document.history.can_undo();
             info.styles = crate::styles::gallery(&document.doc);
             info.can_redo = document.history.can_redo();
@@ -2254,6 +2280,13 @@ impl Viewer {
                 RibbonCommand::PreviousComment => self.go_to_comment(false),
                 RibbonCommand::NextComment => self.go_to_comment(true),
                 RibbonCommand::ToggleComments => self.show_comments = !self.show_comments,
+                RibbonCommand::ToggleTrackRevisions => {
+                    if let Some(document) = &self.document {
+                        let on = !document.doc.settings.track_revisions;
+                        actions.push(Action::Edit(Command::TrackRevisions(on)));
+                    }
+                }
+                RibbonCommand::GoToRevision { forward } => self.go_to_revision(forward),
                 RibbonCommand::ToggleMarks => self.show_marks = !self.show_marks,
                 RibbonCommand::Paragraph(format) => {
                     actions.push(Action::Edit(Command::Paragraph(format)));
@@ -2616,6 +2649,28 @@ impl Viewer {
 
     /// «Назад» и «Далее»: делает активным соседнее примечание и ставит
     /// курсор в начало его куска текста.
+    /// Выделяет следующее (`forward`) или предыдущее исправление.
+    fn go_to_revision(&mut self, forward: bool) {
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        if document.story.is_some() {
+            return;
+        }
+        let selection = Selection::new(document.anchor, document.cursor);
+        let from = if forward {
+            selection.end()
+        } else {
+            selection.start()
+        };
+        if let Some((start, end)) = letter_editor::next_revision(&document.doc, from, forward) {
+            document.anchor = start;
+            document.cursor = end;
+            document.history.seal();
+            self.reveal_cursor = true;
+        }
+    }
+
     fn go_to_comment(&mut self, forward: bool) {
         let active = self.comment_pane.active.clone();
         let Some(document) = &mut self.document else {
@@ -3654,6 +3709,7 @@ fn allowed_in_read_mode(command: &RibbonCommand) -> bool {
             | RibbonCommand::PreviousComment
             | RibbonCommand::NextComment
             | RibbonCommand::ToggleComments
+            | RibbonCommand::GoToRevision { .. }
             | RibbonCommand::OpenLink
             | RibbonCommand::OpenPopup(_)
             | RibbonCommand::Focus(_)
@@ -3862,6 +3918,58 @@ mod tests {
         viewer.run_ribbon(&ctx, vec![RibbonCommand::ViewMode(ViewMode::Read)]);
         viewer.run_ribbon(&ctx, vec![RibbonCommand::NewComment]);
         assert_eq!(viewer.document.as_ref().unwrap().doc.comments.len(), 5);
+    }
+
+    #[test]
+    fn revisions_are_tracked_accepted_and_saved() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("revisions.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        let info = viewer.ribbon_info();
+        assert!(info.revisions && !info.track_revisions);
+        // «Далее» выделяет первое исправление — удалённое «sat on».
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::GoToRevision { forward: true }]);
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(document.anchor, Position::new(0, "The cat ".len()));
+        assert_eq!(document.cursor, Position::new(0, "The cat sat on ".len()));
+
+        // Запись включена: набранное — вставка от имени автора.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ToggleTrackRevisions]);
+        assert!(viewer.ribbon_info().track_revisions);
+        let start = Position::new(0, 0);
+        viewer
+            .document
+            .as_mut()
+            .unwrap()
+            .set_selection(Selection::caret(start));
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Edit(Command::Type("So ".into()))]);
+        let doc = &viewer.document.as_ref().unwrap().doc;
+        let Some(letter_model::Block::Paragraph(p)) = doc.blocks().next() else {
+            panic!("нет абзаца");
+        };
+        let first = p.runs().next().unwrap();
+        let revision = first.props.revision.as_ref().unwrap();
+        assert_eq!(revision.kind, letter_model::RevisionKind::Insert);
+        assert_eq!(revision.author, crate::comments::author());
+
+        // Сохраняется с флагом записи и исправлениями.
+        let dir = crate::files::tests::temp_dir("revisions");
+        let path = dir.join("r.docx");
+        assert!(viewer.save_to(&path));
+        let again = letter_docx::read_file(&path).unwrap();
+        assert!(again.settings.track_revisions);
+        assert!(letter_editor::has_revisions(&again));
+
+        // «Принять все» — исправлений не осталось.
+        let all = Command::ResolveRevisions {
+            accept: true,
+            all: true,
+        };
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Edit(all)]);
+        assert!(!viewer.ribbon_info().revisions);
+        let doc = &viewer.document.as_ref().unwrap().doc;
+        assert!(doc.plain_text().starts_with("So The cat jumped"));
     }
 
     #[test]
