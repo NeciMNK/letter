@@ -16,6 +16,7 @@ name = "letter-cli"
 path = "src/main.rs"
 
 [dependencies]
+letter-doc.workspace = true
 letter-docx.workspace = true
 letter-editor.workspace = true
 letter-layout.workspace = true

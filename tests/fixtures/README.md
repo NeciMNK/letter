@@ -72,3 +72,16 @@ soffice --headless --convert-to rtf ../docx/имя.docx
 cd tests/fixtures/odt
 soffice --headless --convert-to odt ../docx/имя.docx
 ```
+
+## `doc/`
+
+Файлы Word 97–2003 (.doc) для проверки чтения (задача F8.1): `plain-text`,
+`bold-italic`, `ru-en`, `table`, `headings`, `lists`, `pages`,
+`header-footer`. Они сохранены программой LibreOffice из одноимённых
+файлов `docx/` и распространяются по лицензии проекта (MIT). Чтобы
+пересоздать:
+
+```sh
+cd tests/fixtures/doc
+soffice --headless --convert-to 'doc:MS Word 97' ../docx/имя.docx
+```

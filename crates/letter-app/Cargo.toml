@@ -23,6 +23,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 eframe.workspace = true
 # Переводы интерфейса (Project Fluent, файлы assets/i18n/*.ftl).
 fluent-bundle = "0.16"
+letter-doc.workspace = true
 letter-docx.workspace = true
 letter-editor.workspace = true
 letter-layout.workspace = true
