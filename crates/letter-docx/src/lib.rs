@@ -109,6 +109,9 @@ pub fn read<R: Read + Seek>(mut reader: R) -> Result<Document, ReadError> {
         doc.settings = settings::read_settings(&root);
         if let Some(merge) = &mut doc.settings.mail_merge {
             merge.data_source = settings::mail_merge_source(&root, &package.external_links(&name));
+            if let Some((_, recipients)) = read_related_xml(&mut package, &name, "recipientData") {
+                merge.excluded = settings::read_recipients(&recipients);
+            }
         }
     }
     let mut core_part = None;

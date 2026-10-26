@@ -175,6 +175,19 @@ pub struct MailMerge {
     /// Адрес источника данных — цель внешней связи `w:dataSource`
     /// (обычно `file:///…`).
     pub data_source: Option<String>,
+    /// Получатели, с которых сняты отметки («Изменить список
+    /// получателей»): часть `recipientData` у `w:odso`.
+    pub excluded: Vec<RecipientMark>,
+}
+
+/// Получатель в списке слияния (`w:recipientData`): запись, у которой в
+/// столбце `column` значение `tag`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RecipientMark {
+    /// Номер столбца (с 0), по которому узнаётся запись.
+    pub column: u32,
+    /// Значение этого столбца.
+    pub tag: String,
 }
 
 impl Default for Settings {

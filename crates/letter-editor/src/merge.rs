@@ -7,8 +7,8 @@
 //! объединить» собирает документ из копий — по одной на запись.
 
 use letter_model::{
-    Block, BreakKind, Document, Field, FieldChar, FieldCharKind, Inline, Paragraph, RunContent,
-    SectionStart, fields, set_field_result,
+    Block, BreakKind, Document, Field, FieldChar, FieldCharKind, Inline, Paragraph, RecipientMark,
+    RunContent, SectionStart, fields, set_field_result,
 };
 
 use crate::edit::{
@@ -180,6 +180,45 @@ impl MergeData {
     /// Номера записей, которые входят в рассылку, по порядку.
     pub fn records(&self) -> Vec<usize> {
         (0..self.rows.len()).filter(|r| self.included(*r)).collect()
+    }
+
+    /// Столбец, по которому узнаются записи: первый, где все значения
+    /// разные (иначе первый).
+    fn key_column(&self) -> usize {
+        (0..self.headers.len())
+            .find(|&column| {
+                let mut seen = std::collections::HashSet::new();
+                self.rows
+                    .iter()
+                    .all(|row| seen.insert(row.get(column).map_or("", String::as_str)))
+            })
+            .unwrap_or(0)
+    }
+
+    /// Снятые отметки для сохранения в документе (`w:recipientData`):
+    /// значение ключевого столбца каждой невключённой записи.
+    pub fn marks(&self) -> Vec<RecipientMark> {
+        let column = self.key_column();
+        (0..self.rows.len())
+            .filter(|row| !self.included(*row))
+            .map(|row| RecipientMark {
+                column: column as u32,
+                tag: self.rows[row].get(column).cloned().unwrap_or_default(),
+            })
+            .collect()
+    }
+
+    /// Снимает отметки с записей из `marks` (сохранённых в документе).
+    pub fn apply_marks(&mut self, marks: &[RecipientMark]) {
+        self.excluded = self
+            .rows
+            .iter()
+            .map(|row| {
+                marks.iter().any(|mark| {
+                    row.get(mark.column as usize).map(String::as_str) == Some(mark.tag.as_str())
+                })
+            })
+            .collect();
     }
 
     /// Сортирует записи по столбцу `column` (числа — как числа).
@@ -1058,6 +1097,24 @@ mod tests {
         assert!(fields(first).is_empty());
         // Без записей — тот же документ.
         assert_eq!(merge_all(&doc, &MergeData::default()), doc);
+    }
+
+    #[test]
+    fn marks_find_the_same_recipients() {
+        let mut data = MergeData::from_csv("Город;Имя\nОмск;Вера\nОмск;Анна\nТверь;Оля\n");
+        data.set_included(1, false);
+        let marks = data.marks();
+        // Город повторяется — записи узнаются по имени.
+        assert_eq!(
+            marks,
+            [RecipientMark {
+                column: 1,
+                tag: "Анна".into()
+            }]
+        );
+        let mut again = MergeData::from_csv("Город;Имя\nТверь;Оля\nОмск;Анна\nОмск;Вера\n");
+        again.apply_marks(&marks);
+        assert_eq!(again.records(), [0, 2]);
     }
 
     #[test]
