@@ -289,6 +289,11 @@ pub enum Command {
     DeleteAllComments,
     /// Обновить поля в абзацах выделенного (F9).
     UpdateFields(Box<FieldContext>),
+    /// Вставить поле слияния столбца с этим именем (рассылки).
+    InsertMergeField(String),
+    /// Поставить в поля слияния значения записи (данные и номер записи)
+    /// или их имена (`None`) — «Просмотр результатов».
+    MergePreview(Option<Box<(crate::merge::MergeData, usize)>>),
     /// «Заменить все»: найденное `query` заменить на `replacement` во
     /// всём документе. Курсор остаётся в том же абзаце (выделение
     /// снимается).
@@ -671,6 +676,7 @@ impl History {
                 | Command::TitlePage { .. }
                 | Command::PageNumbering { .. }
                 | Command::UpdateFields(_)
+                | Command::MergePreview(_)
                 | Command::UpdateToc(_)
                 | Command::DeleteToc
                 | Command::Link { text: None, .. }
@@ -703,6 +709,7 @@ impl History {
             | Command::AddBookmark(_)
             | Command::DeleteBookmark(_)
             | Command::UpdateFields(_)
+            | Command::MergePreview(_)
             | Command::UpdateToc(_)
             | Command::DeleteToc
             | Command::InsertToc(_)
@@ -953,6 +960,14 @@ impl History {
                     focus: clamp(doc, selection.focus),
                 })
             }
+            Command::MergePreview(record) => {
+                let record = record.as_deref().map(|(data, row)| (data, *row));
+                crate::merge::show_record(doc, record);
+                Some(Selection {
+                    anchor: clamp(doc, selection.anchor),
+                    focus: clamp(doc, selection.focus),
+                })
+            }
             Command::UpdateFields(context) => {
                 update_fields(doc, start.paragraph, end.paragraph, context);
                 Some(Selection {
@@ -1010,6 +1025,7 @@ impl History {
             Command::InsertPicture(picture) => insert_picture(doc, at, (**picture).clone()),
             Command::InsertMath(math) => crate::equation::insert_math(doc, at, (**math).clone()),
             Command::InsertNote(kind) => insert_note(doc, at, *kind).0,
+            Command::InsertMergeField(name) => crate::merge::insert_merge_field(doc, at, name),
             Command::InsertToc(context) => insert_toc(doc, at, context),
             Command::Break(kind) => insert_break(doc, at, *kind),
             Command::BlankPage => {
@@ -1060,6 +1076,7 @@ impl History {
             | Command::TitlePage { .. }
             | Command::PageNumbering { .. }
             | Command::UpdateFields(_)
+            | Command::MergePreview(_)
             | Command::UpdateToc(_)
             | Command::DeleteToc
             | Command::Link { text: None, .. }

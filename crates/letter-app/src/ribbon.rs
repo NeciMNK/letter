@@ -42,6 +42,8 @@ pub enum Tab {
     Layout,
     /// «Ссылки».
     References,
+    /// «Рассылки»: слияние с таблицей получателей.
+    Mailings,
     /// «Рецензирование».
     Review,
     /// «Вид».
@@ -66,12 +68,13 @@ pub enum Tab {
 
 impl Tab {
     /// Все вкладки по порядку.
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 9] = [
         Tab::Home,
         Tab::Insert,
         Tab::Design,
         Tab::Layout,
         Tab::References,
+        Tab::Mailings,
         Tab::Review,
         Tab::View,
         Tab::Developer,
@@ -85,6 +88,7 @@ impl Tab {
             Tab::Design => "keytip-tab-design",
             Tab::Layout => "keytip-tab-layout",
             Tab::References => "keytip-tab-references",
+            Tab::Mailings => "keytip-tab-mailings",
             Tab::Review => "keytip-tab-review",
             Tab::View => "keytip-tab-view",
             Tab::Developer => "keytip-tab-developer",
@@ -106,6 +110,7 @@ impl Tab {
             Tab::Design => tr("tab-design"),
             Tab::Layout => tr("tab-layout"),
             Tab::References => tr("tab-references"),
+            Tab::Mailings => tr("tab-mailings"),
             Tab::Review => tr("tab-review"),
             Tab::View => tr("tab-view"),
             Tab::Developer => tr("tab-developer"),
@@ -186,6 +191,16 @@ pub enum RibbonCommand {
     ControlDate(letter_editor::DateTime),
     /// Окно «Свойства элемента управления содержимым» у курсора.
     ControlProperties,
+    /// «Выбрать получателей»: таблица для слияния (CSV или документ с таблицей).
+    PickRecipients,
+    /// Вставить поле слияния с этим именем.
+    InsertMergeField(String),
+    /// Включить или выключить «Просмотр результатов».
+    MergePreview(bool),
+    /// Перейти к соседней записи (−1 или +1).
+    MergeRecord(i32),
+    /// «Найти и объединить»: новый документ по копии на запись.
+    FinishMerge,
     /// Включить или выключить «Режим конструктора».
     DesignMode,
     /// Показать или скрыть знаки форматирования.
@@ -341,6 +356,8 @@ pub struct RibbonInfo {
     pub in_control: bool,
     /// Включён «Режим конструктора».
     pub design_mode: bool,
+    /// Слияние (вкладка «Рассылки»).
+    pub mailing: crate::mailings::MailingInfo,
     /// Есть что отменить и повторить.
     pub can_undo: bool,
     /// Есть что повторить.
@@ -544,6 +561,7 @@ impl Ribbon {
             Tab::Insert => crate::insert::insert(ui, info, out),
             Tab::Design => crate::design::design(ui, info, out),
             Tab::References => crate::references::references(ui, info, out),
+            Tab::Mailings => crate::mailings::mailings(ui, info, out),
             Tab::Review => crate::review::review(ui, info, out),
             Tab::Layout => crate::layout::layout(ui, info, out),
             Tab::TableDesign => crate::insert::table_design(ui, info, out),

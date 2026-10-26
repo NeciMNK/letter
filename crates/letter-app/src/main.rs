@@ -29,6 +29,7 @@ mod keytips;
 mod language;
 mod layout;
 mod link_dialog;
+mod mailings;
 mod modes;
 mod navigation;
 mod outlining;

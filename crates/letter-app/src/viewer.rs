@@ -737,6 +737,30 @@ enum Intent {
     /// «Сравнить»: выбрать исходный и изменённый документы и показать
     /// результат сравнения.
     Compare,
+    /// «Найти и объединить»: показать документ слияния.
+    Merge,
+}
+
+/// Слияние (вкладка «Рассылки»): таблица получателей и просмотр.
+#[derive(Debug, Clone, Default)]
+struct Mailing {
+    /// Таблица получателей.
+    data: letter_editor::MergeData,
+    /// Показанная запись (с 0).
+    record: usize,
+    /// Включён «Просмотр результатов».
+    preview: bool,
+}
+
+impl Mailing {
+    /// Команда, которая ставит в поля слияния то, что сейчас нужно
+    /// видеть: значения записи или имена полей.
+    fn show(&self) -> Command {
+        Command::MergePreview(
+            self.preview
+                .then(|| Box::new((self.data.clone(), self.record))),
+        )
+    }
 }
 
 /// Ответ на вопрос «сохранить изменения?».
@@ -843,6 +867,8 @@ pub struct Viewer {
     control_dialog: ControlDialog,
     /// «Режим конструктора» (вкладка «Разработчик»).
     design_mode: bool,
+    /// Слияние: выбранные получатели.
+    mailing: Option<Mailing>,
     page_number_dialog: PageNumberDialog,
     /// Окно «Ограничить редактирование».
     protect_dialog: ProtectDialog,
@@ -1069,6 +1095,7 @@ impl Viewer {
             bookmark_dialog: BookmarkDialog::default(),
             control_dialog: ControlDialog::default(),
             design_mode: false,
+            mailing: None,
             page_number_dialog: PageNumberDialog::default(),
             protect_dialog: ProtectDialog::default(),
             spelling: crate::spelling::Spelling::start(dir.clone()),
@@ -1253,7 +1280,53 @@ impl Viewer {
             Intent::Close => self.close_confirmed = true,
             Intent::CloseDocument => self.close_document(),
             Intent::Compare => self.pick_compare(),
+            Intent::Merge => self.finish_merge(),
         }
+    }
+
+    /// «Выбрать получателей»: окно выбора таблицы (CSV или документ с
+    /// таблицей).
+    fn pick_recipients(&mut self) -> Option<Command> {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(tr("mailings-open"))
+            .add_filter(
+                tr("mailings-filter"),
+                &["csv", "txt", "tsv", "docx", "doc", "odt", "rtf"],
+            );
+        if let Some(dir) = self.dialog_dir() {
+            dialog = dialog.set_directory(dir);
+        }
+        let path = dialog.pick_file()?;
+        match read_recipients(&path) {
+            Ok(data) => self.set_recipients(data),
+            Err(message) => {
+                self.report("error-mailings", message);
+                None
+            }
+        }
+    }
+
+    /// Запоминает таблицу получателей; если просмотр включён — команда,
+    /// которая покажет в полях первую запись.
+    fn set_recipients(&mut self, data: letter_editor::MergeData) -> Option<Command> {
+        let preview = self.mailing.as_ref().is_some_and(|m| m.preview);
+        let mailing = Mailing {
+            data,
+            record: 0,
+            preview,
+        };
+        let command = preview.then(|| mailing.show());
+        self.mailing = Some(mailing);
+        command
+    }
+
+    /// Показывает документ слияния: копия документа на каждую запись.
+    fn finish_merge(&mut self) {
+        let (Some(document), Some(mailing)) = (&self.document, &self.mailing) else {
+            return;
+        };
+        let merged = letter_editor::merge_all(&document.doc, &mailing.data);
+        self.show(None, merged);
     }
 
     /// Окна выбора исходного и изменённого документов для сравнения.
@@ -2746,6 +2819,14 @@ impl Viewer {
         if let Some(document) = &self.document {
             info.has_document = true;
             info.design_mode = self.design_mode;
+            if let Some(mailing) = &self.mailing {
+                info.mailing = crate::mailings::MailingInfo {
+                    fields: mailing.data.headers.clone(),
+                    records: mailing.data.rows.len(),
+                    record: mailing.record,
+                    preview: mailing.preview,
+                };
+            }
             info.in_control =
                 letter_editor::control_range(&document.doc, document.cursor).is_some();
             info.outline_level =
@@ -2964,6 +3045,38 @@ impl Viewer {
                     actions.push(Action::Edit(Command::ControlDate(date)));
                 }
                 RibbonCommand::DesignMode => self.design_mode = !self.design_mode,
+                RibbonCommand::PickRecipients => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(command) = self.pick_recipients() {
+                        actions.push(Action::Edit(command));
+                    }
+                }
+                RibbonCommand::InsertMergeField(name) => {
+                    actions.push(Action::Edit(Command::InsertMergeField(name)));
+                    if let Some(mailing) = self.mailing.as_ref().filter(|m| m.preview) {
+                        actions.push(Action::Edit(mailing.show()));
+                    }
+                }
+                RibbonCommand::MergePreview(on) => {
+                    if let Some(mailing) = &mut self.mailing {
+                        mailing.preview = on;
+                        actions.push(Action::Edit(mailing.show()));
+                    }
+                }
+                RibbonCommand::MergeRecord(step) => {
+                    if let Some(mailing) = &mut self.mailing {
+                        let last = mailing.data.rows.len().saturating_sub(1);
+                        let record = mailing.record as i64 + i64::from(step);
+                        mailing.record = record.clamp(0, last as i64) as usize;
+                        if mailing.preview {
+                            actions.push(Action::Edit(mailing.show()));
+                        }
+                    }
+                }
+                RibbonCommand::FinishMerge => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    self.request(Intent::Merge);
+                }
                 RibbonCommand::ControlProperties => {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
                     if let Some(document) = &self.document
@@ -4501,6 +4614,27 @@ fn comment_date(date: &str) -> String {
     }
 }
 
+/// Таблица получателей из файла: CSV (по расширению `csv`, `txt`, `tsv`)
+/// или первая таблица документа.
+fn read_recipients(path: &Path) -> Result<letter_editor::MergeData, String> {
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let data = if matches!(extension.as_str(), "csv" | "txt" | "tsv") {
+        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        letter_editor::MergeData::from_csv_bytes(&bytes)
+    } else {
+        let doc = files::read(path)?;
+        letter_editor::MergeData::from_document(&doc).unwrap_or_default()
+    };
+    if data.headers.iter().all(|h| h.is_empty()) {
+        return Err(format!("{}: {}", path.display(), tr("mailings-empty")));
+    }
+    Ok(data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5570,6 +5704,41 @@ mod tests {
         assert_eq!(first_text(&mut viewer), "!Место для ввода текста.");
         viewer.run_ribbon(&ctx, vec![RibbonCommand::DesignMode]);
         assert!(!viewer.ribbon_info().design_mode);
+    }
+
+    #[test]
+    fn mail_merge() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.new_document();
+        assert!(viewer.ribbon_info().mailing.fields.is_empty());
+        let data = letter_editor::MergeData::from_csv("Имя;Город\nАнна;Тверь\nБорис;Омск\n");
+        assert!(viewer.set_recipients(data).is_none());
+        assert_eq!(viewer.ribbon_info().mailing.fields, ["Имя", "Город"]);
+        let commands = vec![
+            RibbonCommand::Edit(Command::Type("Здравствуйте, ".into())),
+            RibbonCommand::InsertMergeField("Имя".into()),
+        ];
+        viewer.run_ribbon(&ctx, commands);
+        assert_eq!(first_text(&mut viewer), "Здравствуйте, «Имя»");
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::MergePreview(true)]);
+        assert_eq!(first_text(&mut viewer), "Здравствуйте, Анна");
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::MergeRecord(1)]);
+        assert_eq!(first_text(&mut viewer), "Здравствуйте, Борис");
+        // Дальше последней записи не уходим.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::MergeRecord(1)]);
+        assert_eq!(viewer.ribbon_info().mailing.record, 1);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::MergePreview(false)]);
+        assert_eq!(first_text(&mut viewer), "Здравствуйте, «Имя»");
+        // Поле слияния сохраняется в .docx.
+        let doc = &viewer.document.as_ref().unwrap().doc;
+        let reread = letter_docx::read_bytes(&letter_docx::write_bytes(doc).unwrap()).unwrap();
+        assert!(letter_editor::has_merge_fields(&reread));
+        viewer.finish_merge();
+        let merged = &viewer.document.as_ref().unwrap().doc;
+        let texts: Vec<String> = merged.blocks().map(|b| b.plain_text()).collect();
+        assert_eq!(texts, ["Здравствуйте, Анна", "Здравствуйте, Борис"]);
+        assert!(!letter_editor::has_merge_fields(merged));
     }
 
     #[test]

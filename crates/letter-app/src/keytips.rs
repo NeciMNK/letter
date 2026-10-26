@@ -430,6 +430,7 @@ mod tests {
                 &crate::insert::SHAPE_KEYTIPS[..],
                 &crate::equation::KEYTIPS[..],
                 &crate::developer::KEYTIPS[..],
+                &crate::mailings::KEYTIPS[..],
                 &crate::layout::KEYTIPS[..],
                 &crate::headers::KEYTIPS[..],
                 &crate::references::KEYTIPS[..],
