@@ -138,6 +138,9 @@ pub fn page_scene(
     if let Some(mark) = &page.watermark {
         watermark(&mut backgrounds, mark, scale);
     }
+    for number in &page.line_numbers {
+        watermark(&mut glyphs, number, scale);
+    }
     let all_lines = stories.iter().flat_map(|s| &s.lines).chain(&page.lines);
     for line in all_lines {
         for item in &line.line.items {
@@ -317,6 +320,7 @@ fn text_box(
         footer: PageStory::default(),
         notes: Vec::new(),
         watermark: None,
+        line_numbers: Vec::new(),
         number: 1,
     };
     out.extend(page_scene(&page, scale, library, cache));

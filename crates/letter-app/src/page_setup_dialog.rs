@@ -5,7 +5,7 @@
 
 use eframe::egui::{self, Context, Ui};
 use letter_editor::PageSetup;
-use letter_model::{Orientation, PageMargins, PageSize, Twips};
+use letter_model::{LineNumberRestart, LineNumbering, Orientation, PageMargins, PageSize, Twips};
 
 use crate::i18n::tr;
 use crate::layout::SIZES;
@@ -34,6 +34,10 @@ pub struct PageSetupDialog {
     pub size: PageSize,
     /// Поля.
     pub margins: PageMargins,
+    /// Строки нумеруются.
+    pub lines_on: bool,
+    /// Нумерация строк (если включена).
+    pub lines: LineNumbering,
     /// Применить ко всему документу (иначе — к разделам выделения).
     pub whole: bool,
     /// В документе несколько разделов: можно выбрать, к чему применить.
@@ -57,6 +61,7 @@ impl PageSetupDialog {
         tab: PageSetupTab,
         size: Option<PageSize>,
         margins: Option<PageMargins>,
+        lines: Option<LineNumbering>,
         sections: bool,
     ) {
         *self = PageSetupDialog {
@@ -66,6 +71,8 @@ impl PageSetupDialog {
                 .filter(|s| s.width.0 > 0 && s.height.0 > 0)
                 .unwrap_or(PageSize::A4),
             margins: margins.unwrap_or_default(),
+            lines_on: lines.is_some(),
+            lines: lines.unwrap_or_default(),
             whole: !sections,
             sections,
         };
@@ -76,6 +83,7 @@ impl PageSetupDialog {
         PageSetup::Page {
             size: self.size,
             margins: self.margins,
+            line_numbering: self.lines_on.then_some(self.lines),
             whole: self.whole,
         }
     }
@@ -245,6 +253,58 @@ impl PageSetupDialog {
                 twips_field(ui, "page-setup-header", &mut m.header, 0.0, 55.87);
                 twips_field(ui, "page-setup-footer", &mut m.footer, 0.0, 55.87);
             });
+        ui.separator();
+        ui.checkbox(&mut self.lines_on, tr("line-numbers-on"));
+        ui.add_enabled_ui(self.lines_on, |ui| {
+            egui::Grid::new("letter-page-setup-lines")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    let lines = &mut self.lines;
+                    let label = ui.label(tr("line-numbers-start"));
+                    ui.add(egui::DragValue::new(&mut lines.start).range(1..=32767))
+                        .labelled_by(label.id);
+                    ui.end_row();
+                    let label = ui.label(tr("line-numbers-step"));
+                    ui.add(egui::DragValue::new(&mut lines.count_by).range(1..=100))
+                        .labelled_by(label.id);
+                    ui.end_row();
+                    let label = ui.label(tr("line-numbers-distance"));
+                    let mut auto = lines.distance.is_none();
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut auto, tr("line-numbers-auto")).changed() {
+                            lines.distance = (!auto).then_some(Twips(360));
+                        }
+                        if let Some(distance) = &mut lines.distance {
+                            let mut twips = distance.0;
+                            cm_field(ui, label.id, &mut twips, 0.0, 55.87);
+                            *distance = Twips(twips);
+                        }
+                    });
+                    ui.end_row();
+                    let label = ui.label(tr("line-numbers-restart"));
+                    let name = |restart| {
+                        tr(match restart {
+                            LineNumberRestart::NewPage => "line-numbers-each-page",
+                            LineNumberRestart::NewSection => "line-numbers-each-section",
+                            LineNumberRestart::Continuous => "line-numbers-continuous",
+                        })
+                    };
+                    egui::ComboBox::from_id_salt("letter-page-setup-restart")
+                        .selected_text(name(lines.restart))
+                        .show_ui(ui, |ui| {
+                            for restart in [
+                                LineNumberRestart::NewPage,
+                                LineNumberRestart::NewSection,
+                                LineNumberRestart::Continuous,
+                            ] {
+                                ui.selectable_value(&mut lines.restart, restart, name(restart));
+                            }
+                        })
+                        .response
+                        .labelled_by(label.id);
+                    ui.end_row();
+                });
+        });
     }
 }
 
@@ -255,7 +315,7 @@ mod tests {
     #[test]
     fn orientation_turns_paper_and_margins() {
         let mut dialog = PageSetupDialog::default();
-        dialog.show(PageSetupTab::Margins, None, None, false);
+        dialog.show(PageSetupTab::Margins, None, None, None, false);
         assert!(dialog.whole);
         dialog.turn(Orientation::Landscape);
         assert_eq!(dialog.size, PageSize::A4.rotated());
@@ -266,7 +326,18 @@ mod tests {
         assert_eq!(size.orientation, Orientation::Landscape);
         assert_eq!(margins.header, PageMargins::default().header);
         // В документе из нескольких разделов — по умолчанию к разделу.
-        dialog.show(PageSetupTab::Paper, Some(PageSize::LETTER), None, true);
+        dialog.show(
+            PageSetupTab::Paper,
+            Some(PageSize::LETTER),
+            None,
+            None,
+            true,
+        );
+        dialog.lines_on = true;
+        let PageSetup::Page { line_numbering, .. } = dialog.setup() else {
+            panic!("не то");
+        };
+        assert_eq!(line_numbering, Some(LineNumbering::default()));
         assert!(!dialog.whole);
         assert_eq!(dialog.size, PageSize::LETTER);
     }
