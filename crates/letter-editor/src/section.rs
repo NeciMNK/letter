@@ -24,6 +24,17 @@ pub enum PageSetup {
     Columns(ColumnPreset),
     /// Границы страниц — во всём документе, как по умолчанию в Word.
     Borders(PageBorderPreset),
+    /// Всё из окна «Параметры страницы»: лист с ориентацией и все поля
+    /// (с колонтитулами и переплётом); `whole` — во всём документе, иначе
+    /// в разделах выделения.
+    Page {
+        /// Лист.
+        size: PageSize,
+        /// Поля.
+        margins: PageMargins,
+        /// Во всём документе.
+        whole: bool,
+    },
 }
 
 /// Готовые варианты кнопки «Границы страниц».
@@ -250,6 +261,12 @@ pub fn set_page_setup(doc: &mut Document, first: usize, last: usize, setup: Page
         }
         return;
     }
+    if let PageSetup::Page { whole: true, .. } = setup {
+        for section in &mut doc.sections {
+            apply(&mut section.props, setup);
+        }
+        return;
+    }
     let (Some((from, _)), Some((to, _))) = (top_level(doc, first), top_level(doc, last)) else {
         return;
     };
@@ -302,6 +319,12 @@ fn apply(props: &mut SectionProps, setup: PageSetup) {
             props.columns = preset_columns(preset, props.columns.as_ref(), width);
         }
         PageSetup::Borders(preset) => props.page_borders = preset.borders(),
+        PageSetup::Page {
+            size: new, margins, ..
+        } => {
+            props.page_size = Some(new);
+            props.margins = Some(margins);
+        }
     }
 }
 
@@ -431,6 +454,34 @@ mod tests {
         set_page_setup(&mut d, 0, 0, PageSetup::Orientation(Orientation::Portrait));
         assert_eq!(d.sections[0].props.page_size, Some(PageSize::A4));
         assert_eq!(d.sections[0].props.margins, Some(PageMargins::default()));
+    }
+
+    #[test]
+    fn page_setup_window_sets_section_or_document() {
+        let mut d = doc(&["a"]);
+        let second = d.sections[0].clone();
+        d.sections.push(second);
+        let size = PageSize {
+            width: Twips(10000),
+            height: Twips(14000),
+            orientation: Orientation::Portrait,
+        };
+        let margins = PageMargins {
+            header: Twips(500),
+            gutter: Twips(300),
+            ..PageMargins::default()
+        };
+        let page = |whole| PageSetup::Page {
+            size,
+            margins,
+            whole,
+        };
+        set_page_setup(&mut d, 0, 0, page(false));
+        assert_eq!(d.sections[0].props.page_size, Some(size));
+        assert_eq!(d.sections[0].props.margins, Some(margins));
+        assert_ne!(d.sections[1].props.page_size, Some(size));
+        set_page_setup(&mut d, 0, 0, page(true));
+        assert_eq!(d.sections[1].props.margins, Some(margins));
     }
 
     #[test]

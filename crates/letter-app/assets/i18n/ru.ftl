@@ -1261,3 +1261,24 @@ border-inside-h = Внутренняя горизонтальная
 border-inside-v = Внутренняя вертикальная
 border-between = Между абзацами
 points-short = пт
+
+# Окно «Параметры страницы»
+page-setup-title = Параметры страницы
+page-setup-tab-margins = Поля
+page-setup-tab-paper = Размер бумаги
+page-setup-tab-layout = Макет
+page-setup-top = Верхнее:
+page-setup-bottom = Нижнее:
+page-setup-left = Левое:
+page-setup-right = Правое:
+page-setup-gutter = Переплёт:
+page-setup-width = Ширина:
+page-setup-height = Высота:
+page-setup-custom-size = Другой размер
+page-setup-distance = От края до колонтитула:
+page-setup-header = верхнего:
+page-setup-footer = нижнего:
+page-setup-whole = ко всему документу
+page-setup-section = к текущему разделу
+margins-custom = Настраиваемые поля…
+page-size-more = Другие размеры бумаги…

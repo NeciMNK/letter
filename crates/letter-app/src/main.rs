@@ -37,6 +37,7 @@ mod modes;
 mod navigation;
 mod outlining;
 mod page_number_dialog;
+mod page_setup_dialog;
 mod paragraph_dialog;
 mod password_dialog;
 mod picture;

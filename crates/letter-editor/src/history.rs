@@ -803,6 +803,7 @@ impl History {
             | Command::AcceptRevisions { all: true }
             | Command::RejectRevisions { all: true }
             | Command::PageSetup(PageSetup::Borders(_))
+            | Command::PageSetup(PageSetup::Page { whole: true, .. })
             | Command::PageBorders(_) => (0, paragraph_count(doc).saturating_sub(1)),
             // Блочный элемент занимает несколько абзацев.
             Command::SetControl(_) => crate::controls::control_range(doc, selection.focus)
