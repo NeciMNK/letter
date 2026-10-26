@@ -91,6 +91,12 @@ pub enum Icon {
     Picture,
     /// Обтекание текстом.
     WrapText,
+    /// Фигуры.
+    Shapes,
+    /// Заливка фигуры.
+    ShapeFill,
+    /// Контур фигуры.
+    ShapeOutline,
     /// Поля страницы.
     Margins,
     /// Ориентация листа.
@@ -238,6 +244,9 @@ impl Icon {
             Icon::Table => ("table", '\u{E17D}'),
             Icon::Picture => ("image", '\u{E0F6}'),
             Icon::WrapText => ("wrap-text", '\u{E248}'),
+            Icon::Shapes => ("shapes", '\u{E4B3}'),
+            Icon::ShapeFill => ("paint-bucket", '\u{E2E6}'),
+            Icon::ShapeOutline => ("pen-line", '\u{E130}'),
             Icon::Margins => ("fullscreen", '\u{E534}'),
             Icon::Orientation => ("rectangle-horizontal", '\u{E376}'),
             Icon::PageSize => ("scaling", '\u{E2EC}'),
@@ -450,7 +459,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 65] = [
+    const ALL: [Icon; 68] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -490,6 +499,9 @@ mod tests {
         Icon::PasteText,
         Icon::Picture,
         Icon::WrapText,
+        Icon::Shapes,
+        Icon::ShapeFill,
+        Icon::ShapeOutline,
         Icon::Margins,
         Icon::Orientation,
         Icon::PageSize,

@@ -2248,6 +2248,28 @@ impl Viewer {
         }
     }
 
+    /// Вставляет у курсора новую фигуру `name` и выделяет её: появляется
+    /// вкладка «Формат фигуры».
+    fn insert_shape(&mut self, ctx: &Context, name: &str) {
+        let picture = letter_editor::new_shape(name);
+        self.apply_actions(
+            ctx,
+            vec![Action::Edit(Command::InsertPicture(Box::new(picture)))],
+        );
+        if let Some(document) = &mut self.document {
+            let end = document.cursor;
+            let start = Position::new(
+                end.paragraph,
+                end.offset
+                    .saturating_sub(letter_model::OBJECT_CHAR.len_utf8()),
+            );
+            if letter_editor::shape_ref(&document.doc, start).is_some() {
+                document.set_selection(Selection::new(start, end));
+                self.ribbon.tab = crate::ribbon::Tab::ShapeFormat;
+            }
+        }
+    }
+
     /// Вставляет рисунок из файла картинки у курсора.
     fn insert_picture_file(&mut self, ctx: &Context, path: &Path) {
         match crate::picture::picture_from_file(path) {
@@ -2687,9 +2709,13 @@ impl Viewer {
                 selection.start().paragraph,
                 selection.end().paragraph,
             );
-            info.picture_wrap = selected_picture(&document.layout, selection)
-                .and_then(|p| picture_ref(&document.doc, p.at))
-                .map(PictureWrap::of);
+            let picture = selected_picture(&document.layout, selection)
+                .and_then(|p| picture_ref(&document.doc, p.at).map(|picture| (p.at, picture)));
+            info.picture_wrap = picture.map(|(_, p)| PictureWrap::of(p));
+            info.picture_size = picture.map(|(_, p)| (p.width, p.height));
+            info.shape = picture
+                .and_then(|(at, _)| letter_editor::shape_ref(&document.doc, at))
+                .cloned();
             info.section =
                 letter_editor::section_props(&document.doc, document.cursor.paragraph).cloned();
             info.auto_hyphenation = document.doc.settings.auto_hyphenation;
@@ -2885,6 +2911,10 @@ impl Viewer {
                 }
                 RibbonCommand::Edit(command) => actions.push(Action::Edit(command)),
                 RibbonCommand::InsertPicture => self.picture_requested = true,
+                RibbonCommand::InsertShape(name) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    self.insert_shape(ctx, name);
+                }
                 RibbonCommand::EditHeaderFooter { header } => {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
                     let page = self.story_page();
@@ -5239,6 +5269,46 @@ mod tests {
             "\u{fffc}"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn shape_is_inserted_and_restyled() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.new_document();
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::InsertShape("ellipse")]);
+        assert_eq!(viewer.ribbon.tab, crate::ribbon::Tab::ShapeFormat);
+        let info = viewer.ribbon_info();
+        let shape = info.shape.expect("фигура выделена");
+        assert_eq!(info.picture_size, Some((914400, 914400)));
+        // Красная заливка из вкладки «Формат фигуры»; отмена её снимает.
+        let red = letter_editor::with_fill(&shape, Some([255, 0, 0]));
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::Edit(Command::PictureShape(Box::new(red)))],
+        );
+        let fill = |viewer: &Viewer| viewer.ribbon_info().shape.and_then(|s| s.fill);
+        assert_eq!(
+            fill(&viewer),
+            Some(letter_model::ShapeColor::rgb([255, 0, 0]))
+        );
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
+        assert_eq!(fill(&viewer), shape.fill);
+        // Фигура сохраняется в .docx и читается обратно.
+        let doc = &viewer.document.as_ref().unwrap().doc;
+        let reread = letter_docx::read_bytes(&letter_docx::write_bytes(doc).unwrap()).unwrap();
+        let at = Position::new(0, 0);
+        let again = letter_editor::shape_ref(&reread, at).expect("фигура прочитана");
+        assert_eq!(again.geometry, shape.geometry);
+        // Цвета темы при чтении заменяются настоящими — те же на экране.
+        let scheme = letter_model::ColorScheme::default();
+        let rgba = |s: &letter_model::Shape| s.fill.as_ref().map(|c| c.rgba(&scheme));
+        assert_eq!(rgba(again), rgba(&shape));
+        // Без выделенной фигуры вкладка уходит.
+        let document = viewer.document.as_mut().unwrap();
+        let end = document.cursor;
+        document.set_selection(Selection::new(end, end));
+        assert!(viewer.ribbon_info().shape.is_none());
     }
 
     /// PNG 1 × 1 с прозрачной точкой.

@@ -1,6 +1,6 @@
 //! Вкладки «Вставка» (пока — группы «Таблицы» и «Иллюстрации»), «Конструктор
 //! таблиц» и «Макет таблицы» (видны, когда курсор в таблице) и «Формат
-//! рисунка» (видна, когда выделен рисунок).
+//! рисунка» и «Формат фигуры» (видны, когда выделен рисунок или фигура).
 
 use eframe::egui::{self, Color32, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
 use letter_editor::{BorderPreset, Command, CoverLayout, PictureWrap};
@@ -20,7 +20,8 @@ const SQUARE: f32 = 16.0;
 
 /// Подсказки клавиш вкладки «Вставка» (для проверки).
 #[cfg(test)]
-pub const INSERT_KEYTIPS: [&str; 13] = [
+pub const INSERT_KEYTIPS: [&str; 14] = [
+    "keytip-insert-shapes",
     "keytip-insert-cover",
     "keytip-insert-blank-page",
     "keytip-insert-page-break",
@@ -55,6 +56,31 @@ pub const DESIGN_KEYTIPS: [&str; 2] = ["keytip-design-shading", "keytip-design-b
 #[cfg(test)]
 pub const PICTURE_KEYTIPS: [&str; 1] = ["keytip-picture-wrap"];
 
+/// Подсказки клавиш вкладки «Формат фигуры» (для проверки).
+#[cfg(test)]
+pub const SHAPE_KEYTIPS: [&str; 4] = [
+    "keytip-shape-change",
+    "keytip-shape-fill",
+    "keytip-shape-outline",
+    "keytip-picture-wrap",
+];
+
+/// Названия групп меню «Фигуры» (по порядку [`letter_editor::SHAPE_GROUPS`]).
+const SHAPE_GROUP_NAMES: [&str; 6] = [
+    "shapes-lines",
+    "shapes-rectangles",
+    "shapes-basic",
+    "shapes-arrows",
+    "shapes-stars",
+    "shapes-text-box",
+];
+
+/// Толщины контура в меню «Толщина», пт.
+const LINE_WIDTHS: [f32; 9] = [0.25, 0.5, 0.75, 1.0, 1.5, 2.25, 3.0, 4.5, 6.0];
+
+/// Сантиметров в EMU.
+const EMU_PER_CM: f64 = 360_000.0;
+
 /// Светло-серые заливки (как «Белый, фон 1, более тёмный оттенок»).
 const GRAYS: [(u8, u8, u8); 4] = [
     (242, 242, 242),
@@ -83,7 +109,7 @@ pub fn insert(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
             big_label(ui, tr("table"));
         });
     });
-    group(ui, tr("group-illustrations"), |ui| {
+    row_group(ui, tr("group-illustrations"), |ui| {
         ui.vertical(|ui| {
             let response = icon_button(
                 ui,
@@ -107,6 +133,17 @@ pub fn insert(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
             }
             big_label(ui, tr("pictures"));
         });
+        menu_button(
+            ui,
+            Icon::Shapes,
+            tr("shapes"),
+            tr("shapes-hint"),
+            "keytip-insert-shapes",
+            doc,
+            |ui| {
+                shape_gallery(ui, true, |name| out.push(RibbonCommand::InsertShape(name)));
+            },
+        );
     });
     row_group(ui, tr("group-links"), |ui| {
         ui.vertical(|ui| {
@@ -427,30 +464,166 @@ pub(crate) fn menu_button(
 
 /// Вкладка «Формат рисунка»: обтекание выделенного рисунка текстом.
 pub fn picture_format(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+    group(ui, tr("group-arrange"), |ui| wrap_menu(ui, info, out));
+}
+
+/// Меню готовых фигур по группам; `pick` получает имя выбранной фигуры.
+/// `text_box` — показывать ли «Надпись».
+fn shape_gallery(ui: &mut Ui, text_box: bool, mut pick: impl FnMut(&'static str)) {
+    for (i, (names, title)) in letter_editor::SHAPE_GROUPS
+        .iter()
+        .zip(SHAPE_GROUP_NAMES)
+        .enumerate()
+    {
+        if !text_box && names.contains(&letter_editor::TEXT_BOX) {
+            continue;
+        }
+        if i > 0 {
+            ui.separator();
+        }
+        ui.label(egui::RichText::new(tr(title)).small().strong());
+        for name in names.iter() {
+            if ui.button(tr(&format!("shape-{name}"))).clicked() {
+                pick(name);
+                ui.close();
+            }
+        }
+    }
+}
+
+/// Меню «Обтекание текстом» рисунка или фигуры.
+fn wrap_menu(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     let current = info.picture_wrap;
-    group(ui, tr("group-arrange"), |ui| {
+    menu_button(
+        ui,
+        Icon::WrapText,
+        tr("wrap-text"),
+        tr("wrap-text-hint"),
+        "keytip-picture-wrap",
+        info.has_document && current.is_some(),
+        |ui| {
+            for wrap in PictureWrap::ALL {
+                if ui
+                    .add(egui::Button::selectable(
+                        current == Some(wrap),
+                        tr(wrap_label(wrap)),
+                    ))
+                    .clicked()
+                {
+                    out.push(RibbonCommand::PictureWrap(wrap));
+                    ui.close();
+                }
+            }
+        },
+    );
+}
+
+/// Вкладка «Формат фигуры»: вид фигуры, заливка, контур, обтекание и
+/// размер выделенной фигуры.
+pub fn shape_format(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
+    let Some(shape) = &info.shape else {
+        return;
+    };
+    let enabled = info.has_document;
+    let edit =
+        |shape: letter_model::Shape| RibbonCommand::Edit(Command::PictureShape(Box::new(shape)));
+    group(ui, tr("group-insert-shapes"), |ui| {
         menu_button(
             ui,
-            Icon::WrapText,
-            tr("wrap-text"),
-            tr("wrap-text-hint"),
-            "keytip-picture-wrap",
-            info.has_document && current.is_some(),
+            Icon::Replace,
+            tr("change-shape"),
+            tr("change-shape-hint"),
+            "keytip-shape-change",
+            enabled,
             |ui| {
-                for wrap in PictureWrap::ALL {
-                    if ui
-                        .add(egui::Button::selectable(
-                            current == Some(wrap),
-                            tr(wrap_label(wrap)),
-                        ))
-                        .clicked()
-                    {
-                        out.push(RibbonCommand::PictureWrap(wrap));
-                        ui.close();
-                    }
-                }
+                shape_gallery(ui, false, |name| {
+                    out.push(edit(letter_editor::with_geometry(shape, name)));
+                });
             },
         );
+    });
+    row_group(ui, tr("group-shape-styles"), |ui| {
+        ui.horizontal(|ui| {
+            menu_button(
+                ui,
+                Icon::ShapeFill,
+                tr("shape-fill"),
+                tr("shape-fill-hint"),
+                "keytip-shape-fill",
+                enabled,
+                |ui| {
+                    shading_palette(ui, |fill| {
+                        out.push(edit(letter_editor::with_fill(
+                            shape,
+                            fill.map(|(r, g, b)| [r, g, b]),
+                        )));
+                    });
+                },
+            );
+            menu_button(
+                ui,
+                Icon::ShapeOutline,
+                tr("shape-outline"),
+                tr("shape-outline-hint"),
+                "keytip-shape-outline",
+                enabled,
+                |ui| {
+                    shading_palette(ui, |color| {
+                        out.push(edit(letter_editor::with_line_color(
+                            shape,
+                            color.map(|(r, g, b)| [r, g, b]),
+                        )));
+                    });
+                    ui.separator();
+                    ui.menu_button(tr("shape-outline-width"), |ui| {
+                        let current = shape.line.as_ref().map(|l| l.width);
+                        for points in LINE_WIDTHS {
+                            let emu = (points * 12_700.0).round() as i64;
+                            let label = crate::i18n::tr_args(
+                                "unit-pt",
+                                &[("value", f64::from(points).into())],
+                            );
+                            if ui
+                                .add(egui::Button::selectable(current == Some(emu), label))
+                                .clicked()
+                            {
+                                out.push(edit(letter_editor::with_line_width(shape, emu)));
+                                ui.close();
+                            }
+                        }
+                    });
+                },
+            );
+        });
+    });
+    group(ui, tr("group-arrange"), |ui| wrap_menu(ui, info, out));
+    group(ui, tr("group-size"), |ui| {
+        let Some((width, height)) = info.picture_size else {
+            return;
+        };
+        let mut size = [height, width].map(|v| v as f64 / EMU_PER_CM);
+        let mut changed = false;
+        for (value, label) in size.iter_mut().zip([tr("shape-height"), tr("shape-width")]) {
+            ui.horizontal(|ui| {
+                ui.label(label);
+                let response = ui.add_enabled(
+                    enabled,
+                    egui::DragValue::new(value)
+                        .range(0.0..=55.0)
+                        .speed(0.05)
+                        .fixed_decimals(2)
+                        .suffix(format!(" {}", tr("shape-size-unit"))),
+                );
+                changed |= response.changed();
+            });
+        }
+        if changed {
+            let [height, width] = size.map(|v| (v * EMU_PER_CM).round() as i64);
+            out.push(RibbonCommand::Edit(Command::ResizePicture {
+                width,
+                height,
+            }));
+        }
     });
 }
 

@@ -52,6 +52,8 @@ pub enum Tab {
     TableLayout,
     /// «Формат рисунка»: видна, только когда выделен рисунок.
     PictureFormat,
+    /// «Формат фигуры»: видна, только когда выделена фигура.
+    ShapeFormat,
     /// «Колонтитулы»: видна, пока колонтитул открыт для правки.
     HeaderFooter,
     /// «Структура»: видна в режиме «Структура».
@@ -83,6 +85,7 @@ impl Tab {
             Tab::TableDesign => "keytip-tab-table-design",
             Tab::TableLayout => "keytip-tab-table-layout",
             Tab::PictureFormat => "keytip-tab-picture-format",
+            Tab::ShapeFormat => "keytip-tab-shape-format",
             Tab::HeaderFooter => "keytip-tab-header-footer",
             Tab::Outline => "keytip-tab-outline",
         }
@@ -101,6 +104,7 @@ impl Tab {
             Tab::TableDesign => tr("tab-table-design"),
             Tab::TableLayout => tr("tab-table-layout"),
             Tab::PictureFormat => tr("tab-picture-format"),
+            Tab::ShapeFormat => tr("tab-shape-format"),
             Tab::HeaderFooter => tr("tab-header-footer"),
             Tab::Outline => tr("tab-outline"),
         }
@@ -231,6 +235,9 @@ pub enum RibbonCommand {
     BuiltInStyle(&'static str),
     /// «Вставка → Рисунки»: выбрать файл картинки и вставить рисунок.
     InsertPicture,
+    /// «Вставка → Фигуры»: новая фигура (имя готовой фигуры или
+    /// [`letter_editor::TEXT_BOX`]).
+    InsertShape(&'static str),
     /// «Обтекание текстом» выделенного рисунка.
     PictureWrap(letter_editor::PictureWrap),
     /// Открыть для правки верхний (`header`) или нижний колонтитул.
@@ -373,6 +380,10 @@ pub struct RibbonInfo {
     pub can_merge: bool,
     /// Обтекание выделенного рисунка (`None` — рисунок не выделен).
     pub picture_wrap: Option<letter_editor::PictureWrap>,
+    /// Выделенная фигура (не группа).
+    pub shape: Option<letter_model::Shape>,
+    /// Размер выделенного рисунка или фигуры, EMU.
+    pub picture_size: Option<(i64, i64)>,
     /// Параметры страницы раздела с курсором.
     pub section: Option<letter_model::SectionProps>,
     /// Открыт колонтитул: `Some(true)` — верхний, `Some(false)` — нижний.
@@ -442,7 +453,10 @@ impl Ribbon {
             self.tab = Tab::Home;
         }
         // И вкладка рисунка — когда рисунок перестаёт быть выделенным.
-        if self.tab == Tab::PictureFormat && info.picture_wrap.is_none() {
+        if self.tab == Tab::PictureFormat && (info.picture_wrap.is_none() || info.shape.is_some()) {
+            self.tab = Tab::Home;
+        }
+        if self.tab == Tab::ShapeFormat && info.shape.is_none() {
             self.tab = Tab::Home;
         }
         // Вкладка колонтитулов открывается вместе с колонтитулом.
@@ -504,6 +518,7 @@ impl Ribbon {
             Tab::TableDesign => crate::insert::table_design(ui, info, out),
             Tab::TableLayout => crate::insert::table_layout(ui, info, out),
             Tab::PictureFormat => crate::insert::picture_format(ui, info, out),
+            Tab::ShapeFormat => crate::insert::shape_format(ui, info, out),
             Tab::HeaderFooter => crate::headers::header_footer(ui, info, out),
             Tab::Outline => crate::outlining::outlining(ui, info, out),
         });
@@ -531,7 +546,9 @@ impl Ribbon {
             if info.in_table {
                 contextual.extend([Tab::TableDesign, Tab::TableLayout]);
             }
-            if info.picture_wrap.is_some() {
+            if info.shape.is_some() {
+                contextual.push(Tab::ShapeFormat);
+            } else if info.picture_wrap.is_some() {
                 contextual.push(Tab::PictureFormat);
             }
             if info.story.is_some() {
@@ -1059,11 +1076,15 @@ mod tests {
             Tab::TableDesign,
             Tab::TableLayout,
             Tab::PictureFormat,
+            Tab::ShapeFormat,
             Tab::HeaderFooter,
             Tab::Outline,
         ]);
         let mut heights = Vec::new();
         for tab in tabs {
+            // Вкладка фигуры видна, когда выделена фигура, а не картинка.
+            h.state_mut().1.shape = (tab == Tab::ShapeFormat).then(letter_model::Shape::default);
+            h.state_mut().1.picture_size = Some((914_400, 914_400));
             h.state_mut().0.tab = tab;
             h.run();
             assert_eq!(h.state().0.tab, tab);
