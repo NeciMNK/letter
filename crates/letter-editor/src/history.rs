@@ -10,7 +10,7 @@
 use letter_model::{
     Alignment, Anchor, Block, BreakKind, Color, Comment, Document, DocumentProtection,
     HeaderFooter, HeaderFooterKind, Hyperlink, Note, NoteKind, Picture, RevisionKind, Section,
-    SectionStart, Settings, WriteProtection,
+    SectionStart, Settings, Shape, WriteProtection,
 };
 
 use crate::Position;
@@ -137,6 +137,9 @@ pub enum Command {
     /// Новая привязка выделенного рисунка (обтекание, место на странице);
     /// `None` — рисунок в тексте.
     PictureAnchor(Option<Box<Anchor>>),
+    /// Новый вид выделенной фигуры: контур, заливка, линия (выделение
+    /// остаётся).
+    PictureShape(Box<Shape>),
     /// Разрыв страницы (Ctrl+Enter) или колонки (Ctrl+Shift+Enter)
     /// у курсора (заменяет выделенное).
     Break(BreakKind),
@@ -620,6 +623,7 @@ impl History {
                 | Command::MergeCells
                 | Command::ResizePicture { .. }
                 | Command::PictureAnchor(_)
+                | Command::PictureShape(_)
                 | Command::PageSetup(_)
                 | Command::HeaderFooter { .. }
                 | Command::TitlePage { .. }
@@ -807,6 +811,10 @@ impl History {
                 set_picture_anchor(doc, start, anchor.clone());
                 Some(selection)
             }
+            Command::PictureShape(shape) => {
+                crate::shape::set_picture_shape(doc, start, (**shape).clone());
+                Some(selection)
+            }
             Command::PageSetup(setup) => {
                 set_page_setup(doc, start.paragraph, end.paragraph, *setup);
                 Some(selection)
@@ -972,6 +980,7 @@ impl History {
             | Command::MergeCells
             | Command::ResizePicture { .. }
             | Command::PictureAnchor(_)
+            | Command::PictureShape(_)
             | Command::PageSetup(_)
             | Command::HeaderFooter { .. }
             | Command::TitlePage { .. }

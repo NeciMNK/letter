@@ -41,6 +41,7 @@ pub mod revisions;
 pub mod search;
 pub mod section;
 pub mod selection;
+pub mod shape;
 pub mod spelling;
 pub mod table;
 pub mod toc;
@@ -92,6 +93,10 @@ pub use section::{
     set_title_page,
 };
 pub use selection::{Selection, SelectionRect, paragraph_at, select_all, selection_rects, word_at};
+pub use shape::{
+    SHAPE_GROUPS, TEXT_BOX, is_line, new_shape, set_picture_shape, shape_ref, with_fill,
+    with_geometry, with_line_color, with_line_width,
+};
 pub use table::{
     BorderPreset, can_merge, delete_columns, delete_rows, delete_table, in_table, insert_columns,
     insert_rows, insert_table, merge_cells, next_cell, set_cell_borders, set_cell_shading,

@@ -137,7 +137,7 @@ pub fn picture_ref(doc: &Document, at: Position) -> Option<&Picture> {
     None
 }
 
-fn picture_mut(doc: &mut Document, at: Position) -> Option<&mut Picture> {
+pub(crate) fn picture_mut(doc: &mut Document, at: Position) -> Option<&mut Picture> {
     let paragraph = paragraph_mut(doc, at.paragraph)?;
     let mut pos = 0;
     for inline in &mut paragraph.content {
