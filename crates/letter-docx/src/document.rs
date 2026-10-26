@@ -1141,24 +1141,31 @@ fn read_color(element: &Element) -> Option<(Color, Option<ThemeColor>)> {
         return None;
     }
     let color = parse_color(element.w_attr("val")?)?;
+    Some((color, read_theme_color(element)?))
+}
+
+/// Ссылка на цвет темы в атрибутах `w:themeColor`, `w:themeShade`,
+/// `w:themeTint` (у цвета текста и линий границ). Внешний `None` —
+/// атрибуты непонятны (оттенок без цвета темы, не шестнадцатеричное
+/// число).
+pub(crate) fn read_theme_color(element: &Element) -> Option<Option<ThemeColor>> {
     let byte = |name: &str| -> Result<Option<u8>, ()> {
         match element.w_attr(name) {
             Some(v) => u8::from_str_radix(v, 16).map(Some).map_err(|_| ()),
             None => Ok(None),
         }
     };
-    let theme = match element.w_attr("themeColor") {
-        Some(name) => Some(ThemeColor {
+    match element.w_attr("themeColor") {
+        Some(name) => Some(Some(ThemeColor {
             name: name.to_string(),
             shade: byte("themeShade").ok()?,
             tint: byte("themeTint").ok()?,
-        }),
+        })),
         None if element.w_attr("themeShade").is_some() || element.w_attr("themeTint").is_some() => {
-            return None;
+            None
         }
-        None => None,
-    };
-    Some((color, theme))
+        None => Some(None),
+    }
 }
 
 pub(crate) fn parse_color(value: &str) -> Option<Color> {

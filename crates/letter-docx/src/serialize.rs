@@ -12,7 +12,7 @@ use letter_model::{
     ControlStep, Document, FieldChar, FieldCharKind, FirstLineIndent, HeaderFooterKind, Hyperlink,
     Inline, LineSpacing, Note, NoteKind, Orientation, PageBorderDisplay, PageBorders, Paragraph,
     ParagraphProps, RawXml, RevisionKind, Run, RunContent, RunFonts, RunProps, Section,
-    SectionProps, SectionStart, Style, StyleKind, Styles, VerticalAlign,
+    SectionProps, SectionStart, Style, StyleKind, Styles, ThemeColor, VerticalAlign,
 };
 
 use crate::document::{W_NS, is_w_ns};
@@ -825,15 +825,7 @@ pub(crate) fn run_props(props: &RunProps) -> String {
     }
     if let Some(color) = props.color {
         let mut attrs = vec![("w:val", hex_color(color))];
-        if let Some(theme) = &props.theme_color {
-            attrs.push(("w:themeColor", theme.name.clone()));
-            if let Some(shade) = theme.shade {
-                attrs.push(("w:themeShade", format!("{shade:02X}")));
-            }
-            if let Some(tint) = theme.tint {
-                attrs.push(("w:themeTint", format!("{tint:02X}")));
-            }
-        }
+        theme_color_attrs(&mut attrs, props.theme_color.as_ref());
         children.push("color", empty("w:color", &attrs));
     }
     if let Some(spacing) = props.spacing {
@@ -1260,6 +1252,23 @@ pub(crate) fn escape_attr(value: &str) -> String {
         }
     }
     out
+}
+
+/// Атрибуты ссылки на цвет темы: `w:themeColor`, `w:themeShade`,
+/// `w:themeTint`.
+pub(crate) fn theme_color_attrs(
+    attrs: &mut Vec<(&'static str, String)>,
+    theme: Option<&ThemeColor>,
+) {
+    if let Some(theme) = theme {
+        attrs.push(("w:themeColor", theme.name.clone()));
+        if let Some(shade) = theme.shade {
+            attrs.push(("w:themeShade", format!("{shade:02X}")));
+        }
+        if let Some(tint) = theme.tint {
+            attrs.push(("w:themeTint", format!("{tint:02X}")));
+        }
+    }
 }
 
 #[cfg(test)]

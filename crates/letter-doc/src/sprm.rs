@@ -479,12 +479,14 @@ fn border(width: u8, kind: u8, flags: u8, color: Option<Color>) -> Option<Border
             size: None,
             space: None,
             color: None,
+            theme_color: None,
         }),
         kind => Some(Border {
             style: border_style(kind).into(),
             size: Some(u32::from(width)),
             space: Some(u32::from(flags & 0x1F)),
             color,
+            theme_color: None,
         }),
     }
 }

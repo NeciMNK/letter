@@ -1,6 +1,6 @@
 //! Границы и заливка: у таблиц, ячеек и абзацев (позже — у страниц).
 
-use crate::Color;
+use crate::{Color, ThemeColor};
 
 /// Одна линия границы (`w:top`, `w:insideH` и т. п.).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,8 +12,11 @@ pub struct Border {
     pub size: Option<u32>,
     /// Отступ от текста в пунктах (`w:space`).
     pub space: Option<u32>,
-    /// Цвет; `None` — «Авто».
+    /// Цвет; `None` — «Авто». Если цвет взят из темы, здесь лежит
+    /// готовое значение, которое Word посчитал при сохранении.
     pub color: Option<Color>,
+    /// Ссылка на цвет темы документа (`w:themeColor` и оттенки).
+    pub theme_color: Option<ThemeColor>,
 }
 
 impl Border {
@@ -24,6 +27,7 @@ impl Border {
             size: Some(eighths),
             space: Some(0),
             color: Some(Color::Auto),
+            theme_color: None,
         }
     }
 
@@ -186,6 +190,7 @@ mod tests {
             size: None,
             space: None,
             color: None,
+            theme_color: None,
         };
         assert_eq!(none.width_points(), 0.0);
     }

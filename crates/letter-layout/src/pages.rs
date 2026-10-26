@@ -1871,6 +1871,14 @@ fn prepare(
 }
 
 /// Номер другим шрифтом может сделать первую строку выше.
+/// Подъём и спуск шрифта знаков `font` в долях кегля, как в Windows
+/// (`usWinAscent`, `usWinDescent`). Сейчас известен только Symbol: им
+/// Word рисует маркеры списков по умолчанию.
+fn symbol_font_height(font: &str) -> Option<(f32, f32)> {
+    font.eq_ignore_ascii_case("Symbol")
+        .then_some((2059.0 / 2048.0, 450.0 / 2048.0))
+}
+
 fn raise_first_line(lines: &mut [Line], label: Option<(f32, f32, f32)>) {
     if let (Some((ascent, descent, leading)), Some(first)) = (label, lines.first_mut()) {
         first.ascent = first.ascent.max(ascent);
@@ -1895,7 +1903,7 @@ fn list_mark(
     let symbols =
         |family: &Option<String>| family.clone().filter(|f| letter_model::is_symbol_font(f));
     let font = symbols(&run.fonts.ascii).or_else(|| symbols(&run.fonts.h_ansi));
-    let text = match font {
+    let text = match &font {
         // Знаки из шрифтов Symbol и Wingdings заменяются похожими знаками
         // Юникода обычным шрифтом: самих этих шрифтов обычно нет.
         Some(font) => {
@@ -1903,7 +1911,7 @@ fn list_mark(
             label
                 .text
                 .chars()
-                .map(|c| letter_model::symbol_char(&font, c))
+                .map(|c| letter_model::symbol_char(font, c))
                 .collect()
         }
         None => label.text.clone(),
@@ -1935,6 +1943,12 @@ fn list_mark(
             items: Vec::new(),
             end: LineEnd::Paragraph,
         });
+    // Маркер из шрифта Symbol нарисован заменой, но высоту строки Word
+    // считает по самому Symbol, а он выше обычных шрифтов.
+    if let Some((ascent, descent)) = font.as_deref().and_then(symbol_font_height) {
+        line.ascent = line.ascent.max(ascent * mark_style.size);
+        line.descent = line.descent.max(descent * mark_style.size);
+    }
     let width: f32 = line.items.iter().map(LineItem::width).sum();
     let start = format.left_indent + format.first_line_indent;
     let x = match level.alignment {
