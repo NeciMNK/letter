@@ -3082,6 +3082,12 @@ impl Viewer {
             }
             info.list = list_kind(&document.doc, document.cursor.paragraph);
             info.in_table = letter_editor::in_table(&document.doc, document.cursor.paragraph);
+            if info.in_table {
+                let paragraph = document.cursor.paragraph;
+                info.table_style = letter_editor::table_style_at(&document.doc, paragraph);
+                info.table_look = letter_editor::table_look_at(&document.doc, paragraph);
+                info.table_styles = crate::insert::table_gallery(&document.doc).into();
+            }
             let selection = document.selection();
             info.can_merge = letter_editor::can_merge(
                 &document.doc,

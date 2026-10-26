@@ -439,6 +439,12 @@ pub struct RibbonInfo {
     pub in_table: bool,
     /// Выделено несколько ячеек таблицы: их можно объединить.
     pub can_merge: bool,
+    /// Стиль таблицы с курсором.
+    pub table_style: Option<String>,
+    /// Параметры стиля таблицы с курсором.
+    pub table_look: Option<letter_model::TableLook>,
+    /// Стили для галереи «Стили таблиц» (только когда курсор в таблице).
+    pub table_styles: Arc<[crate::insert::GalleryTableStyle]>,
     /// Обтекание выделенного рисунка (`None` — рисунок не выделен).
     pub picture_wrap: Option<letter_editor::PictureWrap>,
     /// Выделенная фигура (не группа).
@@ -1268,6 +1274,33 @@ mod tests {
                     letter_editor::BorderPreset::All
                 )),
                 RibbonCommand::Edit(letter_editor::Command::CellShading(None)),
+            ]
+        );
+        // Параметры стиля и галерея стилей таблиц.
+        h.state_mut().out.clear();
+        h.state_mut().info.table_styles =
+            crate::insert::table_gallery(&letter_model::Document::new()).into();
+        h.run();
+        h.get_by_label("Строка итогов").click();
+        h.run();
+        h.get_all_by_label("Стили").next().expect("кнопка").click();
+        h.run();
+        h.get_by_label("Сетка: акцент 1").click();
+        h.run();
+        let look = letter_model::TableLook {
+            last_row: true,
+            ..letter_model::TableLook::WORD
+        };
+        let grid = letter_editor::table_preset(
+            &letter_model::Document::new(),
+            letter_editor::TablePreset::Grid,
+            1,
+        );
+        assert_eq!(
+            h.state().out,
+            vec![
+                RibbonCommand::Edit(letter_editor::Command::TableLook(look)),
+                RibbonCommand::Edit(letter_editor::Command::TableStyle(Box::new(grid))),
             ]
         );
         // Курсор ушёл из таблицы — снова «Главная».

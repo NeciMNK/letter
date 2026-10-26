@@ -879,6 +879,63 @@ pub fn merge_cells(doc: &mut Document, start: usize, end: usize) -> Option<Posit
     ))
 }
 
+/// Стиль таблицы с абзацем `paragraph` (`None` — не в таблице или стиль
+/// не задан).
+pub fn table_style_at(doc: &Document, paragraph: usize) -> Option<String> {
+    let at = cell_of(doc, paragraph)?;
+    table_ref(doc, &at.table)?.props.style.clone()
+}
+
+/// Параметры стиля таблицы с абзацем `paragraph` («Строка заголовка»,
+/// «Чередующиеся строки»…); без `w:tblLook` — как у новой таблицы Word.
+pub fn table_look_at(doc: &Document, paragraph: usize) -> Option<TableLook> {
+    let at = cell_of(doc, paragraph)?;
+    Some(
+        table_ref(doc, &at.table)?
+            .props
+            .look
+            .unwrap_or(TableLook::WORD),
+    )
+}
+
+/// Применяет к таблице с абзацем `paragraph` стиль `style`. Если такого
+/// стиля в документе нет (готовый стиль из галереи), он добавляется.
+/// Свои границы таблицы снимаются: их задаёт стиль, как в Word.
+pub fn set_table_style(doc: &mut Document, paragraph: usize, style: &Style) -> bool {
+    let Some(at) = cell_of(doc, paragraph) else {
+        return false;
+    };
+    if doc.styles.get(&style.id).is_none() {
+        ensure_grid_style(doc);
+        let mut style = style.clone();
+        if style.based_on.is_none() {
+            style.based_on = doc
+                .styles
+                .default_for(StyleKind::Table)
+                .map(|s| s.id.clone());
+        }
+        doc.styles.styles.push(style);
+    }
+    let Some(table) = table_mut(doc, &at.table) else {
+        return false;
+    };
+    table.props.style = Some(style.id.clone());
+    table.props.borders = None;
+    true
+}
+
+/// Меняет параметры стиля у таблицы с абзацем `paragraph`.
+pub fn set_table_look(doc: &mut Document, paragraph: usize, look: TableLook) -> bool {
+    let Some(at) = cell_of(doc, paragraph) else {
+        return false;
+    };
+    let Some(table) = table_mut(doc, &at.table) else {
+        return false;
+    };
+    table.props.look = Some(look);
+    true
+}
+
 /// Самый узкий столбец, до которого сужает перетаскивание границы,
 /// твипы (около 0,5 см).
 const MIN_COLUMN: i32 = 288;
@@ -1136,6 +1193,36 @@ mod tests {
             panic!("вложенная таблица");
         };
         assert_eq!(inner.grid[0].0, (outer - 2 * SIDE_MARGIN) / 2);
+    }
+
+    #[test]
+    fn table_style_and_look() {
+        let mut doc = doc_with(&["x"]);
+        insert_table(&mut doc, Position::new(0, 0), 2, 2);
+        assert_eq!(table_style_at(&doc, 0).as_deref(), Some(GRID_STYLE));
+        assert_eq!(table_look_at(&doc, 0), Some(TableLook::WORD));
+        let style = crate::table_style::table_preset(&doc, crate::TablePreset::List, 2);
+        assert!(set_table_style(&mut doc, 1, &style));
+        assert_eq!(table_style_at(&doc, 0), Some(style.id.clone()));
+        // Стиль добавлен один раз, от стиля таблиц по умолчанию.
+        assert!(set_table_style(&mut doc, 1, &style));
+        let added: Vec<_> = doc
+            .styles
+            .styles
+            .iter()
+            .filter(|s| s.id == style.id)
+            .collect();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].based_on.as_deref(), Some("TableNormal"));
+        let look = TableLook {
+            last_row: true,
+            ..TableLook::default()
+        };
+        assert!(set_table_look(&mut doc, 3, look));
+        assert_eq!(table_look_at(&doc, 0), Some(look));
+        // Вне таблицы — ничего.
+        assert!(!set_table_look(&mut doc, 4, look));
+        assert_eq!(table_style_at(&doc, 4), None);
     }
 
     #[test]

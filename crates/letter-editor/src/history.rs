@@ -51,6 +51,7 @@ use crate::selection::Selection;
 use crate::table::{
     BorderPreset, delete_columns, delete_rows, delete_table, in_table, insert_columns, insert_rows,
     insert_table, merge_cells, move_column_border, next_cell, set_cell_borders, set_cell_shading,
+    set_table_look, set_table_style,
 };
 use crate::toc::{delete_toc, insert_toc, update_tocs};
 use crate::watermark::set_watermark;
@@ -133,6 +134,10 @@ pub enum Command {
         /// Сдвиг, твипы; вправо — больше нуля.
         by: i32,
     },
+    /// Стиль таблицы с курсором (из галереи «Стили таблиц»).
+    TableStyle(Box<letter_model::Style>),
+    /// Параметры стиля таблицы с курсором.
+    TableLook(letter_model::TableLook),
     /// Вставить рисунок у курсора (заменяет выделенное).
     InsertPicture(Box<Picture>),
     /// Новый размер выделенного рисунка, EMU (выделение остаётся).
@@ -721,6 +726,8 @@ impl History {
                 | Command::CellShading(_)
                 | Command::MergeCells
                 | Command::MoveColumnBorder { .. }
+                | Command::TableStyle(_)
+                | Command::TableLook(_)
                 | Command::ResizePicture { .. }
                 | Command::PictureAnchor(_)
                 | Command::PictureShape(_)
@@ -929,6 +936,12 @@ impl History {
             Command::MoveColumnBorder { paragraph, by } => {
                 move_column_border(doc, *paragraph, *by).then_some(selection)
             }
+            Command::TableStyle(style) => {
+                set_table_style(doc, selection.focus.paragraph, style).then_some(selection)
+            }
+            Command::TableLook(look) => {
+                set_table_look(doc, selection.focus.paragraph, *look).then_some(selection)
+            }
             Command::ResizePicture { width, height } => {
                 resize_picture(doc, start, *width, *height);
                 Some(selection)
@@ -1128,6 +1141,8 @@ impl History {
             | Command::CellShading(_)
             | Command::MergeCells
             | Command::MoveColumnBorder { .. }
+            | Command::TableStyle(_)
+            | Command::TableLook(_)
             | Command::ResizePicture { .. }
             | Command::PictureAnchor(_)
             | Command::PictureShape(_)

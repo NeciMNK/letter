@@ -6,6 +6,7 @@ use eframe::egui::{self, Color32, CornerRadius, Rect, Sense, Stroke, Ui, pos2, v
 use letter_editor::{BorderPreset, Command, CoverLayout, PictureWrap};
 use letter_model::BreakKind;
 use letter_model::Color;
+use letter_model::{TableArea, TableAreas, TableLook};
 
 use crate::i18n::tr;
 use crate::icons::{Icon, icon_button, icon_text_button};
@@ -51,7 +52,72 @@ pub const TABLE_KEYTIPS: [&str; 6] = [
 
 /// Подсказки клавиш вкладки «Конструктор таблиц» (для проверки).
 #[cfg(test)]
-pub const DESIGN_KEYTIPS: [&str; 2] = ["keytip-design-shading", "keytip-design-borders"];
+pub const DESIGN_KEYTIPS: [&str; 9] = [
+    "keytip-design-shading",
+    "keytip-design-borders",
+    "keytip-table-styles",
+    "keytip-look-header-row",
+    "keytip-look-total-row",
+    "keytip-look-banded-rows",
+    "keytip-look-first-column",
+    "keytip-look-last-column",
+    "keytip-look-banded-columns",
+];
+
+/// Стиль таблицы в галерее «Стили таблиц»: подпись и сам стиль.
+#[derive(Debug, Clone)]
+pub struct GalleryTableStyle {
+    /// Подпись (всплывающая подсказка).
+    pub label: String,
+    /// Стиль.
+    pub style: letter_model::Style,
+    /// Готовый стиль (иначе — стиль из документа).
+    pub preset: bool,
+}
+
+/// Стили для галереи «Стили таблиц»: сначала готовые стили (если такой
+/// уже есть в документе — его вариант из документа), затем остальные
+/// стили таблиц документа (кроме стиля по умолчанию).
+pub fn table_gallery(doc: &letter_model::Document) -> Vec<GalleryTableStyle> {
+    let mut out = Vec::new();
+    for preset in letter_editor::TablePreset::ALL {
+        let kind = match preset {
+            letter_editor::TablePreset::Plain => tr("table-style-plain"),
+            letter_editor::TablePreset::Grid => tr("table-style-grid"),
+            letter_editor::TablePreset::List => tr("table-style-list"),
+        };
+        for color in 0..letter_editor::PRESET_COLORS.len() {
+            let mut style = letter_editor::table_preset(doc, preset, color);
+            if let Some(own) = doc.styles.get(&style.id) {
+                style = own.clone();
+            }
+            let color = if color == 0 {
+                tr("table-color-text").to_string()
+            } else {
+                format!("{} {color}", tr("table-color-accent"))
+            };
+            out.push(GalleryTableStyle {
+                label: format!("{kind}: {color}"),
+                style,
+                preset: true,
+            });
+        }
+    }
+    let others: Vec<GalleryTableStyle> = doc
+        .styles
+        .styles
+        .iter()
+        .filter(|s| s.kind == letter_model::StyleKind::Table && !s.is_default)
+        .filter(|s| !out.iter().any(|g| g.style.id == s.id))
+        .map(|s| GalleryTableStyle {
+            label: s.name.clone().unwrap_or_else(|| s.id.clone()),
+            style: s.clone(),
+            preset: false,
+        })
+        .collect();
+    out.extend(others);
+    out
+}
 
 /// Подсказки клавиш вкладки «Формат рисунка» (для проверки).
 #[cfg(test)]
@@ -644,6 +710,42 @@ fn wrap_label(wrap: PictureWrap) -> &'static str {
 /// Вкладка «Конструктор таблиц»: заливка и границы ячеек.
 pub fn table_design(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     let enabled = info.has_document && info.in_table;
+    let look = info.table_look.unwrap_or(TableLook::WORD);
+    group(ui, tr("group-table-style-options"), |ui| {
+        look_options(ui, look, enabled, out);
+    });
+    group(ui, tr("group-table-styles"), |ui| {
+        menu_button(
+            ui,
+            Icon::Table,
+            tr("table-styles"),
+            tr("table-styles-hint"),
+            "keytip-table-styles",
+            enabled,
+            |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(420.0)
+                    .show(ui, |ui| {
+                        let (presets, others): (Vec<_>, Vec<_>) =
+                            info.table_styles.iter().partition(|g| g.preset);
+                        for (title, entries, id) in [
+                            (tr("table-styles-ready"), presets, "letter-table-presets"),
+                            (tr("table-styles-document"), others, "letter-table-document"),
+                        ] {
+                            if entries.is_empty() {
+                                continue;
+                            }
+                            ui.label(egui::RichText::new(title).small());
+                            let picked = table_style_grid(ui, id, &entries, info, look);
+                            if let Some(style) = picked {
+                                out.push(RibbonCommand::Edit(Command::TableStyle(Box::new(style))));
+                                ui.close();
+                            }
+                        }
+                    });
+            },
+        );
+    });
     group(ui, tr("group-shading"), |ui| {
         menu_button(
             ui,
@@ -690,6 +792,207 @@ pub fn table_design(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>
             },
         );
     });
+}
+
+/// Образцы стилей таблиц по семь в ряд; возвращает выбранный стиль.
+fn table_style_grid(
+    ui: &mut Ui,
+    id: &str,
+    entries: &[&GalleryTableStyle],
+    info: &RibbonInfo,
+    look: TableLook,
+) -> Option<letter_model::Style> {
+    let mut picked = None;
+    egui::Grid::new(id).spacing(vec2(4.0, 4.0)).show(ui, |ui| {
+        let columns = letter_editor::PRESET_COLORS.len();
+        for (i, entry) in entries.iter().enumerate() {
+            let current = info.table_style.as_deref() == Some(&entry.style.id);
+            let response =
+                table_preview(ui, &entry.style, look, current).on_hover_text(&entry.label);
+            // Название образца — для диктора.
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &entry.label));
+            if response.clicked() {
+                picked = Some(entry.style.clone());
+            }
+            if (i + 1) % columns == 0 {
+                ui.end_row();
+            }
+        }
+    });
+    picked
+}
+
+/// «Параметры стилей таблиц»: какие части таблицы стиль оформляет
+/// по-своему (строка заголовка, полосы…). Два столбца по три флажка.
+fn look_options(ui: &mut Ui, look: TableLook, enabled: bool, out: &mut Vec<RibbonCommand>) {
+    type Get = fn(&mut TableLook) -> &mut bool;
+    // Для полос в модели хранится «без полос», а флажок — «полосы».
+    let options: [(&str, &str, Get, bool); 6] = [
+        (
+            "look-header-row",
+            "keytip-look-header-row",
+            |l| &mut l.first_row,
+            false,
+        ),
+        (
+            "look-total-row",
+            "keytip-look-total-row",
+            |l| &mut l.last_row,
+            false,
+        ),
+        (
+            "look-banded-rows",
+            "keytip-look-banded-rows",
+            |l| &mut l.no_h_band,
+            true,
+        ),
+        (
+            "look-first-column",
+            "keytip-look-first-column",
+            |l| &mut l.first_column,
+            false,
+        ),
+        (
+            "look-last-column",
+            "keytip-look-last-column",
+            |l| &mut l.last_column,
+            false,
+        ),
+        (
+            "look-banded-columns",
+            "keytip-look-banded-columns",
+            |l| &mut l.no_v_band,
+            true,
+        ),
+    ];
+    ui.add_enabled_ui(enabled, |ui| {
+        ui.horizontal(|ui| {
+            for column in options.chunks(3) {
+                ui.vertical(|ui| {
+                    for &(label, key, get, inverted) in column {
+                        let mut toggled = look;
+                        *get(&mut toggled) ^= true;
+                        let mut copy = look;
+                        let mut on = *get(&mut copy) != inverted;
+                        let response = ui.checkbox(&mut on, tr(label));
+                        let command = RibbonCommand::Edit(Command::TableLook(toggled));
+                        keytips::tip(
+                            ui,
+                            &response,
+                            Level::Commands,
+                            key,
+                            TipAction::Command(command.clone()),
+                        );
+                        if response.changed() {
+                            out.push(command);
+                        }
+                    }
+                });
+            }
+        });
+    });
+}
+
+/// Маленький образец таблицы 5 × 5 в стиле `style` при параметрах `look`
+/// для галереи «Стили таблиц»: заливка, линии и «текст» ячеек (полоска
+/// цвета текста, у полужирного — толще). `current` — стиль таблицы
+/// с курсором (обведён).
+fn table_preview(
+    ui: &mut Ui,
+    style: &letter_model::Style,
+    look: TableLook,
+    current: bool,
+) -> egui::Response {
+    const ROWS: usize = 5;
+    const COLUMNS: usize = 5;
+    let (rect, response) = ui.allocate_exact_size(vec2(72.0, 52.0), Sense::click());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, Color32::WHITE);
+    let rgb = |c: Option<Color>| match c {
+        Some(Color::Rgb(r, g, b)) => Color32::from_rgb(r, g, b),
+        _ => Color32::BLACK,
+    };
+    let line = |b: &Option<letter_model::Border>| {
+        b.as_ref().filter(|b| !b.is_none()).map(|b| {
+            Stroke::new(
+                if b.size.unwrap_or(4) > 6 { 1.5 } else { 1.0 },
+                rgb(b.color),
+            )
+        })
+    };
+    let table = style.table.borders.clone().unwrap_or_default();
+    let (w, h) = (rect.width() / COLUMNS as f32, rect.height() / ROWS as f32);
+    for r in 0..ROWS {
+        for c in 0..COLUMNS {
+            let areas = TableAreas::of_cell(look, (r, ROWS), ((c, c + 1), COLUMNS), (1, 1));
+            let mut fill = style.table.shading.as_ref().and_then(|s| s.background());
+            let mut text = Color32::BLACK;
+            let mut bold = false;
+            let pick = |edge: bool, outer: &Option<_>, inner: &Option<_>| {
+                if edge { line(outer) } else { line(inner) }
+            };
+            let mut sides = [
+                pick(r == 0, &table.top, &table.inside_h),
+                pick(r + 1 == ROWS, &table.bottom, &table.inside_h),
+                pick(c == 0, &table.left, &table.inside_v),
+                pick(c + 1 == COLUMNS, &table.right, &table.inside_v),
+            ];
+            for area in TableArea::ORDER.iter().filter(|a| areas.contains(**a)) {
+                for part in style.table_areas.iter().filter(|p| p.area == *area) {
+                    if let Some(shading) = &part.cell.shading {
+                        fill = shading.background();
+                    }
+                    if part.run.color.is_some() {
+                        text = rgb(part.run.color);
+                    }
+                    if let Some(on) = part.run.bold {
+                        bold = on;
+                    }
+                    if let Some(b) = &part.cell.borders {
+                        for (side, border) in
+                            sides.iter_mut().zip([&b.top, &b.bottom, &b.left, &b.right])
+                        {
+                            if border.is_some() {
+                                *side = line(border);
+                            }
+                        }
+                    }
+                }
+            }
+            let cell = Rect::from_min_size(
+                pos2(rect.left() + c as f32 * w, rect.top() + r as f32 * h),
+                vec2(w, h),
+            );
+            if let Some((r, g, b)) = fill {
+                painter.rect_filled(cell, 0.0, Color32::from_rgb(r, g, b));
+            }
+            let y = cell.center().y;
+            painter.line_segment(
+                [pos2(cell.left() + 3.0, y), pos2(cell.right() - 4.0, y)],
+                Stroke::new(if bold { 2.0 } else { 1.0 }, text),
+            );
+            let [top, bottom, left, right] = sides;
+            for (stroke, a, b) in [
+                (top, cell.left_top(), cell.right_top()),
+                (bottom, cell.left_bottom(), cell.right_bottom()),
+                (left, cell.left_top(), cell.left_bottom()),
+                (right, cell.right_top(), cell.right_bottom()),
+            ] {
+                if let Some(stroke) = stroke {
+                    painter.line_segment([a, b], stroke);
+                }
+            }
+        }
+    }
+    let frame = if current || response.hovered() {
+        Stroke::new(2.0, Palette::of(ui.ctx()).accent_text)
+    } else {
+        Stroke::new(1.0, Color32::from_gray(200))
+    };
+    ui.painter()
+        .rect_stroke(rect, 0.0, frame, egui::StrokeKind::Outside);
+    response
 }
 
 /// Меню «Заливка» ячеек.
