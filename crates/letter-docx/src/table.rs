@@ -362,7 +362,15 @@ pub(crate) fn read_paragraph_borders(element: &Element) -> Option<ParagraphBorde
 }
 
 pub(crate) fn read_border(element: &Element) -> Option<Border> {
-    if !element.only_attrs(&["val", "sz", "space", "color"]) {
+    if !element.only_attrs(&[
+        "val",
+        "sz",
+        "space",
+        "color",
+        "themeColor",
+        "themeShade",
+        "themeTint",
+    ]) {
         return None;
     }
     let number = |name: &str| -> Result<Option<u32>, ()> {
@@ -379,6 +387,7 @@ pub(crate) fn read_border(element: &Element) -> Option<Border> {
             Some(v) => Some(parse_color(v)?),
             None => None,
         },
+        theme_color: crate::document::read_theme_color(element)?,
     })
 }
 
@@ -614,6 +623,7 @@ pub(crate) fn border_lines<const N: usize>(sides: [(&str, &Option<Border>); N]) 
             if let Some(color) = border.color {
                 attrs.push(("w:color", hex_color(color)));
             }
+            crate::serialize::theme_color_attrs(&mut attrs, border.theme_color.as_ref());
             inner.push_str(&empty(side, &attrs));
         }
     }
@@ -686,12 +696,25 @@ mod tests {
     }
 
     #[test]
-    fn borders_with_theme_colors_stay_raw() {
-        let props = read_table_props(&parse(
-            "<w:tblPr><w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:themeColor=\"accent1\"/></w:tblBorders></w:tblPr>",
+    fn borders_with_theme_colors_are_read_and_written() {
+        let source = "<w:tblPr><w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:color=\"4F81BD\" w:themeColor=\"accent1\" w:themeShade=\"BF\"/></w:tblBorders></w:tblPr>";
+        let props = read_table_props(&parse(source));
+        assert!(props.unknown.is_empty());
+        let top = props
+            .borders
+            .as_ref()
+            .and_then(|b| b.top.clone())
+            .expect("линия сверху");
+        let theme = top.theme_color.as_ref().expect("цвет темы");
+        assert_eq!((theme.name.as_str(), theme.shade), ("accent1", Some(0xBF)));
+        let written = element("w:tblPr", &table_props(&props));
+        assert_eq!(read_table_props(&parse(&written)), props);
+        // Оттенок без цвета темы непонятен — элемент сохраняется как есть.
+        let odd = read_table_props(&parse(
+            "<w:tblPr><w:tblBorders><w:top w:val=\"single\" w:themeShade=\"BF\"/></w:tblBorders></w:tblPr>",
         ));
-        assert_eq!(props.borders, None);
-        assert_eq!(props.unknown.len(), 1);
+        assert_eq!(odd.borders, None);
+        assert_eq!(odd.unknown.len(), 1);
     }
 
     #[test]

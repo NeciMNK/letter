@@ -480,6 +480,7 @@ fn set_borders(props: &mut ParagraphProps, style: &ParagraphBorders, edge: Borde
                 size: None,
                 space: None,
                 color: None,
+                theme_color: None,
             })
         } else {
             None

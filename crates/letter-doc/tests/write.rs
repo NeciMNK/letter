@@ -79,6 +79,21 @@ fn profile(doc: &Document) -> Vec<String> {
         let mut props = doc.resolve_paragraph(&p.props);
         props.style = None;
         props.numbering = None;
+        // В .doc у линий границ нет ссылок на цвета темы, только сам цвет.
+        let b = &mut props.borders;
+        for side in [
+            &mut b.top,
+            &mut b.left,
+            &mut b.bottom,
+            &mut b.right,
+            &mut b.between,
+            &mut b.bar,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            side.theme_color = None;
+        }
         out.push(format!("{text:?} {props:?}"));
         let mut pieces: Vec<(String, String)> = Vec::new();
         for inline in &p.content {

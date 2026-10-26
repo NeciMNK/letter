@@ -754,6 +754,7 @@ pub fn set_cell_borders(
         size: None,
         space: None,
         color: None,
+        theme_color: None,
     };
     for (r, c, a, b) in block.cells(table) {
         let edges = [

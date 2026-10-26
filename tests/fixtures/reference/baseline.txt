@@ -6,9 +6,9 @@
 libreoffice/bold-italic 1 1
 libreoffice/empty 0 0
 libreoffice/header-footer 3 2
-libreoffice/headings 7 1
+libreoffice/headings 7 6
 libreoffice/image 2 1
-libreoffice/lists 9 2
+libreoffice/lists 9 1
 libreoffice/pages 10 2
 libreoffice/plain-text 2 1
 libreoffice/ru-en 3 0
@@ -16,9 +16,9 @@ libreoffice/table 5 5
 word/bold-italic 1 1
 word/empty 0 0
 word/header-footer 3 3
-word/headings 7 1
+word/headings 7 7
 word/image 2 2
-word/lists 9 2
+word/lists 9 9
 word/pages 65 65
 word/plain-text 4 4
 word/ru-en 3 3

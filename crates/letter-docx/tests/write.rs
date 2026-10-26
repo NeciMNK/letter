@@ -368,6 +368,7 @@ fn everything() -> Document {
                 size: Some(6),
                 space: Some(1),
                 color: Some(Color::Rgb(0x1F, 0x4E, 0x79)),
+                theme_color: None,
             }),
             between: Some(Border::single(4)),
             ..ParagraphBorders::default()
@@ -457,6 +458,7 @@ fn everything() -> Document {
                                             size: None,
                                             space: None,
                                             color: None,
+                                            theme_color: None,
                                         }),
                                         ..Borders::default()
                                     }),
@@ -580,6 +582,7 @@ fn page_color_and_borders_survive() {
                 size: Some(6),
                 space: Some(24),
                 color: Some(Color::Rgb(0x1F, 0x4E, 0x79)),
+                theme_color: None,
             }),
             from_page_edge: true,
             display: PageBorderDisplay::NotFirstPage,
