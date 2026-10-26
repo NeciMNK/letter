@@ -143,6 +143,8 @@ pub struct ControlMenu {
     pub items: Vec<String>,
     /// Элемент выбора даты.
     pub date: bool,
+    /// Выбранная в нём дата.
+    pub chosen: Option<crate::calendar::Day>,
 }
 
 /// Меню элемента у места `at`; `None`, если там нет списка или даты.
@@ -155,10 +157,12 @@ pub fn control_menu_for(doc: &Document, at: Position) -> Option<ControlMenu> {
         ControlKind::List { items, .. } => Some(ControlMenu {
             items: items.into_iter().map(|i| i.text).collect(),
             date: false,
+            chosen: None,
         }),
         ControlKind::Date { .. } => Some(ControlMenu {
             items: Vec::new(),
             date: true,
+            chosen: control.full_date(),
         }),
         _ => None,
     }
@@ -180,9 +184,23 @@ pub fn control_menu(ui: &mut Ui, menu: &ControlMenu, out: &mut Vec<RibbonCommand
             ui.close();
         }
     }
-    if menu.date && ui.button(tr("control-today")).clicked() {
-        out.push(RibbonCommand::ControlToday);
-        ui.close();
+    if menu.date {
+        let (now, _) = crate::fields::now();
+        let today = (now.year, now.month, now.day);
+        let id = eframe::egui::Id::NULL.with("letter-control-calendar");
+        if let Some((year, month, day)) = crate::calendar::calendar(ui, id, menu.chosen, today) {
+            out.push(RibbonCommand::ControlDate(letter_editor::DateTime {
+                year,
+                month,
+                day,
+                ..letter_editor::DateTime::default()
+            }));
+            ui.close();
+        }
+        if ui.button(tr("control-today")).clicked() {
+            out.push(RibbonCommand::ControlToday);
+            ui.close();
+        }
     }
     ui.separator();
 }
@@ -266,6 +284,7 @@ mod tests {
         let menu = ControlMenu {
             items: vec!["Да".into(), "Нет".into()],
             date: true,
+            chosen: Some((2026, 10, 23)),
         };
         let mut h = Harness::new_ui_state(
             move |ui, out: &mut Vec<RibbonCommand>| control_menu(ui, &menu, out),
@@ -276,11 +295,20 @@ mod tests {
         h.run();
         h.get_by_label("Сегодня").click();
         h.run();
+        h.get_by_label("15").click();
+        h.run();
+        let day = letter_editor::DateTime {
+            year: 2026,
+            month: 10,
+            day: 15,
+            ..letter_editor::DateTime::default()
+        };
         assert_eq!(
             *h.state(),
             [
                 RibbonCommand::ChooseListItem(1),
-                RibbonCommand::ControlToday
+                RibbonCommand::ControlToday,
+                RibbonCommand::ControlDate(day),
             ]
         );
     }

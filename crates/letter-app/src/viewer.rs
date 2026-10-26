@@ -129,6 +129,8 @@ const UNTITLED: &str = "new-document";
 
 /// Заливка выделения: полупрозрачная серо-голубая, текст под ней виден.
 const SELECTION_COLOR: Color32 = Color32::from_rgba_premultiplied(0, 50, 110, 70);
+/// Рамка и ярлык элемента управления содержимым (сине-серые, как в Word).
+const CONTROL_FRAME_COLOR: Color32 = Color32::from_rgb(0x6F, 0x8F, 0xB8);
 /// Подсветка текста примечания.
 const COMMENT_COLOR: Color32 = Color32::from_rgba_premultiplied(120, 90, 0, 50);
 /// Подсветка текста примечания, в котором курсор.
@@ -2926,6 +2928,9 @@ impl Viewer {
                     let (today, _) = crate::fields::now();
                     actions.push(Action::Edit(Command::ControlDate(today)));
                 }
+                RibbonCommand::ControlDate(date) => {
+                    actions.push(Action::Edit(Command::ControlDate(date)));
+                }
                 RibbonCommand::Style(id) => actions.push(Action::Edit(Command::Style(id))),
                 // В колонтитул сноску не вставить.
                 RibbonCommand::Edit(Command::InsertNote(_))
@@ -3911,6 +3916,63 @@ impl Viewer {
                 }
             }
 
+            // Рамка элемента управления содержимым, как в Word: у курсора —
+            // с названием, под мышью — бледная.
+            if document.story.is_none() {
+                let doc = &document.doc;
+                let current = letter_editor::control_range(doc, document.cursor);
+                let hovered = ui
+                    .input(|i| i.pointer.hover_pos())
+                    .and_then(|p| {
+                        let page = nearest_page(&placement.clips, p - origin.to_vec2())?;
+                        let local = (p - screen_rect(page).min) * points;
+                        hit_test(&document.layout, page, local.x, local.y)
+                    })
+                    .and_then(|at| letter_editor::control_range(doc, at))
+                    .filter(|(c, _, _)| {
+                        !current
+                            .as_ref()
+                            .is_some_and(|(now, _, _)| Arc::ptr_eq(now, c))
+                    });
+                for (found, strong) in [(hovered, false), (current, true)] {
+                    let Some((control, start, end)) = found else {
+                        continue;
+                    };
+                    let mut boxes: Vec<(usize, Rect)> = Vec::new();
+                    let mut add = |page: usize, rect: Rect| match boxes.last_mut() {
+                        Some((p, last)) if *p == page => *last = last.union(rect),
+                        _ => boxes.push((page, rect)),
+                    };
+                    let rects = selection_rects(&document.layout, Selection::new(start, end));
+                    if rects.is_empty()
+                        && let Some(c) = caret(&document.layout, start)
+                    {
+                        add(
+                            c.page,
+                            Rect::from_min_size(pos2(c.x, c.top), Vec2::new(4.0, c.height)),
+                        );
+                    }
+                    for r in rects {
+                        add(
+                            r.page,
+                            Rect::from_min_max(pos2(r.left, r.top), pos2(r.right, r.bottom)),
+                        );
+                    }
+                    let screen: Vec<Rect> = boxes
+                        .into_iter()
+                        .filter(|(page, _)| *page < placement.rects.len())
+                        .map(|(page, r)| {
+                            let min = screen_rect(page).min;
+                            Rect::from_min_max(
+                                min + r.min.to_vec2() / points,
+                                min + r.max.to_vec2() / points,
+                            )
+                        })
+                        .collect();
+                    paint_control_frame(ui.painter(), &screen, control.title().as_deref(), strong);
+                }
+            }
+
             // Выделение — полупрозрачная заливка поверх текста. У
             // выделенного рисунка вместо неё — рамка с маркерами.
             let selection = Selection::new(document.anchor, document.cursor);
@@ -4254,6 +4316,34 @@ fn page_box(page: &letter_layout::Page, mode: ViewMode) -> PageBox {
 }
 
 /// Пунктир между листами в черновике, по нижнему краю полосы `band`.
+/// Рамка элемента управления содержимым вокруг его кусков `rects` (по
+/// одному на страницу) и ярлык с названием над первым; `strong` — курсор
+/// внутри (иначе элемент только под мышью, рамка бледнее и без ярлыка).
+fn paint_control_frame(painter: &egui::Painter, rects: &[Rect], title: Option<&str>, strong: bool) {
+    let color = if strong {
+        CONTROL_FRAME_COLOR
+    } else {
+        CONTROL_FRAME_COLOR.gamma_multiply(0.5)
+    };
+    for rect in rects {
+        painter.rect_stroke(
+            rect.expand2(Vec2::new(2.0, 1.0)),
+            0.0,
+            egui::Stroke::new(1.0, color),
+            egui::StrokeKind::Outside,
+        );
+    }
+    let (Some(first), Some(title), true) = (rects.first(), title, strong) else {
+        return;
+    };
+    let font = egui::FontId::proportional(11.0);
+    let galley = painter.layout_no_wrap(title.to_owned(), font, Color32::WHITE);
+    let size = galley.size() + Vec2::new(8.0, 2.0);
+    let tab = Rect::from_min_size(first.left_top() - Vec2::new(3.0, size.y + 2.0), size);
+    painter.rect_filled(tab, 0.0, color);
+    painter.galley(tab.min + Vec2::new(4.0, 1.0), galley, Color32::WHITE);
+}
+
 fn paint_page_break(painter: &egui::Painter, band: Rect) {
     let y = band.bottom();
     let stroke = egui::Stroke::new(1.0, Color32::from_gray(150));

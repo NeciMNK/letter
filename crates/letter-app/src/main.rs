@@ -8,6 +8,7 @@
 
 mod backstage;
 mod bookmark_dialog;
+mod calendar;
 mod clipboard;
 mod comments;
 mod context_menu;

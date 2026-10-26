@@ -1004,3 +1004,9 @@ equation-function = Function
 keytip-equation-function = U
 equation-matrix = Matrix
 keytip-equation-matrix = M
+
+# Date picker calendar
+calendar-months = January February March April May June July August September October November December
+calendar-weekdays = Mo Tu We Th Fr Sa Su
+calendar-previous = Previous month
+calendar-next = Next month

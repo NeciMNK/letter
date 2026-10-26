@@ -472,6 +472,15 @@ impl History {
         if edits_text && !editable(doc, start, end) {
             return selection;
         }
+        // Элемент с запретом удаления не удаляется целиком.
+        let forward = match command {
+            Command::DeleteBackward => Some(false),
+            Command::DeleteForward => Some(true),
+            _ => None,
+        };
+        if edits_text && crate::controls::removes_locked_control(doc, start, end, forward) {
+            return selection;
+        }
         let command = match command {
             // Набранный текст заменяет подсказку элемента целиком.
             Command::Type(text) if selection.is_empty() && placeholder_at(doc, start) => {
