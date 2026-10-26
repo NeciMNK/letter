@@ -13,6 +13,7 @@ mod clipboard;
 mod comments;
 mod context_menu;
 mod design;
+mod developer;
 mod equation;
 mod fields;
 mod files;

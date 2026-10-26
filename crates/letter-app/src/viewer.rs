@@ -2928,6 +2928,14 @@ impl Viewer {
                     let (today, _) = crate::fields::now();
                     actions.push(Action::Edit(Command::ControlDate(today)));
                 }
+                RibbonCommand::InsertControl(kind) => {
+                    let setup = letter_editor::ControlSetup {
+                        kind,
+                        placeholder: crate::developer::placeholder(kind).to_string(),
+                        russian: crate::i18n::language() == crate::i18n::Language::Russian,
+                    };
+                    actions.push(Action::Edit(Command::InsertControl(Box::new(setup))));
+                }
                 RibbonCommand::ControlDate(date) => {
                     actions.push(Action::Edit(Command::ControlDate(date)));
                 }
@@ -5460,6 +5468,26 @@ mod tests {
         let end = document.cursor;
         document.set_selection(Selection::new(end, end));
         assert!(viewer.ribbon_info().shape.is_none());
+    }
+
+    #[test]
+    fn content_control_is_inserted_typed_and_saved() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.new_document();
+        let kind = letter_editor::NewControl::PlainText;
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::InsertControl(kind)]);
+        assert_eq!(first_text(&mut viewer), "Место для ввода текста.");
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::Edit(Command::Type("Иван".into()))],
+        );
+        assert_eq!(first_text(&mut viewer), "Иван");
+        let doc = &viewer.document.as_ref().unwrap().doc;
+        let reread = letter_docx::read_bytes(&letter_docx::write_bytes(doc).unwrap()).unwrap();
+        let (control, _, _) = letter_editor::control_at(&reread, Position::new(0, 0)).unwrap();
+        assert_eq!(control.kind(), letter_model::ControlKind::Text);
+        assert!(!control.showing_placeholder());
     }
 
     #[test]

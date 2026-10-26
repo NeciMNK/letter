@@ -4,11 +4,13 @@
 use std::sync::Arc;
 
 use letter_model::{
-    ContentControl, ContentControlRef, ControlKind, ControlLock, Document, Inline, Paragraph,
-    RunContent,
+    Color, ContentControl, ContentControlRef, ControlKind, ControlLock, Document, Inline,
+    Paragraph, RawXml, Run, RunContent, RunProps, StyleKind,
 };
 
-use crate::edit::{item_len, paragraph_mut, paragraph_ref, plain_text, text_len};
+use crate::edit::{
+    clamp_offset, item_len, paragraph_mut, paragraph_ref, plain_text, split_content, text_len, tidy,
+};
 use crate::fields::{DateTime, format_date};
 use crate::position::Position;
 
@@ -143,6 +145,194 @@ fn block_range(doc: &Document, index: usize, control: &ContentControlRef) -> (Po
     }
     let end = paragraph_ref(doc, last).map_or(0, text_len);
     (Position::new(first, 0), Position::new(last, end))
+}
+
+/// Вид нового элемента управления (вкладка «Разработчик»).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NewControl {
+    /// Форматированный текст.
+    RichText,
+    /// Обычный текст.
+    PlainText,
+    /// Флажок.
+    CheckBox,
+    /// Поле со списком (можно вписать своё).
+    ComboBox,
+    /// Раскрывающийся список.
+    DropDownList,
+    /// Выбор даты.
+    Date,
+}
+
+/// Новый элемент управления: вид, текст-подсказка и язык (формат даты:
+/// русский — `dd.MM.yyyy`, иначе `M/d/yyyy`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ControlSetup {
+    /// Вид.
+    pub kind: NewControl,
+    /// Текст-подсказка («Место для ввода текста.»).
+    pub placeholder: String,
+    /// Русский язык.
+    pub russian: bool,
+}
+
+/// Пространства имён свойств нового элемента (свойства пишутся в файл
+/// как есть).
+const CONTROL_NS: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml""#;
+
+/// Текст для значения атрибута XML.
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Шрифт флажка, как у Word.
+const CHECKBOX_FONT: &str = "MS Gothic";
+
+impl ControlSetup {
+    /// Свойства элемента (`w:sdtPr`); `placeholder` — показывает подсказку.
+    fn props(&self, id: u32, placeholder: bool) -> String {
+        let shown = if placeholder {
+            "<w:showingPlcHdr/>"
+        } else {
+            ""
+        };
+        let item = format!(
+            r#"<w:listItem w:displayText="{}" w:value=""/>"#,
+            escape(&self.placeholder)
+        );
+        let kind = match self.kind {
+            NewControl::RichText => String::new(),
+            NewControl::PlainText => "<w:text/>".into(),
+            NewControl::CheckBox => format!(
+                r#"<w14:checkbox><w14:checked w14:val="0"/><w14:checkedState w14:val="2612" w14:font="{CHECKBOX_FONT}"/><w14:uncheckedState w14:val="2610" w14:font="{CHECKBOX_FONT}"/></w14:checkbox>"#
+            ),
+            NewControl::ComboBox => format!("<w:comboBox>{item}</w:comboBox>"),
+            NewControl::DropDownList => format!("<w:dropDownList>{item}</w:dropDownList>"),
+            NewControl::Date => {
+                let (format, lid) = if self.russian {
+                    ("dd.MM.yyyy", "ru-RU")
+                } else {
+                    ("M/d/yyyy", "en-US")
+                };
+                format!(
+                    r#"<w:date><w:dateFormat w:val="{format}"/><w:lid w:val="{lid}"/><w:storeMappedDataAs w:val="dateTime"/><w:calendar w:val="gregorian"/></w:date>"#
+                )
+            }
+        };
+        let shown = if self.kind == NewControl::CheckBox {
+            ""
+        } else {
+            shown
+        };
+        format!(r#"<w:sdtPr {CONTROL_NS}><w:id w:val="{id}"/>{shown}{kind}</w:sdtPr>"#)
+    }
+}
+
+/// Вставляет новый элемент у `start`. Если выделен текст `start..end`
+/// в одном абзаце, текстовый элемент охватывает его (как в Word); иначе
+/// элемент вставляется с текстом-подсказкой (флажок — со знаком ☐).
+/// Внутри другого элемента ничего не вставляется. Возвращает место
+/// курсора: начало элемента (набор заменит подсказку), у флажка — за ним.
+pub fn insert_control(
+    doc: &mut Document,
+    start: Position,
+    end: Position,
+    setup: &ControlSetup,
+) -> Position {
+    if control_range(doc, start).is_some() || control_range(doc, end).is_some() {
+        return start;
+    }
+    let id = new_control_id(doc, start);
+    let text_kind = matches!(setup.kind, NewControl::RichText | NewControl::PlainText);
+    if text_kind && start.paragraph == end.paragraph && start.offset < end.offset {
+        let control = Arc::new(ContentControl {
+            props: Some(RawXml::new(setup.props(id, false))),
+            end_props: None,
+        });
+        if let Some(paragraph) = paragraph_mut(doc, start.paragraph) {
+            crate::format::apply(paragraph, start.offset, end.offset, |props| {
+                props.control = Some(control.clone());
+            });
+        }
+        return end;
+    }
+    let checkbox = setup.kind == NewControl::CheckBox;
+    let style = (!checkbox).then(|| placeholder_style(doc));
+    let control = Arc::new(ContentControl {
+        props: Some(RawXml::new(setup.props(id, !checkbox))),
+        end_props: None,
+    });
+    let Some(paragraph) = paragraph_mut(doc, start.paragraph) else {
+        return start;
+    };
+    let offset = clamp_offset(paragraph, start.offset);
+    let mut props = props_before(paragraph, offset);
+    props.control = Some(control);
+    let text = if checkbox {
+        let font = Some(CHECKBOX_FONT.to_string());
+        props.fonts.ascii = font.clone();
+        props.fonts.h_ansi = font.clone();
+        props.fonts.east_asia = font;
+        "☐".to_string()
+    } else {
+        props.style = style;
+        setup.placeholder.clone()
+    };
+    let len = text.len();
+    let tail = split_content(paragraph, offset);
+    paragraph.content.push(Inline::Run(Run {
+        props,
+        content: vec![RunContent::Text(text)],
+    }));
+    paragraph.content.extend(tail);
+    tidy(paragraph);
+    let at = if checkbox { offset + len } else { offset };
+    Position::new(start.paragraph, at)
+}
+
+/// Оформление фрагмента перед местом `offset` (без элемента и стиля
+/// знака) — новый текст выглядит как текст вокруг.
+fn props_before(paragraph: &Paragraph, offset: usize) -> RunProps {
+    let mut pos = 0;
+    let mut found = None;
+    for run in paragraph.runs() {
+        if found.is_none() || pos < offset {
+            found = Some(&run.props);
+        }
+        pos += run.content.iter().map(item_len).sum::<usize>();
+        if pos >= offset {
+            break;
+        }
+    }
+    let mut props = found.cloned().unwrap_or_default();
+    props.control = None;
+    props.style = None;
+    props
+}
+
+/// Стиль текста-подсказки «Placeholder Text» (серый, как в Word);
+/// добавляется в документ, если его нет.
+fn placeholder_style(doc: &mut Document) -> String {
+    crate::notes::ensure_style(
+        doc,
+        "PlaceholderText",
+        "Placeholder Text",
+        StyleKind::Character,
+        |style| style.run.color = Some(Color::Rgb(0x66, 0x66, 0x66)),
+    )
+}
+
+/// Номер нового элемента (`w:id`): по месту и тексту документа, чтобы
+/// разные элементы не совпадали.
+fn new_control_id(doc: &Document, at: Position) -> u32 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (at.paragraph, at.offset).hash(&mut hasher);
+    doc.plain_text().len().hash(&mut hasher);
+    (hasher.finish() as u32) & 0x7fff_ffff
 }
 
 /// Фрагменты абзаца: начало, конец (байты) и элемент управления.
@@ -471,6 +661,104 @@ mod tests {
             Position::new(0, 1),
             Some(true)
         ));
+    }
+
+    fn setup(kind: NewControl) -> ControlSetup {
+        ControlSetup {
+            kind,
+            placeholder: "Место для ввода текста.".into(),
+            russian: true,
+        }
+    }
+
+    #[test]
+    fn new_controls() {
+        use crate::{Command, History, Selection};
+        let fresh = || {
+            let mut doc = Document::new();
+            doc.sections[0].blocks = vec![Paragraph::from_runs([Run::text("Имя: .")]).into()];
+            doc
+        };
+        let at = Position::new(0, "Имя: ".len());
+        // Текст с подсказкой: набор заменяет её, стиль подсказки уходит.
+        let mut doc = fresh();
+        let mut history = History::default();
+        let picked = Selection::new(at, at);
+        let command = Command::InsertControl(Box::new(setup(NewControl::PlainText)));
+        let after = history.run(&mut doc, picked, command);
+        assert_eq!(after, picked);
+        assert_eq!(text(&doc), "Имя: Место для ввода текста..");
+        assert!(placeholder_at(&doc, at));
+        let (control, _, _) = control_at(&doc, at).unwrap();
+        assert_eq!(control.kind(), ControlKind::Text);
+        assert!(doc.styles.styles.iter().any(|s| s.id == "PlaceholderText"));
+        history.run(&mut doc, after, Command::Type("Иван".into()));
+        assert_eq!(text(&doc), "Имя: Иван.");
+        assert!(!placeholder_at(&doc, at));
+        // Выделенный текст оборачивается без подсказки.
+        let mut doc = fresh();
+        let end = Position::new(0, "Имя:".len());
+        insert_control(
+            &mut doc,
+            Position::new(0, 0),
+            end,
+            &setup(NewControl::RichText),
+        );
+        let (_, from, to) = control_at(&doc, Position::new(0, 0)).unwrap();
+        assert_eq!((from.offset, to.offset), (0, end.offset));
+        assert!(!placeholder_at(&doc, from));
+        // Внутри элемента новый не вставляется.
+        let before = doc.clone();
+        insert_control(
+            &mut doc,
+            Position::new(0, 2),
+            Position::new(0, 2),
+            &setup(NewControl::Date),
+        );
+        assert_eq!(doc, before);
+        // Флажок, список, дата.
+        let mut doc = fresh();
+        let after = insert_control(&mut doc, at, at, &setup(NewControl::CheckBox));
+        assert_eq!(after.offset, at.offset + "☐".len());
+        assert!(matches!(
+            control_at(&doc, at).unwrap().0.kind(),
+            ControlKind::CheckBox { checked: false, .. }
+        ));
+        toggle_checkbox(&mut doc, at).unwrap();
+        assert_eq!(text(&doc), "Имя: ☒.");
+        let mut doc = fresh();
+        insert_control(&mut doc, at, at, &setup(NewControl::DropDownList));
+        let ControlKind::List { items, editable } = control_at(&doc, at).unwrap().0.kind() else {
+            panic!("ждали список");
+        };
+        assert!(!editable);
+        assert_eq!(items[0].text, "Место для ввода текста.");
+        let mut doc = fresh();
+        insert_control(&mut doc, at, at, &setup(NewControl::Date));
+        let day = DateTime {
+            year: 2026,
+            month: 10,
+            day: 26,
+            ..DateTime::default()
+        };
+        set_control_date(&mut doc, at, day).unwrap();
+        assert_eq!(text(&doc), "Имя: 26.10.2026.");
+    }
+
+    #[test]
+    fn enter_after_control_leaves_it() {
+        let c = control("<w:text/>");
+        let mut doc = doc_with(&c, Some("PlaceholderText"));
+        let end = Position::new(0, "до элемент".len());
+        // Абзац кончается элементом: Enter в его конце.
+        let paragraph = paragraph_mut(&mut doc, 0).unwrap();
+        paragraph.content.pop();
+        let next = crate::edit::split_paragraph(&mut doc, end);
+        let next = crate::edit::insert_text(&mut doc, next, "дальше");
+        assert!(control_at(&doc, next).is_none());
+        let typed = paragraph_ref(&doc, 1).unwrap().runs().next().unwrap();
+        assert!(typed.props.style.is_none());
+        assert!(control_at(&doc, Position::new(0, 5)).is_some());
     }
 
     #[test]
