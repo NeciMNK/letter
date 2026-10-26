@@ -51,6 +51,10 @@ const REL_FOOTER: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer";
 const REL_MAIL_MERGE_SOURCE: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/mailMergeSource";
+const REL_RECIPIENT_DATA: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/recipientData";
+const CT_RECIPIENT_DATA: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.mailMergeRecipientData+xml";
 const REL_HYPERLINK: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
 const REL_FOOTNOTES: &str =
@@ -317,12 +321,38 @@ pub(crate) fn write<W: Write + Seek>(
         );
         links.external_of_kind(&name, REL_MAIL_MERGE_SOURCE, None, address)
     });
+    // Получатели без отметок — своя часть, связанная с настройками.
+    let recipients = doc
+        .settings
+        .mail_merge
+        .as_ref()
+        .filter(|m| !m.excluded.is_empty());
+    let recipients_id = recipients.map(|merge| {
+        let settings_name = links.find_or_add(
+            &main,
+            REL_SETTINGS,
+            &["/settings"],
+            &join(base_dir, "settings.xml"),
+            false,
+        );
+        let (id, name) = links.internal_of_kind(
+            &settings_name,
+            REL_RECIPIENT_DATA,
+            &join(base_dir, "recipientData.xml"),
+        );
+        let xml = crate::settings::recipients_xml(&merge.excluded);
+        parts.push((name.clone(), xml.into_bytes().into()));
+        ensure_override(&mut overrides, &name, CT_RECIPIENT_DATA);
+        replaced.push(name);
+        id
+    });
     if let Some(xml) = crate::settings::updated_settings_with(
         original,
         &doc.settings,
         doc.background.is_some(),
         &externals,
         source_id.as_deref(),
+        recipients_id.as_deref(),
     ) {
         let name = links.find_or_add(
             &main,
@@ -867,6 +897,24 @@ impl<'a> Links<'a> {
         let name = self.free_name(wanted);
         let id = push_relationship(&mut self.changed[index].1, kind, &name);
         (id, name)
+    }
+
+    /// Внутренняя связь типа `kind` части `from`: имя связи и части —
+    /// прежние, если такая связь есть, иначе новая связь с частью рядом
+    /// с `wanted`.
+    fn internal_of_kind(&mut self, from: &str, kind: &str, wanted: &str) -> (String, String) {
+        let suffix = kind.rsplit_once('/').map_or(kind, |(_, s)| s);
+        let rels_name = rels_part_for(from);
+        let found = |rels: &[Relationship]| {
+            rels.iter()
+                .find(|r| !r.external && r.kind.ends_with(&format!("/{suffix}")))
+                .map(|r| (r.id.clone(), r.target.clone()))
+        };
+        let existing = match self.changed.iter().find(|(n, _)| *n == rels_name) {
+            Some((_, rels)) => found(rels),
+            None => found(&self.load(from, &rels_name)),
+        };
+        existing.unwrap_or_else(|| self.add(from, kind, wanted))
     }
 
     /// Внешняя связь части `from` с адресом гиперссылки `address`:

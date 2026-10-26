@@ -52,7 +52,7 @@ pub use control::{
     CheckBoxSymbols, ContentControl, ContentControlRef, ControlKind, ControlLock, ControlNesting,
     ControlStep, ListItem,
 };
-pub use document::{Document, MailMerge, Settings, for_each_picture_in};
+pub use document::{Document, MailMerge, RecipientMark, Settings, for_each_picture_in};
 pub use drawing::Drawing;
 pub use field::{Field, alphabetic, fields, roman, set_field_result};
 pub use math::{FractionKind, Math, MathAlign, MathList, MathNode};

@@ -1141,6 +1141,7 @@ fn mail_merge_source_survives_round_trip() {
         data_type: Some("textFile".into()),
         query: Some("SELECT * FROM /home/nikita/Клиенты.csv".into()),
         data_source: Some("file:///home/nikita/Клиенты.csv".into()),
+        excluded: Vec::new(),
     });
     let bytes = write_bytes(&doc).unwrap();
     let parts = zip_parts(&bytes);
@@ -1163,4 +1164,50 @@ fn mail_merge_source_survives_round_trip() {
     let mut plain = again.clone();
     plain.settings.mail_merge = None;
     assert_eq!(round_trip(&plain).settings.mail_merge, None);
+}
+
+#[test]
+fn excluded_recipients_survive_round_trip() {
+    let mut doc = Document::new();
+    doc.settings.mail_merge = Some(letter_model::MailMerge {
+        document_type: "formLetters".into(),
+        data_type: Some("textFile".into()),
+        query: Some("SELECT * FROM /home/nikita/Клиенты.csv".into()),
+        data_source: Some("file:///home/nikita/Клиенты.csv".into()),
+        excluded: vec![
+            letter_model::RecipientMark {
+                column: 0,
+                tag: "Вера".into(),
+            },
+            letter_model::RecipientMark {
+                column: 1,
+                tag: "Омск".into(),
+            },
+        ],
+    });
+    let bytes = write_bytes(&doc).unwrap();
+    let parts = zip_parts(&bytes);
+    let rels = String::from_utf8(parts["word/_rels/settings.xml.rels"].clone()).unwrap();
+    assert!(rels.contains("relationships/recipientData"), "{rels}");
+    let settings = String::from_utf8(parts["word/settings.xml"].clone()).unwrap();
+    assert!(
+        settings.contains("<w:odso><w:recipientData r:id="),
+        "{settings}"
+    );
+    let types = String::from_utf8(parts["[Content_Types].xml"].clone()).unwrap();
+    assert!(types.contains("mailMergeRecipientData+xml"), "{types}");
+    let again = read_bytes(&bytes).unwrap();
+    assert_eq!(again.settings.mail_merge, doc.settings.mail_merge);
+    // Повторное сохранение: та же часть, связь не дублируется.
+    let twice = zip_parts(&write_bytes(&again).unwrap());
+    let rels = String::from_utf8(twice["word/_rels/settings.xml.rels"].clone()).unwrap();
+    assert_eq!(
+        rels.matches("relationships/recipientData").count(),
+        1,
+        "{rels}"
+    );
+    assert_eq!(
+        round_trip(&again).settings.mail_merge,
+        doc.settings.mail_merge
+    );
 }

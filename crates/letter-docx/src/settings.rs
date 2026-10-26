@@ -4,7 +4,8 @@
 //! «Разные колонтитулы для чётных и нечётных страниц».
 
 use letter_model::{
-    DocumentProtection, EditRestriction, MailMerge, PasswordHash, Settings, WriteProtection,
+    DocumentProtection, EditRestriction, MailMerge, PasswordHash, RecipientMark, Settings,
+    WriteProtection,
 };
 
 use crate::document::{W_NS, is_w_ns, parse_twips, toggle};
@@ -75,7 +76,7 @@ pub(crate) fn updated_settings(
     settings: &Settings,
     background: bool,
 ) -> Option<String> {
-    updated_settings_with(original, settings, background, &[], None)
+    updated_settings_with(original, settings, background, &[], None, None)
 }
 
 /// Как [`updated_settings`], но со связями слияния: `externals` — внешние
@@ -88,6 +89,7 @@ pub(crate) fn updated_settings_with(
     background: bool,
     externals: &[(String, String)],
     source_id: Option<&str>,
+    recipients_id: Option<&str>,
 ) -> Option<String> {
     let root = original
         .and_then(|bytes| xml::parse(bytes).ok())
@@ -128,7 +130,7 @@ pub(crate) fn updated_settings_with(
             settings
                 .mail_merge
                 .as_ref()
-                .map(|m| mail_merge_xml(&prefix, m, source_id)),
+                .map(|m| mail_merge_xml(&prefix, m, source_id, recipients_id)),
         ),
         (
             "trackRevisions",
@@ -230,9 +232,15 @@ pub(crate) fn updated_settings_with(
     Some(xml_part(&element_with(qname, &attrs, &content)))
 }
 
-/// `w:mailMerge`: вид документа, вид источника, запрос и связь с
-/// источником `source_id` (элементы — в порядке схемы).
-fn mail_merge_xml(prefix: &str, merge: &MailMerge, source_id: Option<&str>) -> String {
+/// `w:mailMerge`: вид документа, вид источника, запрос, связь с
+/// источником `source_id` и со списком отметок получателей
+/// `recipients_id` (элементы — в порядке схемы).
+fn mail_merge_xml(
+    prefix: &str,
+    merge: &MailMerge,
+    source_id: Option<&str>,
+    recipients_id: Option<&str>,
+) -> String {
     let w = |name: &str, value: &str| {
         format!(r#"<{prefix}{name} {prefix}val="{}"/>"#, escape_attr(value))
     };
@@ -257,7 +265,67 @@ fn mail_merge_xml(prefix: &str, merge: &MailMerge, source_id: Option<&str>) -> S
             escape_attr(id)
         ));
     }
+    if let Some(id) = recipients_id {
+        inner.push_str(&format!(
+            r#"<{prefix}odso><{prefix}recipientData r:id="{}"/></{prefix}odso>"#,
+            escape_attr(id)
+        ));
+    }
     format!("<{prefix}mailMerge>{inner}</{prefix}mailMerge>")
+}
+
+/// Часть `recipientData`: получатели, с которых сняты отметки
+/// (`w:active` 0, столбец и значение столбца в base64, как у Word).
+pub(crate) fn recipients_xml(excluded: &[RecipientMark]) -> String {
+    let mut out = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>{}<w:recipients xmlns:w="{W_NS}">"#,
+        "\r\n"
+    );
+    for mark in excluded {
+        out.push_str(&format!(
+            r#"<w:recipientData><w:active w:val="0"/><w:column w:val="{}"/><w:uniqueTag w:val="{}"/></w:recipientData>"#,
+            mark.column,
+            crate::crypto::base64_encode(mark.tag.as_bytes())
+        ));
+    }
+    out.push_str("</w:recipients>");
+    out
+}
+
+/// Получатели без отметки из части `recipientData`. Значение столбца —
+/// UTF-8, а если это не UTF-8 — UTF-16 (младший байт первым).
+pub(crate) fn read_recipients(root: &Element) -> Vec<RecipientMark> {
+    root.elements()
+        .filter(|e| e.is_w("recipientData"))
+        .filter(|e| {
+            e.elements()
+                .find(|c| c.is_w("active"))
+                .and_then(|c| c.w_attr("val"))
+                .is_some_and(|v| matches!(v, "0" | "false" | "off"))
+        })
+        .filter_map(|e| {
+            let value = |name: &str| {
+                e.elements()
+                    .find(|c| c.is_w(name))
+                    .and_then(|c| c.w_attr("val"))
+            };
+            let column = value("column").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let bytes = crate::crypto::base64_decode(value("uniqueTag")?)?;
+            let tag = match String::from_utf8(bytes.clone()) {
+                Ok(tag) => tag,
+                Err(_) => {
+                    let units: Vec<u16> = bytes
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|p| u16::from_le_bytes(*p))
+                        .collect();
+                    String::from_utf16_lossy(&units)
+                }
+            };
+            Some(RecipientMark { column, tag })
+        })
+        .collect()
 }
 
 /// Адрес источника данных слияния: цель внешней связи из
@@ -407,6 +475,7 @@ pub(crate) fn read_settings(root: &Element) -> Settings {
                     data_type: value("dataType"),
                     query: value("query"),
                     data_source: None,
+                    excluded: Vec::new(),
                 });
             }
             "autoHyphenation" => settings.auto_hyphenation = toggle(child).unwrap_or(false),

@@ -1332,6 +1332,7 @@ impl Viewer {
                     ),
                     query: Some(format!("SELECT * FROM {}", path.display())),
                     data_source: Some(file_url(&path)),
+                    excluded: Vec::new(),
                 };
                 let mut commands = vec![Command::SetMailMerge(Some(Box::new(merge)))];
                 commands.extend(self.set_recipients(data));
@@ -1355,11 +1356,32 @@ impl Viewer {
             .map(url_path)
             .filter(|path| path.is_file())
             .and_then(|path| read_recipients(&path).ok())
-            .map(|data| Mailing {
-                data,
-                record: 0,
-                preview: false,
+            .map(|mut data| {
+                if let Some(merge) = self
+                    .document
+                    .as_ref()
+                    .and_then(|d| d.doc.settings.mail_merge.as_ref())
+                {
+                    data.apply_marks(&merge.excluded);
+                }
+                Mailing {
+                    data,
+                    record: 0,
+                    preview: false,
+                }
             });
+    }
+
+    /// Команда, которая запишет в документ снятые отметки получателей
+    /// `data` (если они изменились).
+    fn save_marks(&self, data: &letter_editor::MergeData) -> Option<Command> {
+        let mut merge = self.document.as_ref()?.doc.settings.mail_merge.clone()?;
+        let marks = data.marks();
+        if merge.excluded == marks {
+            return None;
+        }
+        merge.excluded = marks;
+        Some(Command::SetMailMerge(Some(Box::new(merge))))
     }
 
     /// «Найти и объединить → Сохранить в PDF»: документ слияния сразу
@@ -1777,8 +1799,10 @@ impl Viewer {
                 self.bookmark_action(&ctx, action);
             }
             if let Some(data) = self.recipients_dialog.ui(&ctx) {
-                let commands = self.set_recipients(data).map(RibbonCommand::Edit);
-                self.run_ribbon(&ctx, commands.into_iter().collect());
+                let marks = self.save_marks(&data);
+                let shown = self.set_recipients(data);
+                let commands = marks.into_iter().chain(shown).map(RibbonCommand::Edit);
+                self.run_ribbon(&ctx, commands.collect());
             }
             if let Some(rule) = self.rule_dialog.ui(&ctx) {
                 self.run_ribbon(&ctx, vec![RibbonCommand::InsertMergeRule(rule)]);
@@ -6015,12 +6039,24 @@ mod tests {
             data_type: Some("textFile".into()),
             query: None,
             data_source: Some(file_url(&csv)),
+            excluded: vec![letter_model::RecipientMark {
+                column: 0,
+                tag: "Борис".into(),
+            }],
         });
         let path = dir.join("письмо.docx");
         std::fs::write(&path, letter_docx::write_bytes(&doc).unwrap()).unwrap();
         let mut viewer = Viewer::new(FontLibrary::embedded_only());
         viewer.open(&path).unwrap();
-        assert_eq!(viewer.ribbon_info().mailing.records, 2);
+        // Снятая отметка с Бориса сохранилась в файле.
+        assert_eq!(viewer.ribbon_info().mailing.records, 1);
+        let mut data = viewer.mailing.as_ref().unwrap().data.clone();
+        assert_eq!(viewer.save_marks(&data), None);
+        data.excluded.clear();
+        let Some(Command::SetMailMerge(Some(merge))) = viewer.save_marks(&data) else {
+            panic!("отметки поменялись");
+        };
+        assert!(merge.excluded.is_empty());
         // Документ слияния — уже без источника.
         viewer.finish_merge();
         assert!(viewer.mailing.is_none());
