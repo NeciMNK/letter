@@ -99,6 +99,18 @@ pub enum Icon {
     ShapeOutline,
     /// Уравнение.
     Equation,
+    /// Элемент «Форматированный текст».
+    ControlRichText,
+    /// Элемент «Обычный текст».
+    ControlPlainText,
+    /// Элемент «Флажок».
+    ControlCheckBox,
+    /// Элемент «Поле со списком».
+    ControlComboBox,
+    /// Элемент «Раскрывающийся список».
+    ControlDropDown,
+    /// Элемент «Выбор даты».
+    ControlDate,
     /// Поля страницы.
     Margins,
     /// Ориентация листа.
@@ -250,6 +262,12 @@ impl Icon {
             Icon::ShapeFill => ("paint-bucket", '\u{E2E6}'),
             Icon::ShapeOutline => ("pen-line", '\u{E130}'),
             Icon::Equation => ("sigma", '\u{E201}'),
+            Icon::ControlRichText => ("letter-text", '\u{E605}'),
+            Icon::ControlPlainText => ("type", '\u{E198}'),
+            Icon::ControlCheckBox => ("square-check", '\u{E559}'),
+            Icon::ControlComboBox => ("text-cursor-input", '\u{E265}'),
+            Icon::ControlDropDown => ("square-chevron-down", '\u{E3CF}'),
+            Icon::ControlDate => ("calendar-days", '\u{E2B9}'),
             Icon::Margins => ("fullscreen", '\u{E534}'),
             Icon::Orientation => ("rectangle-horizontal", '\u{E376}'),
             Icon::PageSize => ("scaling", '\u{E2EC}'),
@@ -462,7 +480,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 69] = [
+    const ALL: [Icon; 75] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -506,6 +524,12 @@ mod tests {
         Icon::ShapeFill,
         Icon::ShapeOutline,
         Icon::Equation,
+        Icon::ControlRichText,
+        Icon::ControlPlainText,
+        Icon::ControlCheckBox,
+        Icon::ControlComboBox,
+        Icon::ControlDropDown,
+        Icon::ControlDate,
         Icon::Margins,
         Icon::Orientation,
         Icon::PageSize,

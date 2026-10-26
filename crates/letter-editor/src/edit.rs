@@ -96,6 +96,22 @@ pub fn split_paragraph(doc: &mut Document, at: Position) -> Position {
     }
     // Разрыв страницы перед абзацем остаётся только у первой части.
     tail.props.page_break_before = None;
+    // Элемент внутри абзаца не переходит в новый пустой абзац: набор там —
+    // уже не в элементе.
+    for inline in &mut tail.content {
+        if let Inline::Run(run) = inline
+            && run.content.is_empty()
+            && run.props.control.take().is_some()
+            && run
+                .props
+                .style
+                .as_deref()
+                .is_some_and(|s| s.eq_ignore_ascii_case("PlaceholderText"))
+        {
+            // И серый стиль текста-подсказки не переходит.
+            run.props.style = None;
+        }
+    }
     blocks.insert(path.block + 1, tail.into());
     Position::new(at.paragraph + 1, 0)
 }

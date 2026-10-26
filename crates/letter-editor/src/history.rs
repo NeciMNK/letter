@@ -144,6 +144,8 @@ pub enum Command {
     InsertMath(Box<Math>),
     /// Заменить формулу в начале выделения новой.
     SetMath(Box<Math>),
+    /// Вставить элемент управления содержимым (вкладка «Разработчик»).
+    InsertControl(Box<crate::controls::ControlSetup>),
     /// Разрыв страницы (Ctrl+Enter) или колонки (Ctrl+Shift+Enter)
     /// у курсора (заменяет выделенное).
     Break(BreakKind),
@@ -641,6 +643,7 @@ impl History {
                 | Command::PictureAnchor(_)
                 | Command::PictureShape(_)
                 | Command::SetMath(_)
+                | Command::InsertControl(_)
                 | Command::PageSetup(_)
                 | Command::HeaderFooter { .. }
                 | Command::TitlePage { .. }
@@ -836,6 +839,10 @@ impl History {
                 crate::equation::set_math(doc, start, (**math).clone());
                 Some(selection)
             }
+            Command::InsertControl(setup) => {
+                let at = crate::controls::insert_control(doc, start, end, setup);
+                Some(Selection::new(at, at))
+            }
             Command::PageSetup(setup) => {
                 set_page_setup(doc, start.paragraph, end.paragraph, *setup);
                 Some(selection)
@@ -1004,6 +1011,7 @@ impl History {
             | Command::PictureAnchor(_)
             | Command::PictureShape(_)
             | Command::SetMath(_)
+            | Command::InsertControl(_)
             | Command::PageSetup(_)
             | Command::HeaderFooter { .. }
             | Command::TitlePage { .. }

@@ -46,6 +46,8 @@ pub enum Tab {
     Review,
     /// «Вид».
     View,
+    /// «Разработчик»: элементы управления содержимым.
+    Developer,
     /// «Конструктор таблиц»: видна, только когда курсор в таблице.
     TableDesign,
     /// «Макет таблицы»: видна, только когда курсор в таблице.
@@ -64,7 +66,7 @@ pub enum Tab {
 
 impl Tab {
     /// Все вкладки по порядку.
-    pub const ALL: [Tab; 7] = [
+    pub const ALL: [Tab; 8] = [
         Tab::Home,
         Tab::Insert,
         Tab::Design,
@@ -72,6 +74,7 @@ impl Tab {
         Tab::References,
         Tab::Review,
         Tab::View,
+        Tab::Developer,
     ];
 
     /// Подсказка клавиш вкладки (имя в файлах перевода).
@@ -84,6 +87,7 @@ impl Tab {
             Tab::References => "keytip-tab-references",
             Tab::Review => "keytip-tab-review",
             Tab::View => "keytip-tab-view",
+            Tab::Developer => "keytip-tab-developer",
             Tab::TableDesign => "keytip-tab-table-design",
             Tab::TableLayout => "keytip-tab-table-layout",
             Tab::PictureFormat => "keytip-tab-picture-format",
@@ -104,6 +108,7 @@ impl Tab {
             Tab::References => tr("tab-references"),
             Tab::Review => tr("tab-review"),
             Tab::View => tr("tab-view"),
+            Tab::Developer => tr("tab-developer"),
             Tab::TableDesign => tr("tab-table-design"),
             Tab::TableLayout => tr("tab-table-layout"),
             Tab::PictureFormat => tr("tab-picture-format"),
@@ -175,6 +180,8 @@ pub enum RibbonCommand {
     ChooseListItem(usize),
     /// Поставить сегодняшнюю дату в элемент выбора даты у курсора.
     ControlToday,
+    /// «Разработчик»: вставить элемент управления содержимым.
+    InsertControl(letter_editor::NewControl),
     /// Поставить эту дату в элемент выбора даты у курсора.
     ControlDate(letter_editor::DateTime),
     /// Показать или скрыть знаки форматирования.
@@ -525,6 +532,7 @@ impl Ribbon {
         ui.horizontal_top(|ui| match self.tab {
             Tab::Home => home(ui, &mut self.home, info, out),
             Tab::View => view(ui, info, out),
+            Tab::Developer => crate::developer::developer(ui, info, out),
             Tab::Insert => crate::insert::insert(ui, info, out),
             Tab::Design => crate::design::design(ui, info, out),
             Tab::References => crate::references::references(ui, info, out),
