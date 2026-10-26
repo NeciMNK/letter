@@ -111,7 +111,8 @@ pub use shape::{
 };
 pub use table::{
     BorderPreset, can_merge, delete_columns, delete_rows, delete_table, in_table, insert_columns,
-    insert_rows, insert_table, merge_cells, next_cell, set_cell_borders, set_cell_shading,
+    insert_rows, insert_table, merge_cells, move_column_border, next_cell, set_cell_borders,
+    set_cell_shading,
 };
 pub use toc::{TOC_CODE, delete_toc, insert_toc, outline_level, update_tocs};
 pub use watermark::set_watermark;

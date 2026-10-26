@@ -877,6 +877,53 @@ pub fn merge_cells(doc: &mut Document, start: usize, end: usize) -> Option<Posit
     ))
 }
 
+/// Самый узкий столбец, до которого сужает перетаскивание границы,
+/// твипы (около 0,5 см).
+const MIN_COLUMN: i32 = 288;
+
+/// Сдвигает правую границу ячейки с абзацем `paragraph` на `by` твипов
+/// (вправо — больше нуля), как перетаскивание границы мышью в Word.
+/// Граница между столбцами меняет ширину двух соседних столбцов, и
+/// таблица остаётся той же ширины; правый край таблицы меняет ширину
+/// последнего столбца и всей таблицы. Столбцы не становятся уже
+/// 0,5 см. Возвращает `false`, если сдвигать нечего.
+pub fn move_column_border(doc: &mut Document, paragraph: usize, by: i32) -> bool {
+    let Some(at) = cell_of(doc, paragraph) else {
+        return false;
+    };
+    let Some(table) = table_mut(doc, &at.table) else {
+        return false;
+    };
+    let Some(row) = table.rows.get(at.row) else {
+        return false;
+    };
+    let (_, edge) = grid_span(row, at.cell);
+    if edge == 0 || edge > table.grid.len() {
+        return false;
+    }
+    let left = table.grid[edge - 1].0;
+    let by = match table.grid.get(edge) {
+        Some(right) => by.clamp(MIN_COLUMN - left, (right.0 - MIN_COLUMN).max(0)),
+        None => by.max(MIN_COLUMN - left),
+    }
+    .max(-left.max(0));
+    if by == 0 {
+        return false;
+    }
+    table.grid[edge - 1].0 += by;
+    if let Some(right) = table.grid.get_mut(edge) {
+        right.0 -= by;
+    } else if matches!(
+        table.props.width,
+        Some(TableWidth::Twips(_) | TableWidth::Percent(_))
+    ) {
+        let total = table.grid.iter().map(|t| t.0).sum();
+        table.props.width = Some(TableWidth::Twips(Twips(total)));
+    }
+    fit_cells_to_grid(table);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1087,5 +1134,38 @@ mod tests {
             panic!("вложенная таблица");
         };
         assert_eq!(inner.grid[0].0, (outer - 2 * SIDE_MARGIN) / 2);
+    }
+
+    #[test]
+    fn column_borders_move_like_in_word() {
+        let mut doc = doc_with(&["x"]);
+        insert_table(&mut doc, Position::new(0, 0), 2, 3);
+        let before: Vec<i32> = table(&doc).grid.iter().map(|t| t.0).collect();
+        let total: i32 = before.iter().sum();
+        // Граница между первым и вторым столбцом — вправо на 500 твипов:
+        // таблица той же ширины.
+        assert!(move_column_border(&mut doc, 0, 500));
+        let t = table(&doc);
+        let grid: Vec<i32> = t.grid.iter().map(|t| t.0).collect();
+        assert_eq!(grid, [before[0] + 500, before[1] - 500, before[2]]);
+        assert_eq!(grid.iter().sum::<i32>(), total);
+        // Ширины ячеек — по сетке, во всех строках.
+        for row in &t.rows {
+            assert_eq!(
+                row.cells[0].props.width,
+                Some(TableWidth::Twips(Twips(grid[0])))
+            );
+        }
+        // Дальше соседнего столбца не уходит: тот остаётся в 0,5 см.
+        assert!(move_column_border(&mut doc, 3, 100_000));
+        let grid: Vec<i32> = table(&doc).grid.iter().map(|t| t.0).collect();
+        assert_eq!(grid[1], MIN_COLUMN);
+        assert!(!move_column_border(&mut doc, 3, 10));
+        // Правый край таблицы меняет ширину последнего столбца и таблицы.
+        assert!(move_column_border(&mut doc, 2, -300));
+        let grid: Vec<i32> = table(&doc).grid.iter().map(|t| t.0).collect();
+        assert_eq!(grid.iter().sum::<i32>(), total - 300);
+        // Вне таблицы — ничего.
+        assert!(!move_column_border(&mut doc, 6, 100));
     }
 }
