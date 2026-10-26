@@ -1,0 +1,18 @@
+# Руководство пользователя letter (F10.6) — сайт на mdBook.
+# Собрать и посмотреть: `mdbook serve docs` (https://rust-lang.github.io/mdBook/).
+# CI собирает его в каждом PR и выкладывает на GitHub Pages при слиянии
+# в main (.github/workflows/docs.yml).
+[book]
+title = "letter — руководство пользователя"
+authors = ["Участники проекта letter"]
+language = "ru"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/bikhe/letter"
+edit-url-template = "https://github.com/bikhe/letter/edit/main/docs/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"
+
+[output.html.search]
+enable = true
