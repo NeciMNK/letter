@@ -11,6 +11,7 @@ use crate::i18n::tr;
 use crate::icons::Icon;
 use crate::insert::menu_button;
 use crate::keytips::{self, Level, TipAction};
+use crate::page_setup_dialog::PageSetupTab;
 use crate::ribbon::{RibbonCommand, RibbonInfo, group, row_group};
 use crate::units::{cm_field, pt_field};
 
@@ -38,7 +39,7 @@ const MARGINS: [(&str, [i32; 4]); 4] = [
 ];
 
 /// Размеры листа: имя и книжные ширина и высота (твипы).
-const SIZES: [(&str, i32, i32); 5] = [
+pub(crate) const SIZES: [(&str, i32, i32); 5] = [
     ("size-a4", 11906, 16838),
     ("size-a5", 8391, 11906),
     ("size-a3", 16838, 23811),
@@ -50,8 +51,8 @@ const SIZES: [(&str, i32, i32); 5] = [
 pub fn layout(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     let enabled = info.has_document;
     let section = info.section.as_ref();
-    let mut push = |ui: &mut Ui, command: Command| {
-        out.push(RibbonCommand::Edit(command));
+    let mut push = |ui: &mut Ui, command: RibbonCommand| {
+        out.push(command);
         ui.close();
     };
     row_group(ui, tr("group-page-setup"), |ui| {
@@ -76,8 +77,15 @@ pub fn layout(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                         .add(egui::Button::selectable(margins == preset, tr(label)))
                         .clicked()
                     {
-                        push(ui, Command::PageSetup(PageSetup::Margins(preset)));
+                        push(
+                            ui,
+                            RibbonCommand::Edit(Command::PageSetup(PageSetup::Margins(preset))),
+                        );
                     }
+                }
+                ui.separator();
+                if ui.button(tr("margins-custom")).clicked() {
+                    push(ui, RibbonCommand::PageSetupDialog(PageSetupTab::Margins));
                 }
             },
         );
@@ -99,7 +107,12 @@ pub fn layout(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                         .add(egui::Button::selectable(current, tr(label)))
                         .clicked()
                     {
-                        push(ui, Command::PageSetup(PageSetup::Orientation(orientation)));
+                        push(
+                            ui,
+                            RibbonCommand::Edit(Command::PageSetup(PageSetup::Orientation(
+                                orientation,
+                            ))),
+                        );
                     }
                 }
             },
@@ -126,8 +139,15 @@ pub fn layout(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                             height: Twips(height),
                             orientation: Orientation::Portrait,
                         };
-                        push(ui, Command::PageSetup(PageSetup::Size(size)));
+                        push(
+                            ui,
+                            RibbonCommand::Edit(Command::PageSetup(PageSetup::Size(size))),
+                        );
                     }
+                }
+                ui.separator();
+                if ui.button(tr("page-size-more")).clicked() {
+                    push(ui, RibbonCommand::PageSetupDialog(PageSetupTab::Paper));
                 }
             },
         );
@@ -148,7 +168,10 @@ pub fn layout(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                         ))
                         .clicked()
                     {
-                        push(ui, Command::PageSetup(PageSetup::Columns(preset)));
+                        push(
+                            ui,
+                            RibbonCommand::Edit(Command::PageSetup(PageSetup::Columns(preset))),
+                        );
                     }
                 }
             },
@@ -167,7 +190,7 @@ pub fn layout(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                     ("break-column", BreakKind::Column),
                 ] {
                     if ui.button(tr(label)).clicked() {
-                        push(ui, Command::Break(kind));
+                        push(ui, RibbonCommand::Edit(Command::Break(kind)));
                     }
                 }
                 ui.separator();
@@ -180,7 +203,7 @@ pub fn layout(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 ] {
                     let button = ui.add_enabled(!info.in_table, egui::Button::new(tr(label)));
                     if button.clicked() {
-                        push(ui, Command::SectionBreak(start));
+                        push(ui, RibbonCommand::Edit(Command::SectionBreak(start)));
                     }
                 }
             },
@@ -201,7 +224,7 @@ pub fn layout(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                         ))
                         .clicked()
                     {
-                        push(ui, Command::AutoHyphenation(on));
+                        push(ui, RibbonCommand::Edit(Command::AutoHyphenation(on)));
                     }
                 }
             },

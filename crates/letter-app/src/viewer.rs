@@ -891,6 +891,8 @@ pub struct Viewer {
     page_number_dialog: PageNumberDialog,
     /// Окно «Границы и заливка».
     borders_dialog: crate::borders_dialog::BordersDialog,
+    /// Окно «Параметры страницы».
+    page_setup_dialog: crate::page_setup_dialog::PageSetupDialog,
     /// Окно «Ограничить редактирование».
     protect_dialog: ProtectDialog,
     /// Проверка орфографии.
@@ -1125,6 +1127,7 @@ impl Viewer {
             mailing: None,
             page_number_dialog: PageNumberDialog::default(),
             borders_dialog: Default::default(),
+            page_setup_dialog: Default::default(),
             protect_dialog: ProtectDialog::default(),
             spelling: crate::spelling::Spelling::start(dir.clone()),
             password_dialog: PasswordDialog::default(),
@@ -1781,6 +1784,7 @@ impl Viewer {
             && !self.envelope_dialog.open
             && !self.page_number_dialog.open
             && !self.borders_dialog.open
+            && !self.page_setup_dialog.open
             && !self.password_dialog.open
             && !self.symbol_dialog.open
             && (self.ribbon.keytips.active() || !crate::access::typing_elsewhere(&ctx))
@@ -1927,6 +1931,10 @@ impl Viewer {
             }
             if let Some((page, numbering)) = self.page_number_dialog.ui(&ctx) {
                 self.set_page_numbering(page, numbering);
+            }
+            if let Some(setup) = self.page_setup_dialog.ui(&ctx) {
+                let command = RibbonCommand::Edit(Command::PageSetup(setup));
+                self.run_ribbon(&ctx, vec![command]);
             }
             if let Some(commands) = self.borders_dialog.ui(&ctx) {
                 let commands = commands.into_iter().map(RibbonCommand::Edit).collect();
@@ -3577,6 +3585,20 @@ impl Viewer {
                     {
                         let current = section.props.page_numbering.clone();
                         self.page_number_dialog.show(page, current);
+                    }
+                }
+                RibbonCommand::PageSetupDialog(tab) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &self.document {
+                        let doc = &document.doc;
+                        let at = document.selection().start().paragraph;
+                        let props = letter_editor::section_props(doc, at);
+                        self.page_setup_dialog.show(
+                            tab,
+                            props.and_then(|p| p.page_size),
+                            props.and_then(|p| p.margins),
+                            doc.sections.len() > 1,
+                        );
                     }
                 }
                 RibbonCommand::BordersDialog(tab) => {
@@ -6888,6 +6910,29 @@ mod tests {
         viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
         let document = viewer.document.as_ref().unwrap();
         assert!(document.layout.pages[0].footer.is_empty());
+    }
+
+    #[test]
+    fn page_setup_window() {
+        use crate::page_setup_dialog::PageSetupTab;
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::PageSetupDialog(PageSetupTab::Paper)],
+        );
+        assert!(viewer.page_setup_dialog.open);
+        let dialog = &mut viewer.page_setup_dialog;
+        dialog.margins.gutter = letter_model::Twips(567);
+        dialog.margins.header = letter_model::Twips(400);
+        let command = RibbonCommand::Edit(Command::PageSetup(dialog.setup()));
+        viewer.run_ribbon(&ctx, vec![command]);
+        let doc = &viewer.document.as_ref().unwrap().doc;
+        let margins = doc.sections[0].props.margins.unwrap();
+        assert_eq!(margins.gutter.0, 567);
+        assert_eq!(margins.header.0, 400);
     }
 
     #[test]

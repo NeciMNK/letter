@@ -310,6 +310,8 @@ pub enum RibbonCommand {
     PageNumberFormat,
     /// Окно «Границы и заливка» на нужной вкладке.
     BordersDialog(crate::borders_dialog::BordersTab),
+    /// Окно «Параметры страницы» на нужной вкладке.
+    PageSetupDialog(crate::page_setup_dialog::PageSetupTab),
     /// «Закрыть окно колонтитулов».
     CloseHeaderFooter,
     /// Обновить поля в выделенном (F9).

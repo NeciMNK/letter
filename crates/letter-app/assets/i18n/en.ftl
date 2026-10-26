@@ -1269,3 +1269,24 @@ border-inside-h = Inside horizontal
 border-inside-v = Inside vertical
 border-between = Between paragraphs
 points-short = pt
+
+# Page Setup window
+page-setup-title = Page Setup
+page-setup-tab-margins = Margins
+page-setup-tab-paper = Paper
+page-setup-tab-layout = Layout
+page-setup-top = Top:
+page-setup-bottom = Bottom:
+page-setup-left = Left:
+page-setup-right = Right:
+page-setup-gutter = Gutter:
+page-setup-width = Width:
+page-setup-height = Height:
+page-setup-custom-size = Custom size
+page-setup-distance = From edge:
+page-setup-header = Header:
+page-setup-footer = Footer:
+page-setup-whole = Whole document
+page-setup-section = This section
+margins-custom = Custom Margins…
+page-size-more = More Paper Sizes…
