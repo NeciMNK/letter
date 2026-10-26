@@ -243,7 +243,7 @@ impl MathNode {
                     scripts.push_str(&operand(sup));
                 }
                 if *pre {
-                    format!("{scripts}{}", linear(base))
+                    format!("{scripts} {}", linear(base))
                 } else {
                     format!("{}{scripts}", operand(base))
                 }
@@ -259,6 +259,14 @@ impl MathNode {
                 items,
             } => {
                 let inner: Vec<String> = items.iter().map(|i| linear(i)).collect();
+                // Как в Word: разделитель «|» — знак `│`, пустая сторона
+                // при непустой другой — `├` или `┤`.
+                let separator = if separator == "|" { "│" } else { separator };
+                let (open, close) = match (open.is_empty(), close.is_empty()) {
+                    (true, false) => ("├", close.as_str()),
+                    (false, true) => (open.as_str(), "┤"),
+                    _ => (open.as_str(), close.as_str()),
+                };
                 format!("{open}{}{close}", inner.join(separator))
             }
             MathNode::Nary {

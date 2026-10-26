@@ -12,6 +12,7 @@ mod clipboard;
 mod comments;
 mod context_menu;
 mod design;
+mod equation;
 mod fields;
 mod files;
 mod find;

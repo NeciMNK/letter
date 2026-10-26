@@ -25,6 +25,7 @@ mod document;
 pub mod drawing;
 mod field;
 mod math;
+mod math_linear;
 mod note;
 mod numbering;
 mod package;
@@ -55,6 +56,7 @@ pub use document::{Document, Settings, for_each_picture_in};
 pub use drawing::Drawing;
 pub use field::{Field, alphabetic, fields, roman, set_field_result};
 pub use math::{FractionKind, Math, MathAlign, MathList, MathNode};
+pub use math_linear::{NARY_OPERATORS, autocorrect_linear, parse_linear};
 pub use note::{Note, NoteKind, NoteReference};
 pub use numbering::{
     AbstractNumbering, LevelOverride, LevelSuffix, ListCounters, ListLabel, ListLevel,
