@@ -113,7 +113,7 @@ pub use shape::{
 pub use table::{
     BorderPreset, can_merge, delete_columns, delete_rows, delete_table, in_table, insert_columns,
     insert_rows, insert_table, merge_cells, move_column_border, next_cell, set_cell_borders,
-    set_cell_shading, set_table_look, set_table_style, table_look_at, table_style_at,
+    set_cell_shading, set_table_look, set_table_style, split_cell, table_look_at, table_style_at,
 };
 pub use table_style::{PRESET_COLORS, TablePreset, table_preset, table_presets};
 pub use toc::{TOC_CODE, delete_toc, insert_toc, outline_level, update_tocs};

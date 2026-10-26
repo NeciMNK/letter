@@ -320,23 +320,34 @@ fn empty_like(row: &TableRow) -> TableRow {
     let mut new = row.clone();
     new.props.header = None;
     for cell in &mut new.cells {
-        let props = cell
-            .blocks
-            .iter()
-            .find_map(|b| match b {
-                Block::Paragraph(p) => Some(p.props.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-        cell.blocks = vec![
+        *cell = empty_cell(cell);
+    }
+    new
+}
+
+/// Пустая копия ячейки: те же свойства (без объединения по вертикали),
+/// внутри — пустой абзац с оформлением её первого абзаца.
+fn empty_cell(cell: &TableCell) -> TableCell {
+    let props = cell
+        .blocks
+        .iter()
+        .find_map(|b| match b {
+            Block::Paragraph(p) => Some(p.props.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let mut new = TableCell {
+        props: cell.props.clone(),
+        raw_props: cell.raw_props.clone(),
+        blocks: vec![
             Paragraph {
                 props,
                 content: Vec::new(),
             }
             .into(),
-        ];
-        cell.props.v_merge = None;
-    }
+        ],
+    };
+    new.props.v_merge = None;
     new
 }
 
@@ -879,6 +890,109 @@ pub fn merge_cells(doc: &mut Document, start: usize, end: usize) -> Option<Posit
     ))
 }
 
+/// «Разделить ячейки»: ячейка с абзацем `paragraph` делится на `columns`
+/// столбцов одинаковой ширины и `rows` строк, как в Word. Сетка таблицы
+/// получает новые столбцы, а ячейки других строк над ними растягиваются;
+/// при делении на строки остальные ячейки строки объединяются по
+/// вертикали с новыми строками. Текст остаётся в первой (левой верхней)
+/// ячейке. Объединённую по вертикали ячейку не делит. Возвращает
+/// позицию в начале первой ячейки.
+pub fn split_cell(
+    doc: &mut Document,
+    paragraph: usize,
+    columns: usize,
+    rows: usize,
+) -> Option<Position> {
+    let columns = columns.clamp(1, 63);
+    let rows = rows.clamp(1, 63);
+    if columns == 1 && rows == 1 {
+        return None;
+    }
+    let at = cell_of(doc, paragraph)?;
+    let table = table_mut(doc, &at.table)?;
+    let row = table.rows.get(at.row)?;
+    let original = row.cells.get(at.cell)?.clone();
+    if original.props.v_merge.is_some() {
+        return None;
+    }
+    let (g0, g1) = grid_span(row, at.cell);
+    if g1 > table.grid.len() {
+        return None;
+    }
+    // Края столбцов сетки, твипы от левого края таблицы.
+    let mut old_edges = vec![0];
+    for w in &table.grid {
+        let last = old_edges.last().copied().unwrap_or(0);
+        old_edges.push(last + w.0.max(0));
+    }
+    let (x0, x1) = (old_edges[g0], old_edges[g1]);
+    let parts = columns as i32;
+    if x1 - x0 < parts * 2 {
+        return None;
+    }
+    let split: Vec<i32> = (0..=parts).map(|k| x0 + (x1 - x0) * k / parts).collect();
+    let mut edges = old_edges.clone();
+    edges.extend(&split);
+    edges.sort_unstable();
+    edges.dedup();
+    let index = |x: i32| edges.binary_search(&x).unwrap_or_else(|i| i);
+    let last = old_edges.len() - 1;
+    for row in &mut table.rows {
+        let mut start = 0;
+        for cell in &mut row.cells {
+            let span = cell.span();
+            let a = index(old_edges[start.min(last)]);
+            let b = index(old_edges[(start + span).min(last)]);
+            cell.props.grid_span = (b - a > 1).then_some((b - a) as u32);
+            start += span;
+        }
+    }
+    table.grid = edges.windows(2).map(|w| Twips(w[1] - w[0])).collect();
+
+    let empty = empty_cell(&original);
+    let pieces: Vec<TableCell> = split
+        .windows(2)
+        .enumerate()
+        .map(|(k, w)| {
+            let mut cell = if k == 0 {
+                original.clone()
+            } else {
+                empty.clone()
+            };
+            let span = index(w[1]) - index(w[0]);
+            cell.props.grid_span = (span > 1).then_some(span as u32);
+            cell
+        })
+        .collect();
+    let range = at.cell..at.cell + pieces.len();
+    let row = table.rows.get_mut(at.row)?;
+    row.cells.splice(at.cell..=at.cell, pieces);
+    if rows > 1 {
+        let mut below = row.clone();
+        below.props.header = None;
+        for (i, cell) in below.cells.iter_mut().enumerate() {
+            let mut new = empty_cell(cell);
+            if !range.contains(&i) {
+                new.props.v_merge = Some(VerticalMerge::Continue);
+            }
+            *cell = new;
+        }
+        for (i, cell) in row.cells.iter_mut().enumerate() {
+            if !range.contains(&i) && cell.props.v_merge.is_none() {
+                cell.props.v_merge = Some(VerticalMerge::Restart);
+            }
+        }
+        for _ in 1..rows {
+            table.rows.insert(at.row + 1, below.clone());
+        }
+    }
+    fit_cells_to_grid(table);
+    Some(Position::new(
+        cell_start(doc, &at.table, at.row, at.cell),
+        0,
+    ))
+}
+
 /// Стиль таблицы с абзацем `paragraph` (`None` — не в таблице или стиль
 /// не задан).
 pub fn table_style_at(doc: &Document, paragraph: usize) -> Option<String> {
@@ -1193,6 +1307,52 @@ mod tests {
             panic!("вложенная таблица");
         };
         assert_eq!(inner.grid[0].0, (outer - 2 * SIDE_MARGIN) / 2);
+    }
+
+    #[test]
+    fn cells_are_split_like_in_word() {
+        let mut doc = doc_with(&["x"]);
+        insert_table(&mut doc, Position::new(0, 0), 2, 2);
+        insert_text(&mut doc, Position::new(0, 0), "a");
+        let total: i32 = table(&doc).grid.iter().map(|t| t.0).sum();
+        // Первую ячейку — на три столбца и две строки.
+        let at = split_cell(&mut doc, 0, 3, 2).unwrap();
+        assert_eq!(at, Position::new(0, 0));
+        let t = table(&doc);
+        // Сетка: три узких столбца и прежний второй; ширина та же.
+        assert_eq!(t.grid.len(), 4);
+        assert_eq!(t.grid.iter().map(|t| t.0).sum::<i32>(), total);
+        assert_eq!(t.rows.len(), 3);
+        let spans =
+            |r: usize| -> Vec<usize> { t.rows[r].cells.iter().map(TableCell::span).collect() };
+        assert_eq!(spans(0), [1, 1, 1, 1]);
+        assert_eq!(spans(1), [1, 1, 1, 1]);
+        // Нижняя строка таблицы: первая ячейка растянута на три столбца.
+        assert_eq!(spans(2), [3, 1]);
+        // Правая ячейка объединена по вертикали с новой строкой.
+        assert_eq!(
+            t.rows[0].cells[3].props.v_merge,
+            Some(VerticalMerge::Restart)
+        );
+        assert_eq!(
+            t.rows[1].cells[3].props.v_merge,
+            Some(VerticalMerge::Continue)
+        );
+        assert_eq!(t.rows[1].cells[0].props.v_merge, None);
+        // Текст — в левой верхней ячейке.
+        assert_eq!(doc.plain_text(), "a\t\t\t\n\t\t\t\n\t\nx");
+        // Ширины ячеек — по сетке.
+        let width = t.rows[2].cells[0].props.width;
+        assert_eq!(
+            width,
+            Some(TableWidth::Twips(Twips(
+                t.grid[..3].iter().map(|t| t.0).sum()
+            )))
+        );
+        // Делить объединённую по вертикали ячейку и «на одну» — нельзя.
+        assert_eq!(split_cell(&mut doc, 3, 2, 1), None);
+        assert_eq!(split_cell(&mut doc, 0, 1, 1), None);
+        assert_eq!(split_cell(&mut doc, 10, 2, 1), None);
     }
 
     #[test]
