@@ -111,6 +111,14 @@ pub enum Icon {
     ControlDropDown,
     /// Элемент «Выбор даты».
     ControlDate,
+    /// «Выбрать получателей» (рассылки).
+    Recipients,
+    /// «Вставить поле слияния».
+    MergeField,
+    /// «Просмотр результатов» слияния.
+    MergePreview,
+    /// «Найти и объединить».
+    FinishMerge,
     /// Поля страницы.
     Margins,
     /// Ориентация листа.
@@ -268,6 +276,10 @@ impl Icon {
             Icon::ControlComboBox => ("text-cursor-input", '\u{E265}'),
             Icon::ControlDropDown => ("square-chevron-down", '\u{E3CF}'),
             Icon::ControlDate => ("calendar-days", '\u{E2B9}'),
+            Icon::Recipients => ("users", '\u{E1A4}'),
+            Icon::MergeField => ("braces", '\u{E36A}'),
+            Icon::MergePreview => ("scan-eye", '\u{E536}'),
+            Icon::FinishMerge => ("mails", '\u{E369}'),
             Icon::Margins => ("fullscreen", '\u{E534}'),
             Icon::Orientation => ("rectangle-horizontal", '\u{E376}'),
             Icon::PageSize => ("scaling", '\u{E2EC}'),
@@ -480,7 +492,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 75] = [
+    const ALL: [Icon; 79] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -530,6 +542,10 @@ mod tests {
         Icon::ControlComboBox,
         Icon::ControlDropDown,
         Icon::ControlDate,
+        Icon::Recipients,
+        Icon::MergeField,
+        Icon::MergePreview,
+        Icon::FinishMerge,
         Icon::Margins,
         Icon::Orientation,
         Icon::PageSize,
