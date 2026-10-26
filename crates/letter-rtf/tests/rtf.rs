@@ -73,8 +73,9 @@ fn docx_survives_conversion_to_rtf() {
         let docx = letter_docx::read_file(&path).unwrap();
         let back = letter_rtf::read(letter_rtf::write(&docx).as_bytes()).unwrap();
         let name = path.display();
-        // В RTF в документе всегда есть хотя бы один абзац. Рисунки
-        // в RTF пока не записываются.
+        // В RTF в документе всегда есть хотя бы один абзац. Фигуры и
+        // диаграммы в RTF пока не записываются (картинки — да), поэтому
+        // знаки объектов не сравниваем.
         let mut expected: Vec<String> = texts(&docx)
             .iter()
             .map(|t| t.replace(letter_model::OBJECT_CHAR, ""))
@@ -84,7 +85,11 @@ fn docx_survives_conversion_to_rtf() {
         }
         // Формулы в RTF пока пишутся текстом в линейном виде.
         if !name.to_string().ends_with("math.docx") {
-            assert_eq!(expected, texts(&back), "{name}");
+            let got: Vec<String> = texts(&back)
+                .iter()
+                .map(|t| t.replace(letter_model::OBJECT_CHAR, ""))
+                .collect();
+            assert_eq!(expected, got, "{name}");
         }
         assert_eq!(docx.sections.len(), back.sections.len(), "{name}");
         for (a, b) in docx.sections.iter().zip(&back.sections) {
@@ -395,4 +400,45 @@ fn files_on_disk() {
         vec!["Привет"]
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Рисунки документа по порядку.
+fn pictures(doc: &Document) -> Vec<letter_model::Picture> {
+    paragraphs(doc)
+        .into_iter()
+        .flat_map(|p| p.runs())
+        .flat_map(|r| r.content.iter())
+        .filter_map(|c| match c {
+            RunContent::Picture(p) => Some(p.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn pictures_survive_rtf() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/docx/image.docx");
+    let original = letter_docx::read_file(&path).unwrap();
+    let before = pictures(&original);
+    assert!(!before.is_empty());
+    let text = letter_rtf::write(&original);
+    assert!(text.contains("\\pict\\pngblip") || text.contains("\\pict\\jpegblip"));
+    let back = letter_rtf::read(text.as_bytes()).unwrap();
+    let after = pictures(&back);
+    assert_eq!(after.len(), before.len());
+    let bytes = |p: &letter_model::Picture| p.image.as_ref().map(|i| i.bytes.clone());
+    assert_eq!(bytes(&after[0]), bytes(&before[0]));
+    // Размер — с точностью до твипа (635 EMU).
+    assert!((after[0].width - before[0].width).abs() <= 635);
+    assert!((after[0].height - before[0].height).abs() <= 635);
+    // Как пишет Word: PNG в `\*\shppict`, запасная картинка — пропускается.
+    let doc = rtf(
+        "{\\rtf1 a{\\*\\shppict{\\pict\\pngblip\\picwgoal200\\pichgoal100\\picscalex50 \
+         89504e47}}{\\nonshppict{\\pict\\wmetafile8 0102}}b\\par}",
+    );
+    let found = pictures(&doc);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].width, 100 * 635);
+    assert_eq!(found[0].height, 100 * 635);
+    assert_eq!(texts(&doc), ["a\u{FFFC}b"]);
 }

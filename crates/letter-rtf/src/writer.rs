@@ -367,9 +367,8 @@ impl Writer {
                     RunContent::Break(BreakKind::Line) => out.push_str("\\line "),
                     RunContent::Break(BreakKind::Page) => out.push_str("\\page "),
                     RunContent::Break(BreakKind::Column) => out.push_str("\\column "),
-                    // Рисунки в RTF пока не записываются.
-                    RunContent::Picture(_)
-                    | RunContent::FieldChar(_)
+                    RunContent::Picture(picture) => write_picture(out, picture),
+                    RunContent::FieldChar(_)
                     | RunContent::FieldCode(_)
                     | RunContent::NoteReference(_)
                     | RunContent::NoteMark(_)
@@ -604,6 +603,38 @@ fn escape(out: &mut String, text: &str) {
             }
         }
     }
+}
+
+/// Рисунок `{\pict…}`: картинка PNG или JPEG шестнадцатеричными байтами,
+/// размер — в твипах. Фигуры, диаграммы и картинки других видов не
+/// записываются.
+fn write_picture(out: &mut String, picture: &letter_model::Picture) {
+    let Some(image) = picture.image.as_ref().filter(|i| i.chart.is_none()) else {
+        return;
+    };
+    let kind = if image.bytes.starts_with(b"\x89PNG") {
+        "pngblip"
+    } else if image.bytes.starts_with(&[0xFF, 0xD8]) {
+        "jpegblip"
+    } else {
+        return;
+    };
+    let twips = |emu: i64| emu * 20 / letter_model::EMU_PER_POINT;
+    let (w, h) = (twips(picture.width), twips(picture.height));
+    // `\picw`, `\pich` — пиксели при 96 точках на дюйм (15 твипов).
+    let _ = writeln!(
+        out,
+        "{{\\pict\\{kind}\\picw{}\\pich{}\\picwgoal{w}\\pichgoal{h}",
+        w / 15,
+        h / 15
+    );
+    for (i, byte) in image.bytes.iter().enumerate() {
+        let _ = write!(out, "{byte:02x}");
+        if i % 64 == 63 {
+            out.push('\n');
+        }
+    }
+    out.push('}');
 }
 
 #[cfg(test)]
