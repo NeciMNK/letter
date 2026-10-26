@@ -50,6 +50,7 @@ mod spelling;
 mod story;
 mod styles;
 mod symbols;
+mod templates;
 mod theme;
 mod units;
 mod view;
