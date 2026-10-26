@@ -16,8 +16,19 @@
 use crate::{
     Alignment, Borders, Color, Document, FirstLineIndent, HalfPoints, Highlight, LineSpacing,
     NumberingRef, ParagraphBorders, ParagraphProps, RunFonts, RunProps, Shading, Style, StyleKind,
-    Styles, TabStop, TabStopKind, TableProps, ThemeFont, Twips, Underline, VerticalAlign,
+    Styles, TabStop, TabStopKind, TableArea, TableAreaStyle, TableAreas, TableProps, ThemeFont,
+    Twips, Underline, VerticalAlign,
 };
+
+/// Где стоит абзац таблицы: стиль таблицы и части таблицы (строка
+/// заголовка, полосы…), к которым относится его ячейка.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct TableCellStyle {
+    /// Стиль таблицы; `""` — стиль таблиц по умолчанию.
+    pub style: String,
+    /// Части таблицы.
+    pub areas: TableAreas,
+}
 
 /// Шрифт, который используется, если ни один слой его не задал.
 const FALLBACK_FONT: &str = "Times New Roman";
@@ -168,15 +179,17 @@ impl Document {
         self.resolve_paragraph_in(direct, None)
     }
 
-    /// Итоговое оформление абзаца в ячейке таблицы со стилем `table`:
-    /// оформление абзаца из стиля таблицы ложится сразу после значений
+    /// Итоговое оформление абзаца в ячейке таблицы `table`:
+    /// оформление абзаца из стиля таблицы (и из оформления частей
+    /// таблицы, к которым относится ячейка) ложится сразу после значений
     /// по умолчанию, под стилем абзаца. `None` — абзац вне таблицы.
     pub fn resolve_paragraph_in(
         &self,
         direct: &ParagraphProps,
-        table: Option<&str>,
+        table: Option<&TableCellStyle>,
     ) -> ResolvedParagraphProps {
-        let table_chain = self.table_chain(table);
+        let table_chain = self.table_chain(table.map(|t| t.style.as_str()));
+        let areas = self.table_areas(table);
         let chain = self
             .styles
             .chain(direct.style.as_deref(), StyleKind::Paragraph);
@@ -200,6 +213,7 @@ impl Document {
         let level = numbering.and_then(|(id, level)| self.numbering.level(id, level));
         let layers = std::iter::once(&self.styles.defaults.paragraph)
             .chain(table_chain.iter().map(|s| &s.paragraph))
+            .chain(areas.iter().map(|a| &a.paragraph))
             .chain(chain.iter().map(|s| &s.paragraph))
             .chain(level.as_ref().map(|l| &l.paragraph))
             .chain(std::iter::once(direct));
@@ -263,15 +277,16 @@ impl Document {
         self.resolve_run_in(paragraph, run, None)
     }
 
-    /// Итоговое оформление фрагмента в ячейке таблицы со стилем `table`
+    /// Итоговое оформление фрагмента в ячейке таблицы `table`
     /// (см. [`Document::resolve_paragraph_in`]).
     pub fn resolve_run_in(
         &self,
         paragraph: &ParagraphProps,
         run: &RunProps,
-        table: Option<&str>,
+        table: Option<&TableCellStyle>,
     ) -> ResolvedRunProps {
-        let table_chain = self.table_chain(table);
+        let table_chain = self.table_chain(table.map(|t| t.style.as_str()));
+        let areas = self.table_areas(table);
         let defaults = &self.styles.defaults.run;
         let para_chain = self
             .styles
@@ -281,8 +296,9 @@ impl Document {
             .chain(run.style.as_deref(), StyleKind::Character);
         let para_layers: Vec<&RunProps> = table_chain
             .iter()
-            .chain(para_chain.iter())
             .map(|s| &s.run)
+            .chain(areas.iter().map(|a| &a.run))
+            .chain(para_chain.iter().map(|s| &s.run))
             .collect();
         let char_layers: Vec<&RunProps> = char_chain.iter().map(|s| &s.run).collect();
         let layers: Vec<&RunProps> = std::iter::once(defaults)
@@ -344,6 +360,27 @@ impl Document {
         }
     }
 
+    /// Оформление частей таблицы, к которым относится ячейка `table`,
+    /// в том порядке, в каком Word его накладывает: по частям (см.
+    /// [`TableArea::ORDER`]), внутри части — от родительского стиля
+    /// к самому стилю таблицы.
+    pub fn table_areas(&self, table: Option<&TableCellStyle>) -> Vec<&TableAreaStyle> {
+        let Some(table) = table else {
+            return Vec::new();
+        };
+        let chain = self.table_chain(Some(&table.style));
+        TableArea::ORDER
+            .iter()
+            .filter(|area| table.areas.contains(**area))
+            .flat_map(|area| {
+                chain
+                    .iter()
+                    .flat_map(|s| &s.table_areas)
+                    .filter(move |a| a.area == *area)
+            })
+            .collect()
+    }
+
     /// Итоговые свойства таблицы: стиль таблицы (или стиль таблиц по
     /// умолчанию) с родителями, поверх — прямое оформление. Границы
     /// и поля ячеек перекрываются по сторонам. В `style` — стиль, который
@@ -361,6 +398,9 @@ impl Document {
             overlay(&mut acc.indent, &layer.indent);
             overlay(&mut acc.shading, &layer.shading);
             overlay(&mut acc.layout, &layer.layout);
+            overlay(&mut acc.look, &layer.look);
+            overlay(&mut acc.row_band_size, &layer.row_band_size);
+            overlay(&mut acc.column_band_size, &layer.column_band_size);
             if let Some(borders) = &layer.borders {
                 acc.borders = Some(overlay_borders(acc.borders.take(), borders));
             }

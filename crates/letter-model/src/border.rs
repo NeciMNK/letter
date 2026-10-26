@@ -149,8 +149,13 @@ pub struct Shading {
     pub pattern: String,
     /// Цвет узора; `None` — «Авто».
     pub color: Option<Color>,
-    /// Цвет фона; `None` — «Авто» (нет заливки).
+    /// Цвет фона; `None` — «Авто» (нет заливки). Если цвет взят из
+    /// темы, здесь лежит готовое значение.
     pub fill: Option<Color>,
+    /// Ссылка на цвет темы для узора (`w:themeColor` и оттенки).
+    pub theme_color: Option<ThemeColor>,
+    /// Ссылка на цвет темы для фона (`w:themeFill` и оттенки).
+    pub theme_fill: Option<ThemeColor>,
 }
 
 impl Shading {
@@ -160,6 +165,8 @@ impl Shading {
             pattern: "clear".into(),
             color: Some(Color::Auto),
             fill: Some(fill),
+            theme_color: None,
+            theme_fill: None,
         }
     }
 
@@ -205,6 +212,8 @@ mod tests {
             pattern: "solid".into(),
             color: Some(Color::Auto),
             fill: None,
+            theme_color: None,
+            theme_fill: None,
         };
         assert_eq!(solid.background(), Some((0, 0, 0)));
         assert!(Borders::all(Border::single(4)).top.is_some());

@@ -113,6 +113,13 @@ fn read_style(element: &Element) -> Option<Style> {
                     style.table = crate::table::read_table_props(child);
                     true
                 }
+                "tblStylePr" => match crate::table::read_table_area(child) {
+                    Some(area) => {
+                        style.table_areas.push(area);
+                        true
+                    }
+                    None => false,
+                },
                 _ => false,
             };
         if !understood {

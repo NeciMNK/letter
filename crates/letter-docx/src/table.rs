@@ -6,8 +6,8 @@
 
 use letter_model::{
     Block, Border, Borders, CellMargins, CellProps, CellVerticalAlign, HeightRule,
-    ParagraphBorders, RowHeight, RowProps, Shading, Table, TableCell, TableLayout, TableProps,
-    TableRow, TableWidth, Twips, VerticalMerge,
+    ParagraphBorders, RowHeight, RowProps, Shading, Table, TableArea, TableAreaStyle, TableCell,
+    TableLayout, TableLook, TableProps, TableRow, TableWidth, Twips, VerticalMerge,
 };
 
 use crate::document::{enum_val, is_w_ns, parse_color, read_blocks, set, string_val, toggle};
@@ -78,6 +78,26 @@ const TCPR_ORDER: &[&str] = &[
     "cellDel",
     "cellMerge",
     "tcPrChange",
+];
+
+/// Порядок детей `w:tblStylePr` по схеме.
+const AREA_ORDER: &[&str] = &["pPr", "rPr", "tblPr", "trPr", "tcPr"];
+
+/// Части таблицы в стиле (`w:tblStylePr w:type`).
+const AREAS: &[(&str, TableArea)] = &[
+    ("wholeTable", TableArea::WholeTable),
+    ("band1Vert", TableArea::Band1Vertical),
+    ("band2Vert", TableArea::Band2Vertical),
+    ("band1Horz", TableArea::Band1Horizontal),
+    ("band2Horz", TableArea::Band2Horizontal),
+    ("firstCol", TableArea::FirstColumn),
+    ("lastCol", TableArea::LastColumn),
+    ("firstRow", TableArea::FirstRow),
+    ("lastRow", TableArea::LastRow),
+    ("neCell", TableArea::TopRightCell),
+    ("nwCell", TableArea::TopLeftCell),
+    ("seCell", TableArea::BottomRightCell),
+    ("swCell", TableArea::BottomLeftCell),
 ];
 
 const LAYOUTS: &[(&str, TableLayout)] = &[
@@ -189,6 +209,9 @@ pub(crate) fn read_table_props(tbl_pr: &Element) -> TableProps {
                 "shd" => set(&mut props.shading, read_shading(child)),
                 "tblLayout" => set(&mut props.layout, read_layout(child)),
                 "tblCellMar" => set(&mut props.cell_margins, read_margins(child)),
+                "tblLook" => set(&mut props.look, read_look(child)),
+                "tblStyleRowBandSize" => set(&mut props.row_band_size, read_span(child)),
+                "tblStyleColBandSize" => set(&mut props.column_band_size, read_span(child)),
                 _ => false,
             };
         if !understood {
@@ -196,6 +219,109 @@ pub(crate) fn read_table_props(tbl_pr: &Element) -> TableProps {
         }
     }
     props
+}
+
+/// `w:tblLook`: старая запись числом (`w:val`) и новая — атрибутами;
+/// атрибуты важнее числа.
+fn read_look(element: &Element) -> Option<TableLook> {
+    const NAMES: [&str; 6] = [
+        "firstRow",
+        "lastRow",
+        "firstColumn",
+        "lastColumn",
+        "noHBand",
+        "noVBand",
+    ];
+    let mut allowed = vec!["val"];
+    allowed.extend(NAMES);
+    if !element.only_attrs(&allowed) {
+        return None;
+    }
+    let mut look = match element.w_attr("val") {
+        Some(v) => TableLook::from_bits(u16::from_str_radix(v.trim(), 16).ok()?),
+        None => TableLook::default(),
+    };
+    for name in NAMES {
+        let Some(value) = element.w_attr(name) else {
+            continue;
+        };
+        let on = match value {
+            "1" | "true" | "on" => true,
+            "0" | "false" | "off" => false,
+            _ => return None,
+        };
+        *match name {
+            "firstRow" => &mut look.first_row,
+            "lastRow" => &mut look.last_row,
+            "firstColumn" => &mut look.first_column,
+            "lastColumn" => &mut look.last_column,
+            "noHBand" => &mut look.no_h_band,
+            _ => &mut look.no_v_band,
+        } = on;
+    }
+    Some(look)
+}
+
+/// `w:tblStylePr` стиля таблицы; `None` — если что-то непонятно (тогда
+/// элемент хранится как есть).
+pub(crate) fn read_table_area(element: &Element) -> Option<TableAreaStyle> {
+    if !element.only_attrs(&["type"]) {
+        return None;
+    }
+    let area = crate::names::lookup(AREAS, element.w_attr("type")?)?;
+    let mut style = TableAreaStyle::new(area);
+    for child in element.elements() {
+        let understood = is_w_ns(child.ns.as_deref())
+            && child.attrs.is_empty()
+            && match child.local.as_str() {
+                "pPr" => {
+                    style.paragraph = crate::document::read_paragraph_props(child, false).0;
+                    true
+                }
+                "rPr" => {
+                    style.run = crate::document::read_run_props(child);
+                    true
+                }
+                "tblPr" => {
+                    style.table = read_table_props(child);
+                    true
+                }
+                "tcPr" => {
+                    style.cell = read_cell_props(child);
+                    true
+                }
+                _ => false,
+            };
+        if !understood {
+            style.unknown.push(child.raw());
+        }
+    }
+    Some(style)
+}
+
+/// Записывает `w:tblStylePr`.
+pub(crate) fn table_area_xml(style: &TableAreaStyle) -> String {
+    let mut children = Children::new(AREA_ORDER);
+    children.push(
+        "pPr",
+        crate::serialize::paragraph_props(&style.paragraph, None),
+    );
+    children.push("rPr", crate::serialize::run_props(&style.run));
+    let table = table_props(&style.table);
+    if !table.is_empty() {
+        children.push("tblPr", element("w:tblPr", &table));
+    }
+    let cell = cell_props(&style.cell);
+    if !cell.is_empty() {
+        children.push("tcPr", element("w:tcPr", &cell));
+    }
+    children.raw(&style.unknown);
+    let name = name_of(AREAS, style.area).unwrap_or("wholeTable");
+    crate::serialize::element_with(
+        "w:tblStylePr",
+        &[("w:type".to_string(), name.to_string())],
+        &children.finish(),
+    )
 }
 
 fn read_row_props(tr_pr: &Element) -> RowProps {
@@ -392,7 +518,17 @@ pub(crate) fn read_border(element: &Element) -> Option<Border> {
 }
 
 pub(crate) fn read_shading(element: &Element) -> Option<Shading> {
-    if !element.only_attrs(&["val", "color", "fill"]) {
+    if !element.only_attrs(&[
+        "val",
+        "color",
+        "fill",
+        "themeColor",
+        "themeShade",
+        "themeTint",
+        "themeFill",
+        "themeFillShade",
+        "themeFillTint",
+    ]) {
         return None;
     }
     let color = |name: &str| -> Result<Option<_>, ()> {
@@ -405,6 +541,11 @@ pub(crate) fn read_shading(element: &Element) -> Option<Shading> {
         pattern: element.w_attr("val")?.to_string(),
         color: color("color").ok()?,
         fill: color("fill").ok()?,
+        theme_color: crate::document::read_theme_color(element)?,
+        theme_fill: crate::document::read_theme_attrs(
+            element,
+            ["themeFill", "themeFillShade", "themeFillTint"],
+        )?,
     })
 }
 
@@ -476,6 +617,18 @@ pub(crate) fn table_props(props: &TableProps) -> String {
     if let Some(style) = &props.style {
         children.push("tblStyle", val("w:tblStyle", style));
     }
+    if let Some(size) = props.row_band_size {
+        children.push(
+            "tblStyleRowBandSize",
+            val("w:tblStyleRowBandSize", &size.to_string()),
+        );
+    }
+    if let Some(size) = props.column_band_size {
+        children.push(
+            "tblStyleColBandSize",
+            val("w:tblStyleColBandSize", &size.to_string()),
+        );
+    }
     if let Some(width) = props.width {
         children.push("tblW", width_xml("w:tblW", width));
     }
@@ -503,6 +656,24 @@ pub(crate) fn table_props(props: &TableProps) -> String {
     }
     if let Some(margins) = &props.cell_margins {
         children.push("tblCellMar", margins_xml("w:tblCellMar", margins));
+    }
+    if let Some(look) = props.look {
+        let flag = |on: bool| if on { "1" } else { "0" }.to_string();
+        children.push(
+            "tblLook",
+            empty(
+                "w:tblLook",
+                &[
+                    ("w:val", format!("{:04X}", look.bits())),
+                    ("w:firstRow", flag(look.first_row)),
+                    ("w:lastRow", flag(look.last_row)),
+                    ("w:firstColumn", flag(look.first_column)),
+                    ("w:lastColumn", flag(look.last_column)),
+                    ("w:noHBand", flag(look.no_h_band)),
+                    ("w:noVBand", flag(look.no_v_band)),
+                ],
+            ),
+        );
     }
     children.raw(&props.unknown);
     children.finish()
@@ -637,6 +808,16 @@ pub(crate) fn shading_xml(shading: &Shading) -> String {
     }
     if let Some(fill) = shading.fill {
         attrs.push(("w:fill", hex_color(fill)));
+    }
+    crate::serialize::theme_color_attrs(&mut attrs, shading.theme_color.as_ref());
+    if let Some(theme) = &shading.theme_fill {
+        attrs.push(("w:themeFill", theme.name.clone()));
+        if let Some(shade) = theme.shade {
+            attrs.push(("w:themeFillShade", format!("{shade:02X}")));
+        }
+        if let Some(tint) = theme.tint {
+            attrs.push(("w:themeFillTint", format!("{tint:02X}")));
+        }
     }
     empty("w:shd", &attrs)
 }

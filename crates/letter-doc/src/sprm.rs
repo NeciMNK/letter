@@ -561,6 +561,8 @@ fn shading(ipat: u16, color: Option<Color>, fill: Option<Color>) -> Option<Shadi
         pattern: shading_pattern(ipat).into(),
         color,
         fill,
+        theme_color: None,
+        theme_fill: None,
     })
 }
 
