@@ -8,9 +8,9 @@
 //! Набор текста объединяется в один шаг по словам, как в Word.
 
 use letter_model::{
-    Alignment, Anchor, Block, BreakKind, Color, Comment, Document, DocumentProtection,
-    HeaderFooter, HeaderFooterKind, Hyperlink, Math, Note, NoteKind, Picture, RevisionKind,
-    Section, SectionStart, Settings, Shape, WriteProtection,
+    Alignment, Anchor, Block, BreakKind, Color, Comment, ContentControl, Document,
+    DocumentProtection, HeaderFooter, HeaderFooterKind, Hyperlink, Math, Note, NoteKind, Picture,
+    RevisionKind, Section, SectionStart, Settings, Shape, WriteProtection,
 };
 
 use crate::Position;
@@ -246,6 +246,9 @@ pub enum Command {
     ChooseListItem(usize),
     /// Поставить дату в элемент выбора даты у курсора.
     ControlDate(DateTime),
+    /// Заменить свойства элемента управления у курсора (название, тег,
+    /// запреты, пункты списка, образец даты).
+    SetControl(Box<ContentControl>),
     /// Заменить текст сноски `id` вида `kind` (после её правки).
     SetNote {
         /// Обычная или концевая.
@@ -644,6 +647,7 @@ impl History {
                 | Command::PictureShape(_)
                 | Command::SetMath(_)
                 | Command::InsertControl(_)
+                | Command::SetControl(_)
                 | Command::PageSetup(_)
                 | Command::HeaderFooter { .. }
                 | Command::TitlePage { .. }
@@ -689,6 +693,11 @@ impl History {
             | Command::PageSetup(PageSetup::Borders(_)) => {
                 (0, paragraph_count(doc).saturating_sub(1))
             }
+            // Блочный элемент занимает несколько абзацев.
+            Command::SetControl(_) => crate::controls::control_range(doc, selection.focus)
+                .map_or((start.paragraph, end.paragraph), |(_, a, b)| {
+                    (a.paragraph, b.paragraph)
+                }),
             // Титульная страница встаёт в начало документа.
             Command::InsertCoverPage(_) => (0, 0),
             // Новый номер получают и следующие пункты списка.
@@ -842,6 +851,10 @@ impl History {
             Command::InsertControl(setup) => {
                 let at = crate::controls::insert_control(doc, start, end, setup);
                 Some(Selection::new(at, at))
+            }
+            Command::SetControl(control) => {
+                crate::controls::set_control(doc, selection.focus, (**control).clone());
+                Some(selection)
             }
             Command::PageSetup(setup) => {
                 set_page_setup(doc, start.paragraph, end.paragraph, *setup);
@@ -1012,6 +1025,7 @@ impl History {
             | Command::PictureShape(_)
             | Command::SetMath(_)
             | Command::InsertControl(_)
+            | Command::SetControl(_)
             | Command::PageSetup(_)
             | Command::HeaderFooter { .. }
             | Command::TitlePage { .. }

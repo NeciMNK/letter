@@ -43,6 +43,7 @@ use letter_render::{MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, formatting_m
 use crate::backstage::{Backstage, BackstageInfo, DocumentInfo, Page};
 use crate::bookmark_dialog::{BookmarkAction, BookmarkDialog};
 use crate::clipboard::{Clipboard, PasteMode, SystemBuffer};
+use crate::control_dialog::ControlDialog;
 use crate::files::{self, Autosave, OPEN_FILTERS, Recent, Recovered, SAVE_FILTERS};
 use crate::find::{FindAction, FindDialog};
 use crate::font_dialog::{FontDialog, FontValues};
@@ -838,6 +839,8 @@ pub struct Viewer {
     link_dialog: LinkDialog,
     /// Окно «Закладка».
     bookmark_dialog: BookmarkDialog,
+    /// Окно «Свойства элемента управления содержимым».
+    control_dialog: ControlDialog,
     page_number_dialog: PageNumberDialog,
     /// Окно «Ограничить редактирование».
     protect_dialog: ProtectDialog,
@@ -1062,6 +1065,7 @@ impl Viewer {
             paragraph_dialog: ParagraphDialog::default(),
             link_dialog: LinkDialog::default(),
             bookmark_dialog: BookmarkDialog::default(),
+            control_dialog: ControlDialog::default(),
             page_number_dialog: PageNumberDialog::default(),
             protect_dialog: ProtectDialog::default(),
             spelling: crate::spelling::Spelling::start(dir.clone()),
@@ -1511,6 +1515,7 @@ impl Viewer {
             && !self.paragraph_dialog.open
             && !self.link_dialog.open
             && !self.bookmark_dialog.open
+            && !self.control_dialog.open
             && !self.page_number_dialog.open
             && !self.password_dialog.open
             && !self.symbol_dialog.open
@@ -1608,6 +1613,15 @@ impl Viewer {
             }
             if let Some(action) = self.bookmark_dialog.ui(&ctx) {
                 self.bookmark_action(&ctx, action);
+            }
+            if let Some((at, control)) = self.control_dialog.ui(&ctx) {
+                // Свойства меняются у элемента, для которого открыто окно.
+                if let Some(document) = &mut self.document {
+                    document.anchor = at;
+                    document.cursor = at;
+                }
+                let command = Command::SetControl(Box::new(control));
+                self.run_ribbon(&ctx, vec![RibbonCommand::Edit(command)]);
             }
             if let Some((page, numbering)) = self.page_number_dialog.ui(&ctx) {
                 self.set_page_numbering(page, numbering);
@@ -2724,6 +2738,8 @@ impl Viewer {
         };
         if let Some(document) = &self.document {
             info.has_document = true;
+            info.in_control =
+                letter_editor::control_range(&document.doc, document.cursor).is_some();
             info.outline_level =
                 letter_editor::paragraph_ref(&document.doc, document.cursor.paragraph)
                     .and_then(|p| letter_editor::outline_level(&document.doc, &p.props));
@@ -2938,6 +2954,15 @@ impl Viewer {
                 }
                 RibbonCommand::ControlDate(date) => {
                     actions.push(Action::Edit(Command::ControlDate(date)));
+                }
+                RibbonCommand::ControlProperties => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &self.document
+                        && let Some((control, _, _)) =
+                            letter_editor::control_range(&document.doc, document.cursor)
+                    {
+                        self.control_dialog.show(document.cursor, &control);
+                    }
                 }
                 RibbonCommand::Style(id) => actions.push(Action::Edit(Command::Style(id))),
                 // В колонтитул сноску не вставить.
@@ -5488,6 +5513,20 @@ mod tests {
         let (control, _, _) = letter_editor::control_at(&reread, Position::new(0, 0)).unwrap();
         assert_eq!(control.kind(), letter_model::ControlKind::Text);
         assert!(!control.showing_placeholder());
+        // «Свойства»: окно открывается для элемента у курсора, новое
+        // название сохраняется в файл.
+        assert!(viewer.ribbon_info().in_control);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::ControlProperties]);
+        assert!(viewer.control_dialog.open);
+        let named = control.with_settings("Имя", "name", letter_model::ControlLock::Control);
+        let command = Command::SetControl(Box::new(named));
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Edit(command)]);
+        let doc = &viewer.document.as_ref().unwrap().doc;
+        let reread = letter_docx::read_bytes(&letter_docx::write_bytes(doc).unwrap()).unwrap();
+        let (control, _, _) = letter_editor::control_at(&reread, Position::new(0, 0)).unwrap();
+        assert_eq!(control.title().as_deref(), Some("Имя"));
+        assert_eq!(control.tag().as_deref(), Some("name"));
+        assert_eq!(control.lock(), letter_model::ControlLock::Control);
     }
 
     #[test]
