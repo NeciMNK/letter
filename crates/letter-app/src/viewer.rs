@@ -816,6 +816,8 @@ pub struct Viewer {
     view_size: Vec2,
     /// Левый верхний угол видимой части на экране.
     view_origin: Pos2,
+    /// Части окна для F6 (лента, строка состояния, области, документ).
+    regions: crate::access::Regions,
     /// Прокрутка, которую надо поставить в следующем кадре.
     pending_offset: Option<Vec2>,
     /// Лист в середине окна, с нуля.
@@ -1084,6 +1086,7 @@ impl Viewer {
             offset: Vec2::ZERO,
             view_size: Vec2::ZERO,
             view_origin: Pos2::ZERO,
+            regions: crate::access::Regions::default(),
             pending_offset: None,
             current_page: 0,
             printers: None,
@@ -1771,12 +1774,17 @@ impl Viewer {
             && !self.page_number_dialog.open
             && !self.password_dialog.open
             && !self.symbol_dialog.open
-            && (self.ribbon.keytips.active() || !ctx.egui_wants_keyboard_input())
+            && (self.ribbon.keytips.active() || !crate::access::typing_elsewhere(&ctx))
         {
             let commands = self.ribbon.handle_keys(&ctx);
             self.run_ribbon(&ctx, commands);
         }
         self.handle_input(&ctx);
+        // F6 — фокус в следующую часть окна (по местам прошлого кадра).
+        if !self.backstage.open && !self.ribbon.keytips.active() {
+            self.regions.handle_keys(&ctx);
+        }
+        self.regions.clear();
         if self.applied_theme != Some(self.settings.theme) {
             ctx.set_theme(self.settings.theme.preference());
             self.applied_theme = Some(self.settings.theme);
@@ -1844,10 +1852,10 @@ impl Viewer {
                 }
             } else {
                 let info = self.ribbon_info();
-                let commands = egui::Panel::top("ribbon")
-                    .show(ui, |ui| self.ribbon.ui(ui, &info))
-                    .inner;
-                self.run_ribbon(&ctx, commands);
+                let ribbon = egui::Panel::top("ribbon").show(ui, |ui| self.ribbon.ui(ui, &info));
+                self.regions
+                    .set(crate::access::Region::Ribbon, ribbon.response.rect);
+                self.run_ribbon(&ctx, ribbon.inner);
             }
             if let Some(action) = self.find.ui(&ctx) {
                 self.find_action(&ctx, action);
@@ -1921,7 +1929,9 @@ impl Viewer {
                 crate::symbols::remember(&ctx, c);
                 self.run_ribbon(&ctx, vec![RibbonCommand::InsertSymbol(c)]);
             }
-            egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+            let status = egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+            self.regions
+                .set(crate::access::Region::Status, status.response.rect);
             self.protection_bar(ui);
             if self.navigation.open && self.document.is_some() && self.view_mode != ViewMode::Read {
                 let info = self.navigation_info();
@@ -1933,24 +1943,26 @@ impl Viewer {
                     }
                 };
                 let navigation = &mut self.navigation;
-                let action = egui::Panel::left("navigation")
+                let pane = egui::Panel::left("navigation")
                     .default_size(260.0)
                     .size_range(180.0..=500.0)
-                    .show(ui, |ui| navigation.ui(ui, &info, &mut thumbnail))
-                    .inner;
-                if let Some(action) = action {
+                    .show(ui, |ui| navigation.ui(ui, &info, &mut thumbnail));
+                self.regions
+                    .set(crate::access::Region::Navigation, pane.response.rect);
+                if let Some(action) = pane.inner {
                     self.navigation_action(action);
                 }
             }
             if self.comments.open && self.document.is_some() && self.view_mode != ViewMode::Read {
                 let info = self.comments_info();
                 let comments = &mut self.comments;
-                let action = egui::Panel::right("comments")
+                let pane = egui::Panel::right("comments")
                     .default_size(280.0)
                     .size_range(200.0..=500.0)
-                    .show(ui, |ui| comments.ui(ui, &info))
-                    .inner;
-                if let Some(action) = action {
+                    .show(ui, |ui| comments.ui(ui, &info));
+                self.regions
+                    .set(crate::access::Region::Comments, pane.response.rect);
+                if let Some(action) = pane.inner {
                     self.comment_action(&ctx, action);
                 }
             }
@@ -1960,6 +1972,7 @@ impl Viewer {
         }
         self.statistics_window(&ctx);
         self.error_window(&ctx);
+        crate::access::paint_focus(&ctx);
         self.save_changes_window(&ctx);
         self.recovery_window(&ctx);
         self.autosave_tick(&ctx);
@@ -2160,7 +2173,7 @@ impl Viewer {
         let points = 1.0 / (self.zoom() * SCREEN_PIXELS_PER_POINT);
         let screen = self.view_size.y * points;
         // Клавиши достаются полю ввода (например, размер шрифта на ленте).
-        if self.document.is_none() || ctx.egui_wants_keyboard_input() {
+        if self.document.is_none() || crate::access::typing_elsewhere(ctx) {
             return;
         }
         if self.view_mode == ViewMode::Read {
@@ -2212,9 +2225,7 @@ impl Viewer {
         {
             ctx.memory_mut(|m| {
                 m.move_focus(egui::FocusDirection::None);
-                if let Some(id) = m.focused() {
-                    m.surrender_focus(id);
-                }
+                m.request_focus(crate::access::document_id());
             });
         }
         let mut actions = Vec::new();
@@ -3920,6 +3931,7 @@ impl Viewer {
             None => &document.layout.pages,
         };
         let boxes: Vec<PageBox> = pages.iter().map(|p| page_box(p, mode)).collect();
+        let name = document.name();
         let placement = place_view(&boxes, zoom, area_rect.width(), mode);
 
         if std::mem::take(&mut self.reveal_cursor)
@@ -3957,12 +3969,31 @@ impl Viewer {
         let mut reveal = false;
         let output = area.show_viewport(ui, |ui, viewport| {
             let origin = ui.max_rect().min;
+            // У листа постоянный номер: на него F6 и Tab возвращают фокус.
+            let sheet = Rect::from_min_size(origin, placement.size).round_ui();
+            ui.advance_cursor_after_rect(sheet);
             let response = ui
-                .allocate_rect(
-                    Rect::from_min_size(origin, placement.size),
-                    Sense::click_and_drag(),
-                )
+                .interact(sheet, crate::access::document_id(), Sense::click_and_drag())
                 .on_hover_cursor(CursorIcon::Text);
+            // Фокус ни у чего — он у документа, как в Word: так диктор
+            // читает текст, а F6 считает от документа.
+            if ui.memory(|m| m.focused().is_none()) {
+                response.request_focus();
+            }
+            if response.has_focus() {
+                // Стрелки, Tab и Esc правят документ, а не двигают фокус.
+                ui.memory_mut(|m| {
+                    m.set_focus_lock_filter(
+                        response.id,
+                        egui::EventFilter {
+                            tab: true,
+                            horizontal_arrows: true,
+                            vertical_arrows: true,
+                            escape: true,
+                        },
+                    )
+                });
+            }
             let ppp = ui.ctx().pixels_per_point();
             // Лист с целого пикселя экрана — буквы чётче.
             let screen_rect = |i: usize| {
@@ -3972,6 +4003,16 @@ impl Viewer {
             };
             // Пунктов документа на точку экрана.
             let points = 1.0 / (zoom * SCREEN_PIXELS_PER_POINT);
+            crate::access::describe_document(
+                ui,
+                &response,
+                pages,
+                document.anchor,
+                document.cursor,
+                &name,
+                &screen_rect,
+                points,
+            );
 
             // Щелчок ставит курсор, как в Word — сразу при нажатии;
             // с Shift — выделяет до места щелчка. Если тянуть мышь с
@@ -7379,6 +7420,81 @@ mod tests {
         h.get_by_label("Число слов: 1 из 3");
         h.get_by_label("Разметка страницы");
         h.get_by_label("Режим чтения");
+    }
+
+    #[test]
+    fn screen_reader_reads_the_document_and_f6_moves_focus() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::{NodeT, Queryable};
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.new_document();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(vec2(1200.0, 800.0))
+            .build_ui_state(|ui, viewer: &mut Viewer| viewer.ui(ui), viewer);
+        h.run();
+        h.event(Event::Text("Привет, мир".into()));
+        h.run();
+        h.key_press(Key::ArrowLeft);
+        h.run();
+        let name = h.state().document.as_ref().unwrap().name();
+        let sheet = h.get_by_role(Role::MultilineTextInput);
+        assert_eq!(
+            sheet.accesskit_node().label().as_deref(),
+            Some(name.as_str())
+        );
+        assert!(sheet.accesskit_node().is_focused());
+        assert!(
+            sheet
+                .accesskit_node()
+                .document_range()
+                .text()
+                .starts_with("Привет, мир")
+        );
+        let node = sheet.accesskit_node();
+        let focus = node.text_selection_focus().expect("курсор");
+        assert_eq!(focus.to_global_usv_index(), "Привет, ми".chars().count());
+
+        // F6: строка состояния, лента, снова документ; Shift+F6 — назад.
+        let focused = |h: &egui_kittest::Harness<'_, Viewer>| h.ctx.memory(|m| m.focused());
+        h.key_press(Key::F6);
+        h.run();
+        let status = focused(&h).expect("фокус в строке состояния");
+        assert_eq!(
+            h.state().regions.current(&h.ctx),
+            crate::access::Region::Status
+        );
+        h.key_press(Key::F6);
+        h.run();
+        assert_ne!(focused(&h), Some(status));
+        assert_eq!(
+            h.state().regions.current(&h.ctx),
+            crate::access::Region::Ribbon
+        );
+        // Пока фокус на ленте, буквы не попадают в документ.
+        h.event(Event::Text("x".into()));
+        h.run();
+        let text = |h: &egui_kittest::Harness<'_, Viewer>| {
+            h.state().document.as_ref().unwrap().doc.plain_text()
+        };
+        assert_eq!(text(&h), "Привет, мир");
+        h.key_press(Key::F6);
+        h.run();
+        assert_eq!(focused(&h), Some(crate::access::document_id()));
+        h.key_press_modifiers(Modifiers::SHIFT, Key::F6);
+        h.run();
+        assert_eq!(
+            h.state().regions.current(&h.ctx),
+            crate::access::Region::Ribbon
+        );
+        // Esc с ленты — обратно в документ; Tab печатает табуляцию.
+        h.key_press(Key::Escape);
+        h.run();
+        h.run();
+        assert_eq!(focused(&h), Some(crate::access::document_id()));
+        h.key_press(Key::Tab);
+        h.run();
+        assert_eq!(focused(&h), Some(crate::access::document_id()));
+        assert_eq!(text(&h), "Привет, ми\tр");
     }
 
     #[test]
