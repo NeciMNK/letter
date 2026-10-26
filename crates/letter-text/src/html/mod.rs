@@ -195,6 +195,21 @@ impl Reader {
             return;
         }
         if name == "img" {
+            // Картинка прямо в файле (`data:`) становится рисунком; по
+            // ссылке картинки не загружаются — остаётся подпись.
+            let pixels = |key: &str| {
+                attr(key).and_then(|v| v.trim().trim_end_matches("px").trim().parse().ok())
+            };
+            let picture = attr("src").and_then(|src| {
+                crate::images::picture_from_data_uri(src, pixels("width"), pixels("height"))
+            });
+            if let Some(picture) = picture {
+                if !self.top().hidden {
+                    let props = self.top().run.clone();
+                    self.builder.content(RunContent::Picture(picture), &props);
+                }
+                return;
+            }
             if let Some(alt) = attr("alt").filter(|a| !a.trim().is_empty()) {
                 let alt = alt.to_owned();
                 self.text(&alt);

@@ -316,9 +316,16 @@ fn content(
                 RunContent::Break(_) => {
                     out.push_str("<br style=\"page-break-before:always\">");
                 }
-                // Рисунки в HTML пока не записываются.
-                RunContent::Picture(_)
-                | RunContent::FieldChar(_)
+                RunContent::Picture(picture) => {
+                    // Картинка — прямо в файле, `data:`-адресом.
+                    if let Some((src, width, height)) = crate::images::data_uri(picture) {
+                        let _ = write!(
+                            out,
+                            "<img src=\"{src}\" width=\"{width}\" height=\"{height}\" alt=\"\">"
+                        );
+                    }
+                }
+                RunContent::FieldChar(_)
                 | RunContent::FieldCode(_)
                 | RunContent::NoteReference(_)
                 | RunContent::NoteMark(_)

@@ -153,3 +153,37 @@ fn links_are_read_and_written() {
     assert_eq!(p.plain_text(), "See site and top.");
     assert!(p.runs().any(|r| r.props.link.is_some()));
 }
+
+#[test]
+fn pictures_are_kept_inside_the_file() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/docx/image.docx");
+    let source = letter_docx::read_bytes(&std::fs::read(fixture).expect("файл")).expect("docx");
+    let pictures = |doc: &Document| -> Vec<letter_model::Picture> {
+        doc.blocks()
+            .filter_map(|b| match b {
+                Block::Paragraph(p) => Some(p),
+                _ => None,
+            })
+            .flat_map(|p| p.runs())
+            .flat_map(|r| r.content.iter())
+            .filter_map(|c| match c {
+                RunContent::Picture(p) => Some(p.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let before = pictures(&source);
+    assert!(!before.is_empty());
+    let html = write(&source);
+    assert!(html.contains("<img src=\"data:image/"));
+    let after = pictures(&read(html.as_bytes()));
+    assert_eq!(after.len(), before.len());
+    let image = |p: &letter_model::Picture| p.image.as_ref().map(|i| i.bytes.clone());
+    assert_eq!(image(&after[0]), image(&before[0]));
+    // Размер — с точностью до пикселя.
+    assert!((after[0].width - before[0].width).abs() <= 9525);
+    // Картинка по ссылке не загружается: остаётся подпись.
+    let linked = read(b"<p><img src='http://example.com/a.png' alt='logo'></p>");
+    assert_eq!(texts(&linked), ["logo"]);
+}
