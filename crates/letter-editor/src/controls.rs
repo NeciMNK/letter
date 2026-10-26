@@ -4,10 +4,11 @@
 use std::sync::Arc;
 
 use letter_model::{
-    ContentControl, ContentControlRef, ControlKind, Document, Inline, Paragraph, RunContent,
+    ContentControl, ContentControlRef, ControlKind, ControlLock, Document, Inline, Paragraph,
+    RunContent,
 };
 
-use crate::edit::{item_len, paragraph_mut, paragraph_ref};
+use crate::edit::{item_len, paragraph_mut, paragraph_ref, plain_text, text_len};
 use crate::fields::{DateTime, format_date};
 use crate::position::Position;
 
@@ -39,6 +40,109 @@ pub fn control_at(doc: &Document, at: Position) -> Option<(ContentControlRef, Po
     let start = Position::new(at.paragraph, segments[first].0);
     let end = Position::new(at.paragraph, segments[last].1);
     Some((control, start, end))
+}
+
+/// Элемент вокруг места `at`: внутри абзаца (см. [`control_at`]), а если
+/// такого нет — самый внутренний элемент из целых абзацев (блочный), от
+/// начала первого его абзаца до конца последнего.
+pub fn control_range(
+    doc: &Document,
+    at: Position,
+) -> Option<(ContentControlRef, Position, Position)> {
+    if let Some(found) = control_at(doc, at) {
+        return Some(found);
+    }
+    let control = paragraph_ref(doc, at.paragraph)?
+        .props
+        .controls
+        .last()?
+        .clone();
+    let (start, end) = block_range(doc, at.paragraph, &control);
+    Some((control, start, end))
+}
+
+/// Удалит ли правка текста от `start` до `end` (для Backspace и Delete
+/// без выделения — `forward` и знак рядом) целиком элемент, который
+/// запрещено удалять (`w:lock` — `sdtLocked` или `sdtContentLocked`).
+/// Тогда правку не выполняем, как Word.
+pub fn removes_locked_control(
+    doc: &Document,
+    start: Position,
+    end: Position,
+    forward: Option<bool>,
+) -> bool {
+    let (start, end) = match forward {
+        Some(forward) if start == end => {
+            let Some(paragraph) = paragraph_ref(doc, start.paragraph) else {
+                return false;
+            };
+            let text = plain_text(paragraph);
+            let len = if forward {
+                text.get(start.offset..)
+                    .and_then(|t| t.chars().next())
+                    .map_or(0, char::len_utf8)
+            } else {
+                text.get(..start.offset)
+                    .and_then(|t| t.chars().next_back())
+                    .map_or(0, char::len_utf8)
+            };
+            if forward {
+                (start, Position::new(start.paragraph, start.offset + len))
+            } else {
+                (Position::new(start.paragraph, start.offset - len), start)
+            }
+        }
+        _ => (start, end),
+    };
+    if start == end {
+        return false;
+    }
+    let locked =
+        |c: &ContentControlRef| matches!(c.lock(), ControlLock::Control | ControlLock::Both);
+    let before = |a: Position, b: Position| (a.paragraph, a.offset) <= (b.paragraph, b.offset);
+    for index in start.paragraph..=end.paragraph {
+        let Some(paragraph) = paragraph_ref(doc, index) else {
+            continue;
+        };
+        // Элемент внутри абзаца целиком попал в удаляемое.
+        for (a, b, control) in segments(paragraph) {
+            if a == b || !control.as_ref().is_some_and(locked) {
+                continue;
+            }
+            if let Some((_, from, to)) = control_at(doc, Position::new(index, a))
+                && before(start, from)
+                && before(to, end)
+            {
+                return true;
+            }
+        }
+        // Блочный элемент целиком попал в удаляемое.
+        for control in paragraph.props.controls.iter().filter(|c| locked(c)) {
+            let (from, to) = block_range(doc, index, control);
+            if before(start, from) && before(to, end) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Абзацы блочного элемента `control`, в который входит абзац `index`.
+fn block_range(doc: &Document, index: usize, control: &ContentControlRef) -> (Position, Position) {
+    let has = |i: usize| {
+        paragraph_ref(doc, i)
+            .is_some_and(|p| p.props.controls.iter().any(|c| Arc::ptr_eq(c, control)))
+    };
+    let mut first = index;
+    while first > 0 && has(first - 1) {
+        first -= 1;
+    }
+    let mut last = index;
+    while has(last + 1) {
+        last += 1;
+    }
+    let end = paragraph_ref(doc, last).map_or(0, text_len);
+    (Position::new(first, 0), Position::new(last, end))
 }
 
 /// Фрагменты абзаца: начало, конец (байты) и элемент управления.
@@ -318,6 +422,78 @@ mod tests {
                 .as_str()
                 .contains("2026-10-23T00:00:00Z")
         );
+    }
+
+    #[test]
+    fn locked_control_is_not_deleted() {
+        use crate::{Command, History, Selection};
+        let c = control(r#"<w:lock w:val="sdtLocked"/>"#);
+        let mut doc = doc_with(&c, None);
+        let (from, to) = (Position::new(0, 0), Position::new(0, 30));
+        assert!(removes_locked_control(&doc, from, to, None));
+        // Часть элемента удалять можно.
+        assert!(!removes_locked_control(
+            &doc,
+            Position::new(0, 5),
+            Position::new(0, 7),
+            None
+        ));
+        let mut history = History::default();
+        let all = Selection::new(from, Position::new(0, doc.plain_text().len()));
+        history.run(&mut doc, all, Command::DeleteBackward);
+        assert_eq!(text(&doc), "до элемент после");
+        // Элемент из одного знака не стирается Backspace.
+        let one = control(r#"<w:lock w:val="sdtContentLocked"/>"#);
+        let paragraph = Paragraph::from_runs([
+            Run::text("a"),
+            Run::text("x").with_props(RunProps {
+                control: Some(one),
+                ..RunProps::default()
+            }),
+        ]);
+        let mut doc = Document::new();
+        doc.sections[0].blocks = vec![paragraph.into()];
+        assert!(removes_locked_control(
+            &doc,
+            Position::new(0, 2),
+            Position::new(0, 2),
+            Some(false)
+        ));
+        assert!(!removes_locked_control(
+            &doc,
+            Position::new(0, 1),
+            Position::new(0, 1),
+            Some(false)
+        ));
+        assert!(removes_locked_control(
+            &doc,
+            Position::new(0, 1),
+            Position::new(0, 1),
+            Some(true)
+        ));
+    }
+
+    #[test]
+    fn block_control_range() {
+        let c = control("");
+        let mut doc = Document::new();
+        let mut inside = Paragraph::from_runs([Run::text("один")]);
+        inside.props.controls = vec![c.clone()];
+        let mut second = Paragraph::from_runs([Run::text("два")]);
+        second.props.controls = vec![c.clone()];
+        doc.sections[0].blocks = vec![
+            Paragraph::from_runs([Run::text("до")]).into(),
+            inside.into(),
+            second.into(),
+            Paragraph::from_runs([Run::text("после")]).into(),
+        ];
+        let (found, start, end) = control_range(&doc, Position::new(2, 1)).unwrap();
+        assert!(Arc::ptr_eq(&found, &c));
+        assert_eq!(
+            (start, end),
+            (Position::new(1, 0), Position::new(2, "два".len()))
+        );
+        assert!(control_range(&doc, Position::new(3, 0)).is_none());
     }
 
     #[test]

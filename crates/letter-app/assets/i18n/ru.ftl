@@ -996,3 +996,9 @@ equation-function = Функция
 keytip-equation-function = Ф
 equation-matrix = Матрица
 keytip-equation-matrix = МА
+
+# Календарь элемента выбора даты
+calendar-months = Январь Февраль Март Апрель Май Июнь Июль Август Сентябрь Октябрь Ноябрь Декабрь
+calendar-weekdays = Пн Вт Ср Чт Пт Сб Вс
+calendar-previous = Предыдущий месяц
+calendar-next = Следующий месяц

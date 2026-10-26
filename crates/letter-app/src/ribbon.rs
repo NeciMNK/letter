@@ -175,6 +175,8 @@ pub enum RibbonCommand {
     ChooseListItem(usize),
     /// Поставить сегодняшнюю дату в элемент выбора даты у курсора.
     ControlToday,
+    /// Поставить эту дату в элемент выбора даты у курсора.
+    ControlDate(letter_editor::DateTime),
     /// Показать или скрыть знаки форматирования.
     ToggleMarks,
     /// Применить стиль с этим идентификатором.

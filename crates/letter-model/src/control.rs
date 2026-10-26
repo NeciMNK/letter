@@ -93,6 +93,25 @@ impl ContentControl {
         kind
     }
 
+    /// Выбранная дата элемента выбора даты (`w:fullDate`): год, месяц,
+    /// день.
+    pub fn full_date(&self) -> Option<(i32, u32, u32)> {
+        let full = self.tags().find(|t| t.local == "date")?.attr("fullDate")?;
+        let mut parts = full.get(..10)?.split('-');
+        let year = parts.next()?.parse().ok()?;
+        let month = parts
+            .next()?
+            .parse()
+            .ok()
+            .filter(|m| (1..=12).contains(m))?;
+        let day = parts
+            .next()?
+            .parse()
+            .ok()
+            .filter(|d| (1..=31).contains(d))?;
+        Some((year, month, day))
+    }
+
     /// Показывает ли элемент текст-подсказку (`w:showingPlcHdr`): тогда
     /// первый набранный текст заменяет её целиком.
     pub fn showing_placeholder(&self) -> bool {
@@ -540,6 +559,9 @@ mod tests {
                 .contains("2027-01-01")
         );
         assert!(!redated.props.as_ref().unwrap().as_str().contains("2026"));
+        assert_eq!(date.full_date(), None);
+        assert_eq!(dated.full_date(), Some((2026, 10, 23)));
+        assert_eq!(redated.full_date(), Some((2027, 1, 1)));
     }
 
     #[test]
