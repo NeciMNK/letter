@@ -1,0 +1,62 @@
+# Пакет Flatpak (F10.1b). Программу собирает обычный `cargo build
+# --release` в CI (.github/workflows/release.yml), а этот манифест
+# упаковывает готовый файл `letter` (его кладут в эту папку) вместе со
+# значками, ярлыком и описанием для магазинов приложений:
+#
+#   cargo build --release -p letter-app
+#   cp target/release/letter packaging/flatpak/
+#   flatpak-builder --user --install-deps-from=flathub --repo=repo build \
+#     packaging/flatpak/io.github.bikhe.letter.yml
+#   flatpak build-bundle repo letter.flatpak io.github.bikhe.letter
+#
+# Готовый файл .flatpak ставится командой `flatpak install letter.flatpak`.
+app-id: io.github.bikhe.letter
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+command: letter
+finish-args:
+  # Окно: Wayland, а где его нет — X11; видеокарта для отрисовки.
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Документы пользователя: открыть и сохранить где угодно в домашней
+  # папке и на подключённых дисках.
+  - --filesystem=home
+  - --filesystem=/media
+  - --filesystem=/run/media
+  # Печать.
+  - --socket=cups
+modules:
+  - name: letter
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 letter /app/bin/letter
+      - install -Dm644 io.github.bikhe.letter.desktop /app/share/applications/io.github.bikhe.letter.desktop
+      - install -Dm644 io.github.bikhe.letter.metainfo.xml /app/share/metainfo/io.github.bikhe.letter.metainfo.xml
+      - |
+        for size in 16 32 48 64 128 256 512; do
+          install -Dm644 letter-$size.png /app/share/icons/hicolor/${size}x${size}/apps/io.github.bikhe.letter.png
+        done
+    sources:
+      - type: file
+        path: letter
+      - type: file
+        path: io.github.bikhe.letter.desktop
+      - type: file
+        path: io.github.bikhe.letter.metainfo.xml
+      - type: file
+        path: ../../crates/letter-app/assets/icon/letter-16.png
+      - type: file
+        path: ../../crates/letter-app/assets/icon/letter-32.png
+      - type: file
+        path: ../../crates/letter-app/assets/icon/letter-48.png
+      - type: file
+        path: ../../crates/letter-app/assets/icon/letter-64.png
+      - type: file
+        path: ../../crates/letter-app/assets/icon/letter-128.png
+      - type: file
+        path: ../../crates/letter-app/assets/icon/letter-256.png
+      - type: file
+        path: ../../crates/letter-app/assets/icon/letter-512.png

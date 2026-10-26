@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.bikhe.letter</id>
+  <name>letter</name>
+  <summary>Word processor compatible with Word documents</summary>
+  <summary xml:lang="ru">Текстовый редактор, совместимый с документами Word</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.bikhe">
+    <name>letter contributors</name>
+  </developer>
+  <description>
+    <p>An open source word processor that opens, edits and saves .docx, .doc, .rtf, .odt, .txt, .html and .md files.</p>
+    <p xml:lang="ru">Открытый текстовый редактор: открывает, правит и сохраняет .docx, .doc, .rtf, .odt, .txt, .html и .md.</p>
+  </description>
+  <launchable type="desktop-id">io.github.bikhe.letter.desktop</launchable>
+  <url type="homepage">https://github.com/bikhe/letter</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-26"/>
+  </releases>
+</component>

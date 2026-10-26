@@ -8,9 +8,20 @@
 # - PR, меняющий сборку, проверяет её без публикации (файлы — в Artifacts).
 #
 # Что собирается:
-# - Windows: установщики .msi и setup.exe, портативный .zip;
+# - Windows: установщики .msi и setup.exe, пакет .msix, портативный .zip;
 # - macOS: образ .dmg, портативный .zip с letter.app;
-# - Linux: пакет .deb, .AppImage (запускается без установки), портативный .tar.gz.
+# - Linux: пакет .deb, .AppImage (запускается без установки), пакет
+#   .flatpak, портативный .tar.gz.
+#
+# Подпись (F10.1b) включается сама, когда в секретах репозитория
+# (Settings → Secrets and variables → Actions) есть сертификаты; без них
+# файлы собираются неподписанными:
+# - Windows: WINDOWS_CERTIFICATE (файл .pfx в base64),
+#   WINDOWS_CERTIFICATE_PASSWORD и WINDOWS_PUBLISHER («CN=…» из
+#   сертификата — им подписывается и пакет .msix);
+# - macOS: APPLE_CERTIFICATE (.p12 в base64), APPLE_CERTIFICATE_PASSWORD,
+#   APPLE_SIGNING_IDENTITY, а для заверения в Apple (notarization) ещё
+#   APPLE_ID, APPLE_PASSWORD (пароль приложения) и APPLE_TEAM_ID.
 name: Выпуск
 
 on:
@@ -66,10 +77,59 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Установить cargo-packager
         run: cargo install cargo-packager --version 0.11.8 --locked
+      - name: Собрать программу
+        run: cargo build --release -p letter-app
+      # Программа подписывается до упаковки: в установщики попадает уже
+      # подписанный letter.exe (cargo-packager не пересобирает его).
+      - name: Подписать программу (Windows, если есть сертификат)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: ./packaging/msix/sign.ps1 target/release/letter.exe
       # Путь для файлов — от корня репозитория: относительный cargo-packager
-      # считает от папки крейта.
+      # считает от папки крейта. Переменные Apple передаются, только если
+      # заданы: пустые cargo-packager принял бы за настройку подписи.
       - name: Собрать установщики
-        run: cargo packager --release --packages letter-app --formats ${{ matrix.formats }} --out-dir "${{ github.workspace }}/dist"
+        shell: bash
+        env:
+          SECRET_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          SECRET_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          SECRET_APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          SECRET_APPLE_ID: ${{ secrets.APPLE_ID }}
+          SECRET_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          SECRET_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            secret="SECRET_$name"
+            if [ -n "${!secret}" ]; then export "$name=${!secret}"; fi
+          done
+          cargo packager --release --packages letter-app --formats ${{ matrix.formats }} --out-dir "${{ github.workspace }}/dist"
+      - name: Пакет MSIX (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_PUBLISHER: ${{ secrets.WINDOWS_PUBLISHER }}
+        run: ./packaging/msix/build.ps1 "dist/letter-$env:VERSION-windows-x64.msix"
+      - name: Подписать установщики (Windows, если есть сертификат)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: ./packaging/msix/sign.ps1 (Get-ChildItem dist/*.msi, dist/*-setup.exe, dist/*.msix).FullName
+      - name: Пакет Flatpak (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          cp target/release/letter packaging/flatpak/
+          flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse --force-clean \
+            --repo=flatpak-repo flatpak-build packaging/flatpak/io.github.bikhe.letter.yml
+          flatpak build-bundle flatpak-repo "dist/letter-$VERSION-linux-x64.flatpak" io.github.bikhe.letter
       # Портативная версия: программа, папка letter-data (включает хранение
       # настроек рядом с программой) и инструкция.
       - name: Портативная версия
@@ -82,7 +142,7 @@ jobs:
             Windows)
               cp target/release/letter.exe portable/letter/
               (cd portable && 7z a "../release/letter-$VERSION-windows-x64-portable.zip" letter)
-              cp dist/*.msi dist/*-setup.exe release/
+              cp dist/*.msi dist/*-setup.exe dist/*.msix release/
               ;;
             macOS)
               ditto -c -k --keepParent dist/letter.app "release/letter-$VERSION-macos-portable.zip"
@@ -91,7 +151,7 @@ jobs:
             Linux)
               cp target/release/letter portable/letter/
               tar -czf "release/letter-$VERSION-linux-x64-portable.tar.gz" -C portable letter
-              cp dist/*.deb dist/*.AppImage release/
+              cp dist/*.deb dist/*.AppImage dist/*.flatpak release/
               ;;
           esac
           ls -la release
@@ -140,7 +200,7 @@ jobs:
             Свежая сборка из main (коммит ${{ github.sha }}). Может содержать ошибки:
             для постоянной работы берите выпуск с номером версии.
 
-            - Windows: `.msi` или `-setup.exe` — установщик, `-portable.zip` — без установки.
+            - Windows: `.msi` или `-setup.exe` — установщик, `.msix` — пакет (ставится, только если он подписан), `-portable.zip` — без установки.
             - macOS: `.dmg` — установка, `-portable.zip` — letter.app без установки.
-            - Linux: `.deb` — пакет, `.AppImage` и `-portable.tar.gz` — без установки.
+            - Linux: `.deb` — пакет, `.flatpak` — `flatpak install`, `.AppImage` и `-portable.tar.gz` — без установки.
           files: release/*

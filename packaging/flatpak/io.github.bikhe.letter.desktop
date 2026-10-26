@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=letter
+GenericName=Word Processor
+GenericName[ru]=Текстовый редактор
+Comment=Edit Word documents
+Comment[ru]=Редактор документов Word
+Exec=letter %F
+Icon=io.github.bikhe.letter
+Terminal=false
+Categories=Office;WordProcessor;
+MimeType=application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/msword;application/rtf;application/vnd.oasis.opendocument.text;
+Keywords=docx;doc;word;document;text;
+Keywords[ru]=docx;doc;word;документ;текст;
