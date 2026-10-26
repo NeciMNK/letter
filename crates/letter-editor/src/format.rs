@@ -678,6 +678,56 @@ pub fn format_paragraphs(
     }
 }
 
+/// Границы абзацев с `first` по `last` из окна «Границы и заливка»:
+/// сверху, слева, снизу, справа и между абзацами — как в `borders`.
+/// Сторона без линии убирается; если линия есть в стиле абзаца, она
+/// закрывается видом `nil`.
+pub fn set_paragraph_borders(
+    doc: &mut Document,
+    first: usize,
+    last: usize,
+    borders: &ParagraphBorders,
+) {
+    for index in first..=last {
+        let Some(styled) = paragraph_ref(doc, index).map(|p| {
+            doc.resolve_paragraph(&ParagraphProps {
+                style: p.props.style.clone(),
+                ..ParagraphProps::default()
+            })
+            .borders
+        }) else {
+            continue;
+        };
+        let Some(paragraph) = paragraph_mut(doc, index) else {
+            continue;
+        };
+        let wanted = sides_of(borders).map(|s| ParagraphBorders::visible(s).cloned());
+        let in_style = sides_of(&styled).map(|s| ParagraphBorders::visible(s).is_some());
+        let mut own = paragraph.props.borders.take().unwrap_or_default();
+        let slots = [
+            &mut own.top,
+            &mut own.left,
+            &mut own.bottom,
+            &mut own.right,
+            &mut own.between,
+        ];
+        for ((slot, line), styled) in slots.into_iter().zip(wanted).zip(in_style) {
+            *slot = match line {
+                Some(line) => Some(line),
+                None if styled => Some(Border {
+                    style: "nil".into(),
+                    size: None,
+                    space: None,
+                    color: None,
+                    theme_color: None,
+                }),
+                None => None,
+            };
+        }
+        paragraph.props.borders = (!own.is_empty()).then_some(own);
+    }
+}
+
 /// Шрифт для латиницы, кириллицы и сложных письменностей (ссылки на
 /// шрифты темы снимаются).
 fn set_font(props: &mut RunProps, name: &str) {
@@ -1440,6 +1490,36 @@ mod tests {
             (resolved.space_before, resolved.space_after),
             (Twips(240), Twips(0))
         );
+    }
+
+    #[test]
+    fn borders_from_the_dialog() {
+        let mut d = doc(vec![Paragraph::text("a"), Paragraph::text("b")]);
+        let mut boxed = letter_model::Style::new("Boxed", StyleKind::Paragraph);
+        boxed.paragraph.borders = Some(ParagraphBorders::frame(Border::single(4)));
+        d.styles.styles.push(boxed);
+        para_mut(&mut d, 1).props.style = Some("Boxed".into());
+        let dotted = Border {
+            style: "dotted".into(),
+            color: Some(Color::Rgb(0, 0, 255)),
+            ..Border::single(8)
+        };
+        let wanted = ParagraphBorders {
+            top: Some(dotted.clone()),
+            bottom: Some(dotted.clone()),
+            ..ParagraphBorders::default()
+        };
+        set_paragraph_borders(&mut d, 0, 1, &wanted);
+        // Без стиля — только две линии.
+        assert_eq!(para(&d, 0).props.borders.as_ref(), Some(&wanted));
+        // Линии стиля слева и справа закрыты.
+        let resolved = d.resolve_paragraph(&para(&d, 1).props).borders;
+        assert_eq!(resolved.top, Some(dotted));
+        assert!(ParagraphBorders::visible(&resolved.left).is_none());
+        assert!(ParagraphBorders::visible(&resolved.right).is_none());
+        // «Нет» — без линий.
+        set_paragraph_borders(&mut d, 0, 0, &ParagraphBorders::default());
+        assert_eq!(para(&d, 0).props.borders, None);
     }
 
     #[test]

@@ -795,6 +795,74 @@ pub fn set_cell_borders(
     true
 }
 
+/// Линии из окна «Границы и заливка» у выделенных ячеек: края блока
+/// ячеек — `top`, `bottom`, `left`, `right`, линии внутри него —
+/// `inside_h` и `inside_v`. `None` — сторону не трогать, вид `nil` —
+/// убрать линию. Возвращает, были ли ячейки.
+pub fn set_cell_border_lines(
+    doc: &mut Document,
+    start: usize,
+    end: usize,
+    lines: &Borders,
+) -> bool {
+    let Some(block) = cell_block(doc, start, end) else {
+        return false;
+    };
+    let Some(table) = table_mut(doc, &block.table) else {
+        return false;
+    };
+    for (r, c, a, b) in block.cells(table) {
+        let edges = [
+            (Side::Top, r == block.rows.0),
+            (Side::Bottom, r == block.rows.1),
+            (Side::Left, a == block.columns.0),
+            (Side::Right, b == block.columns.1),
+        ];
+        for (side, outer) in edges {
+            let line = match (side, outer) {
+                (Side::Top, true) => &lines.top,
+                (Side::Bottom, true) => &lines.bottom,
+                (Side::Left, true) => &lines.left,
+                (Side::Right, true) => &lines.right,
+                (Side::Top | Side::Bottom, false) => &lines.inside_h,
+                (Side::Left | Side::Right, false) => &lines.inside_v,
+            };
+            if let Some(line) = line {
+                set_edge(table, r, c, side, line);
+            }
+        }
+    }
+    true
+}
+
+/// Границы всей таблицы с абзацем `paragraph` («Применить к: таблице»):
+/// линии таблицы — `borders`, свои линии ячеек снимаются.
+pub fn set_table_borders(doc: &mut Document, paragraph: usize, borders: &Borders) -> bool {
+    let Some(at) = cell_of(doc, paragraph) else {
+        return false;
+    };
+    let Some(table) = table_mut(doc, &at.table) else {
+        return false;
+    };
+    table.props.borders = Some(borders.clone());
+    for cell in table.rows.iter_mut().flat_map(|r| &mut r.cells) {
+        cell.props.borders = None;
+    }
+    true
+}
+
+/// Заливка всей таблицы с абзацем `paragraph`; `None` — без заливки.
+pub fn set_table_shading(doc: &mut Document, paragraph: usize, fill: Option<Color>) -> bool {
+    let Some(at) = cell_of(doc, paragraph) else {
+        return false;
+    };
+    let Some(table) = table_mut(doc, &at.table) else {
+        return false;
+    };
+    table.props.shading = fill.map(Shading::fill);
+    true
+}
+
 /// «Заливка»: цвет фона выделенных ячеек; `None` — без заливки.
 pub fn set_cell_shading(
     doc: &mut Document,
@@ -998,6 +1066,21 @@ pub fn split_cell(
 pub fn table_style_at(doc: &Document, paragraph: usize) -> Option<String> {
     let at = cell_of(doc, paragraph)?;
     table_ref(doc, &at.table)?.props.style.clone()
+}
+
+/// Свои границы ячейки с абзацем `paragraph` (`None` — не в таблице
+/// или у ячейки их нет).
+pub fn cell_borders_at(doc: &Document, paragraph: usize) -> Option<Borders> {
+    let at = cell_of(doc, paragraph)?;
+    let table = table_ref(doc, &at.table)?;
+    table
+        .rows
+        .get(at.row)?
+        .cells
+        .get(at.cell)?
+        .props
+        .borders
+        .clone()
 }
 
 /// Параметры стиля таблицы с абзацем `paragraph` («Строка заголовка»,
@@ -1353,6 +1436,45 @@ mod tests {
         assert_eq!(split_cell(&mut doc, 3, 2, 1), None);
         assert_eq!(split_cell(&mut doc, 0, 1, 1), None);
         assert_eq!(split_cell(&mut doc, 10, 2, 1), None);
+    }
+
+    #[test]
+    fn border_lines_from_the_dialog() {
+        let mut doc = doc_with(&["x"]);
+        insert_table(&mut doc, Position::new(0, 0), 2, 2);
+        let thick = Border::single(12);
+        let none = Border {
+            style: "nil".into(),
+            ..Border::single(0)
+        };
+        // Все четыре ячейки: рамка толстая, внутри — без линий.
+        let lines = Borders {
+            inside_h: Some(none.clone()),
+            inside_v: Some(none.clone()),
+            ..Borders::all(thick.clone())
+        };
+        assert!(set_cell_border_lines(&mut doc, 0, 3, &lines));
+        let t = table(&doc);
+        let first = t.rows[0].cells[0].props.borders.clone().unwrap();
+        assert_eq!(first.top, Some(thick.clone()));
+        assert_eq!(first.right, Some(none.clone()));
+        assert_eq!(first.bottom, Some(none));
+        // Вся таблица: линии таблицы, свои линии ячеек сняты.
+        assert!(set_table_borders(&mut doc, 0, &Borders::all(thick.clone())));
+        let t = table(&doc);
+        assert_eq!(t.props.borders, Some(Borders::all(thick)));
+        assert!(
+            t.rows
+                .iter()
+                .flat_map(|r| &r.cells)
+                .all(|c| c.props.borders.is_none())
+        );
+        assert!(set_table_shading(&mut doc, 0, Some(Color::Rgb(1, 2, 3))));
+        assert_eq!(
+            table(&doc).props.shading,
+            Some(Shading::fill(Color::Rgb(1, 2, 3)))
+        );
+        assert!(!set_table_shading(&mut doc, 4, None));
     }
 
     #[test]

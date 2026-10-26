@@ -9,6 +9,7 @@
 mod access;
 mod backstage;
 mod bookmark_dialog;
+mod borders_dialog;
 mod calendar;
 mod clipboard;
 mod comments;
