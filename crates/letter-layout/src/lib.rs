@@ -22,6 +22,7 @@ pub mod lines;
 pub mod math;
 mod notes;
 pub mod pages;
+mod rules;
 pub mod shaping;
 pub mod spacing;
 mod table;
