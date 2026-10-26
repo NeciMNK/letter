@@ -49,6 +49,8 @@ const REL_HEADER: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header";
 const REL_FOOTER: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer";
+const REL_MAIL_MERGE_SOURCE: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/mailMergeSource";
 const REL_HYPERLINK: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
 const REL_FOOTNOTES: &str =
@@ -295,9 +297,33 @@ pub(crate) fn write<W: Write + Seek>(
         .as_deref()
         .and_then(|name| source.part(name))
         .map(|p| p.data.as_slice());
-    if let Some(xml) =
-        crate::settings::updated_settings(original, &doc.settings, doc.background.is_some())
-    {
+    let externals = existing
+        .as_deref()
+        .map(|name| links.externals(name))
+        .unwrap_or_default();
+    // Источник данных слияния — внешняя связь части настроек.
+    let merge_source = doc
+        .settings
+        .mail_merge
+        .as_ref()
+        .and_then(|m| m.data_source.as_deref());
+    let source_id = merge_source.map(|address| {
+        let name = links.find_or_add(
+            &main,
+            REL_SETTINGS,
+            &["/settings"],
+            &join(base_dir, "settings.xml"),
+            false,
+        );
+        links.external_of_kind(&name, REL_MAIL_MERGE_SOURCE, None, address)
+    });
+    if let Some(xml) = crate::settings::updated_settings_with(
+        original,
+        &doc.settings,
+        doc.background.is_some(),
+        &externals,
+        source_id.as_deref(),
+    ) {
         let name = links.find_or_add(
             &main,
             REL_SETTINGS,
@@ -846,8 +872,37 @@ impl<'a> Links<'a> {
     /// Внешняя связь части `from` с адресом гиперссылки `address`:
     /// `id`, если она ведёт туда же, иначе такая же связь или новая.
     fn external(&mut self, from: &str, id: Option<&str>, address: &str) -> String {
-        let matches =
-            |r: &Relationship| r.external && r.kind.ends_with("/hyperlink") && r.target == address;
+        self.external_of_kind(from, REL_HYPERLINK, id, address)
+    }
+
+    /// Внешние связи части `from`: имя связи и адрес.
+    fn externals(&self, from: &str) -> Vec<(String, String)> {
+        let rels_name = rels_part_for(from);
+        let pairs = |rels: &[Relationship]| {
+            rels.iter()
+                .filter(|r| r.external)
+                .map(|r| (r.id.clone(), r.target.clone()))
+                .collect()
+        };
+        match self.changed.iter().find(|(n, _)| *n == rels_name) {
+            Some((_, rels)) => pairs(rels),
+            None => pairs(&self.load(from, &rels_name)),
+        }
+    }
+
+    /// Внешняя связь типа `kind` части `from` с адресом `address`: `id`,
+    /// если она ведёт туда же, иначе такая же связь или новая.
+    fn external_of_kind(
+        &mut self,
+        from: &str,
+        kind: &str,
+        id: Option<&str>,
+        address: &str,
+    ) -> String {
+        let suffix = kind.rsplit_once('/').map_or(kind, |(_, s)| s);
+        let matches = |r: &Relationship| {
+            r.external && r.kind.ends_with(&format!("/{suffix}")) && r.target == address
+        };
         let found = |rels: &[Relationship]| {
             id.filter(|id| rels.iter().any(|r| r.id == *id && matches(r)))
                 .map(str::to_string)
@@ -869,7 +924,7 @@ impl<'a> Links<'a> {
         if let Some(id) = found(rels) {
             return id;
         }
-        let id = push_relationship(rels, REL_HYPERLINK, address);
+        let id = push_relationship(rels, kind, address);
         if let Some(last) = rels.last_mut() {
             last.external = true;
         }

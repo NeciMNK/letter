@@ -105,8 +105,11 @@ pub fn read<R: Read + Seek>(mut reader: R) -> Result<Document, ReadError> {
         look.colors = smartart::read_colors(&root);
         look.theme = doc.theme.clone();
     }
-    if let Some((_, root)) = read_related_xml(&mut package, &main, "settings") {
+    if let Some((name, root)) = read_related_xml(&mut package, &main, "settings") {
         doc.settings = settings::read_settings(&root);
+        if let Some(merge) = &mut doc.settings.mail_merge {
+            merge.data_source = settings::mail_merge_source(&root, &package.external_links(&name));
+        }
     }
     let mut core_part = None;
     if let Some((name, root)) = read_related_xml(&mut package, "", "core-properties")

@@ -208,15 +208,25 @@ pub fn mailings(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
         });
     });
     group(ui, tr("group-mailings-finish"), |ui| {
-        let command = RibbonCommand::FinishMerge;
-        big(
+        menu_button(
             ui,
             Icon::FinishMerge,
-            "finish",
+            tr("mailings-finish"),
+            tr("mailings-finish-hint"),
+            "keytip-mailings-finish",
             has_data,
-            false,
-            command,
-            out,
+            |ui| {
+                let items = [
+                    ("mailings-edit-documents", RibbonCommand::FinishMerge),
+                    ("mailings-pdf", RibbonCommand::MergeToPdf),
+                ];
+                for (name, command) in items {
+                    if ui.button(tr(name)).clicked() {
+                        out.push(command);
+                        ui.close();
+                    }
+                }
+            },
         );
     });
 }
@@ -248,7 +258,12 @@ mod tests {
         h.run();
         h.get_by_label(">").click();
         h.run();
-        h.get_by_label("Найти и объединить").click();
+        h.get_all_by_label("Найти и объединить")
+            .next()
+            .unwrap()
+            .click();
+        h.run();
+        h.get_by_label("Изменить отдельные документы…").click();
         h.run();
         h.get_by_label("Вставить поле слияния").click();
         h.run();

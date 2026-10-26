@@ -890,6 +890,8 @@ pub fn merge_all(doc: &Document, data: &MergeData) -> Document {
     if out.sections.is_empty() {
         return doc.clone();
     }
+    // Документ слияния — обычный документ, без источника данных.
+    out.settings.mail_merge = None;
     out
 }
 

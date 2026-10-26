@@ -3,10 +3,12 @@
 //! кроме флага «показывать цвет страницы», расстановки переносов и
 //! «Разные колонтитулы для чётных и нечётных страниц».
 
-use letter_model::{DocumentProtection, EditRestriction, PasswordHash, Settings, WriteProtection};
+use letter_model::{
+    DocumentProtection, EditRestriction, MailMerge, PasswordHash, Settings, WriteProtection,
+};
 
 use crate::document::{W_NS, is_w_ns, parse_twips, toggle};
-use crate::serialize::{element_with, escape_attr, xml_part};
+use crate::serialize::{R_NS, element_with, escape_attr, xml_part};
 use crate::xml::{self, Element};
 
 /// Порядок дочерних элементов `w:settings` по схеме (CT_Settings) до
@@ -67,15 +69,33 @@ const SETTINGS_ORDER: &[&str] = &[
 /// страницы, `background`) и настройки расстановки переносов из
 /// `settings`. `None` — менять нечего. Остальные элементы части
 /// остаются как были.
+#[cfg(test)]
 pub(crate) fn updated_settings(
     original: Option<&[u8]>,
     settings: &Settings,
     background: bool,
 ) -> Option<String> {
+    updated_settings_with(original, settings, background, &[], None)
+}
+
+/// Как [`updated_settings`], но со связями слияния: `externals` — внешние
+/// связи исходной части (имя связи и адрес; по ним читается источник
+/// данных), `source_id` — имя связи с источником данных, который надо
+/// записать.
+pub(crate) fn updated_settings_with(
+    original: Option<&[u8]>,
+    settings: &Settings,
+    background: bool,
+    externals: &[(String, String)],
+    source_id: Option<&str>,
+) -> Option<String> {
     let root = original
         .and_then(|bytes| xml::parse(bytes).ok())
         .filter(|root| root.is_w("settings"));
-    let current = root.as_ref().map(read_settings).unwrap_or_default();
+    let mut current = root.as_ref().map(read_settings).unwrap_or_default();
+    if let (Some(root), Some(merge)) = (&root, &mut current.mail_merge) {
+        merge.data_source = mail_merge_source(root, externals);
+    }
     let has_flag = root
         .as_ref()
         .is_some_and(|r| r.elements().any(|e| e.is_w("displayBackgroundShape")));
@@ -88,6 +108,7 @@ pub(crate) fn updated_settings(
             && a.track_revisions == b.track_revisions
             && a.protection == b.protection
             && a.write_protection == b.write_protection
+            && a.mail_merge == b.mail_merge
     };
     if same(&current, settings) && (has_flag || !background) {
         return None;
@@ -101,7 +122,14 @@ pub(crate) fn updated_settings(
         None => format!("<{prefix}{name}/>"),
     };
     // Наши элементы: имя и новое содержимое (`None` — убрать).
-    let ours: [(&str, Option<String>); 9] = [
+    let ours: [(&str, Option<String>); 10] = [
+        (
+            "mailMerge",
+            settings
+                .mail_merge
+                .as_ref()
+                .map(|m| mail_merge_xml(&prefix, m, source_id)),
+        ),
         (
             "trackRevisions",
             settings.track_revisions.then(|| w("trackRevisions", None)),
@@ -190,12 +218,61 @@ pub(crate) fn updated_settings(
         }
     }
     let content: String = items.into_iter().map(|(_, x)| x).collect();
-    let attrs = match &root {
+    let mut attrs = match &root {
         Some(root) => root.root_attributes(),
         None => vec![("xmlns:w".to_string(), W_NS.to_string())],
     };
+    // Связь с источником слияния пишется как `r:id`.
+    if source_id.is_some() && !attrs.iter().any(|(name, _)| name == "xmlns:r") {
+        attrs.push(("xmlns:r".to_string(), R_NS.to_string()));
+    }
     let qname = root.as_ref().map_or("w:settings", |r| r.qname.as_str());
     Some(xml_part(&element_with(qname, &attrs, &content)))
+}
+
+/// `w:mailMerge`: вид документа, вид источника, запрос и связь с
+/// источником `source_id` (элементы — в порядке схемы).
+fn mail_merge_xml(prefix: &str, merge: &MailMerge, source_id: Option<&str>) -> String {
+    let w = |name: &str, value: &str| {
+        format!(r#"<{prefix}{name} {prefix}val="{}"/>"#, escape_attr(value))
+    };
+    let kind = if merge.document_type.is_empty() {
+        "formLetters"
+    } else {
+        &merge.document_type
+    };
+    let mut inner = w("mainDocumentType", kind);
+    if merge.query.is_some() {
+        inner.push_str(&format!("<{prefix}linkToQuery/>"));
+    }
+    if let Some(data_type) = &merge.data_type {
+        inner.push_str(&w("dataType", data_type));
+    }
+    if let Some(query) = &merge.query {
+        inner.push_str(&w("query", query));
+    }
+    if let Some(id) = source_id {
+        inner.push_str(&format!(
+            r#"<{prefix}dataSource r:id="{}"/>"#,
+            escape_attr(id)
+        ));
+    }
+    format!("<{prefix}mailMerge>{inner}</{prefix}mailMerge>")
+}
+
+/// Адрес источника данных слияния: цель внешней связи из
+/// `w:mailMerge/w:dataSource` (`externals` — имена связей и адреса).
+pub(crate) fn mail_merge_source(root: &Element, externals: &[(String, String)]) -> Option<String> {
+    let merge = root.elements().find(|e| e.is_w("mailMerge"))?;
+    let source = merge.elements().find(|e| e.is_w("dataSource"))?;
+    let id = source
+        .attrs
+        .iter()
+        .find(|a| a.ns.as_deref() == Some(R_NS) && a.local == "id")?;
+    externals
+        .iter()
+        .find(|(name, _)| *name == id.value)
+        .map(|(_, target)| target.clone())
 }
 
 /// Атрибуты хеша пароля и прочие сохранённые атрибуты.
@@ -315,6 +392,22 @@ pub(crate) fn read_settings(root: &Element) -> Settings {
             }
             "evenAndOddHeaders" => {
                 settings.even_and_odd_headers = toggle(child).unwrap_or(false);
+            }
+            "mailMerge" => {
+                let value = |name: &str| {
+                    child
+                        .elements()
+                        .find(|e| e.is_w(name))
+                        .and_then(|e| e.w_attr("val"))
+                        .map(str::to_string)
+                };
+                settings.mail_merge = Some(MailMerge {
+                    document_type: value("mainDocumentType")
+                        .unwrap_or_else(|| "formLetters".into()),
+                    data_type: value("dataType"),
+                    query: value("query"),
+                    data_source: None,
+                });
             }
             "autoHyphenation" => settings.auto_hyphenation = toggle(child).unwrap_or(false),
             "trackRevisions" => settings.track_revisions = toggle(child).unwrap_or(false),

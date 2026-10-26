@@ -1190,6 +1190,7 @@ impl Viewer {
         self.comments = crate::comments::CommentsPane::default();
         self.comments.open = !doc.comments.is_empty();
         self.document = Some(OpenDocument::new(path, doc, layout, cache));
+        self.connect_recipients();
         if let Some(autosave) = &self.autosave {
             autosave.clear();
         }
@@ -1293,7 +1294,7 @@ impl Viewer {
 
     /// «Выбрать получателей»: окно выбора таблицы (CSV или документ с
     /// таблицей).
-    fn pick_recipients(&mut self) -> Option<Command> {
+    fn pick_recipients(&mut self) -> Vec<Command> {
         let mut dialog = rfd::FileDialog::new()
             .set_title(tr("mailings-open"))
             .add_filter(
@@ -1303,13 +1304,85 @@ impl Viewer {
         if let Some(dir) = self.dialog_dir() {
             dialog = dialog.set_directory(dir);
         }
-        let path = dialog.pick_file()?;
+        let Some(path) = dialog.pick_file() else {
+            return Vec::new();
+        };
         match read_recipients(&path) {
-            Ok(data) => self.set_recipients(data),
+            Ok(data) => {
+                // Источник запоминается в документе (`w:mailMerge`): после
+                // открытия файла получатели подключатся снова.
+                let kind = self
+                    .document
+                    .as_ref()
+                    .and_then(|d| d.doc.settings.mail_merge.as_ref())
+                    .map(|m| m.document_type.clone())
+                    .unwrap_or_else(|| "formLetters".into());
+                let merge = letter_model::MailMerge {
+                    document_type: kind,
+                    data_type: Some(
+                        if is_table_file(&path) {
+                            "textFile"
+                        } else {
+                            "native"
+                        }
+                        .into(),
+                    ),
+                    query: Some(format!("SELECT * FROM {}", path.display())),
+                    data_source: Some(file_url(&path)),
+                };
+                let mut commands = vec![Command::SetMailMerge(Some(Box::new(merge)))];
+                commands.extend(self.set_recipients(data));
+                commands
+            }
             Err(message) => {
                 self.report("error-mailings", message);
-                None
+                Vec::new()
             }
+        }
+    }
+
+    /// Получатели из источника, который записан в документе, если файл
+    /// на месте.
+    fn connect_recipients(&mut self) {
+        self.mailing = self
+            .document
+            .as_ref()
+            .and_then(|d| d.doc.settings.mail_merge.as_ref())
+            .and_then(|m| m.data_source.as_deref())
+            .map(url_path)
+            .filter(|path| path.is_file())
+            .and_then(|path| read_recipients(&path).ok())
+            .map(|data| Mailing {
+                data,
+                record: 0,
+                preview: false,
+            });
+    }
+
+    /// «Найти и объединить → Сохранить в PDF»: документ слияния сразу
+    /// в файл PDF (открытый документ не меняется).
+    fn merge_to_pdf(&mut self) {
+        let (Some(document), Some(mailing)) = (&self.document, &self.mailing) else {
+            return;
+        };
+        let merged = letter_editor::merge_all(&document.doc, &mailing.data);
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(tr("mailings-pdf"))
+            .add_filter("PDF", &["pdf"])
+            .set_file_name("merge.pdf");
+        if let Some(dir) = self.dialog_dir() {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(mut path) = dialog.save_file() else {
+            return;
+        };
+        if path.extension().is_none() {
+            path.set_extension("pdf");
+        }
+        let mut cache = LayoutCache::default();
+        let layout = layout_document_cached(&merged, &mut self.shaper, &self.library, &mut cache);
+        if let Err(message) = files::write_pdf(&merged, &layout, &self.library, &path) {
+            self.report("error-mailings", message);
         }
     }
 
@@ -3063,7 +3136,7 @@ impl Viewer {
                 RibbonCommand::DesignMode => self.design_mode = !self.design_mode,
                 RibbonCommand::PickRecipients => {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
-                    if let Some(command) = self.pick_recipients() {
+                    for command in self.pick_recipients() {
                         actions.push(Action::Edit(command));
                     }
                 }
@@ -3104,6 +3177,10 @@ impl Viewer {
                     if let Some(mailing) = self.mailing.as_ref().filter(|m| m.preview) {
                         actions.push(Action::Edit(mailing.show()));
                     }
+                }
+                RibbonCommand::MergeToPdf => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    self.merge_to_pdf();
                 }
                 RibbonCommand::FinishMerge => {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
@@ -4646,15 +4723,72 @@ fn comment_date(date: &str) -> String {
     }
 }
 
-/// Таблица получателей из файла: CSV (по расширению `csv`, `txt`, `tsv`)
-/// или первая таблица документа.
-fn read_recipients(path: &Path) -> Result<letter_editor::MergeData, String> {
+/// Таблица ли файл по расширению (`csv`, `txt`, `tsv`), а не документ.
+fn is_table_file(path: &Path) -> bool {
     let extension = path
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
-    let data = if matches!(extension.as_str(), "csv" | "txt" | "tsv") {
+    matches!(extension.as_str(), "csv" | "txt" | "tsv")
+}
+
+/// Адрес файла для `w:dataSource`: `file:///…`, как пишет Word.
+fn file_url(path: &Path) -> String {
+    let text = path.display().to_string();
+    match text.strip_prefix('/') {
+        Some(rest) => format!("file:///{rest}"),
+        None => format!("file:///{text}"),
+    }
+}
+
+/// Путь к файлу из адреса `file:///…` (или из пути как есть); `%XX`
+/// раскрываются.
+fn url_path(url: &str) -> PathBuf {
+    let decoded = percent_decode(url);
+    let Some(rest) = decoded
+        .strip_prefix("file:///")
+        .or_else(|| decoded.strip_prefix("file://"))
+    else {
+        return PathBuf::from(decoded);
+    };
+    // `C:\…` — путь Windows, иначе — от корня.
+    let windows = rest.as_bytes().get(1) == Some(&b':');
+    if windows || rest.starts_with('/') {
+        PathBuf::from(rest)
+    } else {
+        PathBuf::from(format!("/{rest}"))
+    }
+}
+
+/// Раскрывает `%XX` в адресе.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (byte, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Таблица получателей из файла: CSV (по расширению `csv`, `txt`, `tsv`)
+/// или первая таблица документа.
+fn read_recipients(path: &Path) -> Result<letter_editor::MergeData, String> {
+    let data = if is_table_file(path) {
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         letter_editor::MergeData::from_csv_bytes(&bytes)
     } else {
@@ -5813,6 +5947,51 @@ mod tests {
         let merged = &viewer.document.as_ref().unwrap().doc;
         let texts: Vec<String> = merged.blocks().map(|b| b.plain_text()).collect();
         assert_eq!(texts, ["Анна север", "Вера юг"]);
+    }
+
+    #[test]
+    fn recipients_reconnect_when_the_file_is_opened() {
+        assert_eq!(
+            url_path("file:///home/nikita/%D0%9A%D0%BB%D0%B8%D0%B5%D0%BD%D1%82%D1%8B.csv"),
+            PathBuf::from("/home/nikita/Клиенты.csv")
+        );
+        assert_eq!(
+            url_path("file:///C:\\Data\\a.csv"),
+            PathBuf::from("C:\\Data\\a.csv")
+        );
+        assert_eq!(url_path("/tmp/a.csv"), PathBuf::from("/tmp/a.csv"));
+        assert_eq!(file_url(Path::new("/tmp/a b.csv")), "file:///tmp/a b.csv");
+        assert_eq!(
+            url_path(&file_url(Path::new("/tmp/a b.csv"))),
+            PathBuf::from("/tmp/a b.csv")
+        );
+
+        let dir = std::env::temp_dir().join(format!("letter-merge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let csv = dir.join("Клиенты.csv");
+        std::fs::write(&csv, "Имя\nАнна\nБорис\n").unwrap();
+        let mut doc = letter_model::Document::new();
+        doc.settings.mail_merge = Some(letter_model::MailMerge {
+            document_type: "formLetters".into(),
+            data_type: Some("textFile".into()),
+            query: None,
+            data_source: Some(file_url(&csv)),
+        });
+        let path = dir.join("письмо.docx");
+        std::fs::write(&path, letter_docx::write_bytes(&doc).unwrap()).unwrap();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&path).unwrap();
+        assert_eq!(viewer.ribbon_info().mailing.records, 2);
+        // Документ слияния — уже без источника.
+        viewer.finish_merge();
+        assert!(viewer.mailing.is_none());
+        let merged = &viewer.document.as_ref().unwrap().doc;
+        assert_eq!(merged.settings.mail_merge, None);
+        // Нет файла — получателей нет, документ открывается.
+        std::fs::remove_file(&csv).unwrap();
+        viewer.open(&path).unwrap();
+        assert!(viewer.mailing.is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

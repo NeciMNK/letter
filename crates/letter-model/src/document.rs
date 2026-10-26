@@ -155,6 +155,26 @@ pub struct Settings {
     pub protection: Option<DocumentProtection>,
     /// Пароль на изменение файла (`w:writeProtection`); `None` — нет.
     pub write_protection: Option<WriteProtection>,
+    /// Слияние (`w:mailMerge`): вид документа рассылки и источник данных;
+    /// `None` — обычный документ.
+    pub mail_merge: Option<MailMerge>,
+}
+
+/// Настройки слияния (`w:mailMerge`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MailMerge {
+    /// Вид основного документа (`w:mainDocumentType`): `formLetters`
+    /// (письма), `mailingLabels` (наклейки), `envelopes` (конверты),
+    /// `catalog` (каталог), `email`, `fax`.
+    pub document_type: String,
+    /// Вид источника данных (`w:dataType`): `textFile`, `native`,
+    /// `odbc`…
+    pub data_type: Option<String>,
+    /// Запрос к источнику (`w:query`), как есть.
+    pub query: Option<String>,
+    /// Адрес источника данных — цель внешней связи `w:dataSource`
+    /// (обычно `file:///…`).
+    pub data_source: Option<String>,
 }
 
 impl Default for Settings {
@@ -172,6 +192,7 @@ impl Default for Settings {
             track_revisions: false,
             protection: None,
             write_protection: None,
+            mail_merge: None,
         }
     }
 }
