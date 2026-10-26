@@ -4078,8 +4078,16 @@ mod tests {
         }
     }
 
+    /// Толщина линий границ у таблиц из `table`, пт: линии, как в Word,
+    /// занимают место над строкой и под таблицей.
+    const BW: f32 = 1.0;
+
+    /// Документ с таблицами: лист на 5 строк и ещё 5 пт под линии границ.
     fn doc_with(blocks: Vec<Block>) -> Document {
         let mut d = doc(Vec::new());
+        if let Some(size) = &mut d.sections[0].props.page_size {
+            size.height = Twips(size.height.0 + 100);
+        }
         d.sections[0].blocks = blocks;
         d
     }
@@ -4099,11 +4107,12 @@ mod tests {
         // через 50 пт; строка таблицы высотой с самую высокую ячейку.
         let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
         assert_eq!(found.len(), 7);
-        assert!(close(found[1].1, 0.0) && close(found[1].2, LINE));
-        assert!(close(found[2].1, 50.0) && close(found[2].2, LINE));
-        assert!(close(found[3].2, 2.0 * LINE)); // «c» — вторая строка ячейки
-        assert!(close(found[4].2, 3.0 * LINE) && found[4].0 == 3);
-        assert!(close(found[6].2, 4.0 * LINE) && found[6].0 == 5);
+        assert!(close(found[1].1, 0.0) && close(found[1].2, LINE + BW));
+        assert!(close(found[2].1, 50.0) && close(found[2].2, LINE + BW));
+        assert!(close(found[3].2, 2.0 * LINE + BW)); // «c» — вторая строка ячейки
+        assert!(close(found[4].2, 3.0 * LINE + 2.0 * BW) && found[4].0 == 3);
+        // Под таблицей — место для нижней линии.
+        assert!(close(found[6].2, 4.0 * LINE + 3.0 * BW) && found[6].0 == 5);
         // Строки ячеек знают свою ячейку; у строки вне таблицы её нет.
         let cell = lines[2].cell.expect("ячейка");
         assert!(close(cell.left, 50.0 - 5.4) && close(cell.right, 100.0 - 5.4));
@@ -4167,7 +4176,7 @@ mod tests {
             rule: HeightRule::AtLeast,
         });
         let layout = lay(&doc_with(vec![t.clone().into()]));
-        assert!((layout.pages[0].lines[2].top - 30.0).abs() < 1e-3);
+        assert!((layout.pages[0].lines[2].top - (30.0 + BW)).abs() < 1e-3);
         // Объединённая по вертикали ячейка: её текст выше двух строк —
         // последняя строка объединения растягивается.
         t.rows[0].props.height = None;
@@ -4182,7 +4191,7 @@ mod tests {
             .iter()
             .find(|l| l.paragraph == 4)
             .expect("абзац после таблицы");
-        assert!((after.top - 3.0 * LINE).abs() < 1e-3);
+        assert!((after.top - 3.0 * LINE - BW).abs() < 1e-3, "{}", after.top);
     }
 
     #[test]
@@ -4295,7 +4304,7 @@ mod tests {
         // начинается на краю текста ячейки.
         let x = &page.lines[1];
         let y = &page.lines[2];
-        assert!((y.top - LINE).abs() < 1e-3);
+        assert!((y.top - LINE - 2.0 * BW).abs() < 1e-3);
         assert!(x.x.abs() < 1e-3 && (y.x - 50.0).abs() < 1e-3, "{}", y.x);
         let inner_cell = y.cell.expect("ячейка");
         assert!(inner_cell.right - inner_cell.left < 51.0);
@@ -4317,7 +4326,7 @@ mod tests {
             t.props.style = Some("Grid".into());
         }
         let layout = lay(&d);
-        assert!((layout.pages[0].lines[0].top - 10.0).abs() < 1e-3);
+        assert!((layout.pages[0].lines[0].top - 10.0 - BW).abs() < 1e-3);
     }
 
     #[test]

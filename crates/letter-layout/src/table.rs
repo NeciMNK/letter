@@ -373,7 +373,12 @@ pub(crate) fn build_rows(ctx: &mut Ctx<'_>, table: &Table, origin: f32, width: f
                 .shading
                 .as_ref()
                 .map_or(table_fill, |s| s.background());
-            let height = m[0] + content.height + m[2];
+            // Как в Word, линии границ занимают место: текст начинается
+            // под верхней линией, а под таблицей остаётся место для нижней.
+            let width = |b: &Option<Border>| b.as_ref().map_or(0.0, Border::width_points);
+            let inset = m[0] + width(&top);
+            let below = if last_row { width(&bottom) } else { 0.0 };
+            let height = inset + content.height + m[2] + below;
             if merge != Some(VerticalMerge::Restart) {
                 needed = needed.max(height);
             }
@@ -381,14 +386,14 @@ pub(crate) fn build_rows(ctx: &mut Ctx<'_>, table: &Table, origin: f32, width: f
             let mut lines = content.lines;
             let mut shapes = content.shapes;
             for line in &mut lines {
-                line.y += m[0];
+                line.y += inset;
                 if let Some(area) = &mut line.cell {
-                    area.top += m[0];
-                    area.bottom += m[0];
+                    area.top += inset;
+                    area.bottom += inset;
                 }
             }
             for shape in &mut shapes {
-                shape.y += m[0];
+                shape.y += inset;
             }
             segments.push(Segment {
                 left: origin + left,
@@ -400,8 +405,8 @@ pub(crate) fn build_rows(ctx: &mut Ctx<'_>, table: &Table, origin: f32, width: f
                 left_border,
                 right_border,
                 fill,
-                margin_top: m[0],
-                margin_bottom: m[2],
+                margin_top: inset,
+                margin_bottom: m[2] + below,
             });
             start += cell.span();
         }
