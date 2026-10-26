@@ -203,6 +203,11 @@ pub enum RibbonCommand {
     FinishMerge,
     /// «Найти и объединить → Сохранить в PDF».
     MergeToPdf,
+    /// «Наклейки»: заменить документ листом наклеек с этим номером из
+    /// [`letter_editor::LABELS`].
+    MakeLabels(usize),
+    /// «Обновить наклейки».
+    UpdateLabels,
     /// «Изменить список получателей».
     EditRecipients,
     /// Вставить блок адреса, строку приветствия или номер записи.

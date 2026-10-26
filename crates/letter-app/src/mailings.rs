@@ -15,7 +15,9 @@ use crate::ribbon::{RibbonCommand, RibbonInfo, big_label, group, row_group};
 
 /// Подсказки клавиш вкладки (для проверки).
 #[cfg(test)]
-pub const KEYTIPS: [&str; 10] = [
+pub const KEYTIPS: [&str; 12] = [
+    "keytip-mailings-labels",
+    "keytip-mailings-update-labels",
     "keytip-mailings-recipients",
     "keytip-mailings-edit-list",
     "keytip-mailings-address",
@@ -39,6 +41,8 @@ pub struct MailingInfo {
     pub record: usize,
     /// Включён «Просмотр результатов».
     pub preview: bool,
+    /// Документ — лист наклеек (есть поля «Следующая запись»).
+    pub labels: bool,
 }
 
 /// Большая кнопка-значок с подписью; нажатие добавляет `command`.
@@ -69,12 +73,49 @@ fn big(
     });
 }
 
+/// Название листа наклеек в меню: марка, размер наклейки и сколько их.
+fn label_name(spec: &letter_editor::LabelSpec) -> String {
+    let mm = |t: letter_model::Twips| {
+        let text = format!("{:.1}", t.to_mm());
+        if crate::i18n::language() == crate::i18n::Language::Russian {
+            text.replace('.', ",")
+        } else {
+            text
+        }
+    };
+    format!(
+        "{} — {} × {} {}, {} × {}",
+        spec.name,
+        mm(spec.width),
+        mm(spec.height),
+        tr("unit-mm"),
+        spec.columns,
+        spec.rows
+    )
+}
+
 /// Вкладка «Рассылки».
 pub fn mailings(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     let enabled = info.has_document;
     let merge = &info.mailing;
     let has_data = enabled && !merge.fields.is_empty();
     row_group(ui, tr("group-mailings-start"), |ui| {
+        menu_button(
+            ui,
+            Icon::Labels,
+            tr("mailings-labels"),
+            tr("mailings-labels-hint"),
+            "keytip-mailings-labels",
+            enabled,
+            |ui| {
+                for (index, spec) in letter_editor::LABELS.iter().enumerate() {
+                    if ui.button(label_name(spec)).clicked() {
+                        out.push(RibbonCommand::MakeLabels(index));
+                        ui.close();
+                    }
+                }
+            },
+        );
         let command = RibbonCommand::PickRecipients;
         big(
             ui,
@@ -157,6 +198,16 @@ pub fn mailings(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                     }
                 }
             },
+        );
+        let command = RibbonCommand::UpdateLabels;
+        big(
+            ui,
+            Icon::Refresh,
+            "update-labels",
+            enabled && merge.labels,
+            false,
+            command,
+            out,
         );
     });
     row_group(ui, tr("group-mailings-preview"), |ui| {
@@ -246,6 +297,7 @@ mod tests {
                 records: 3,
                 record: 0,
                 preview: true,
+                labels: true,
             },
             ..RibbonInfo::default()
         };
@@ -275,6 +327,13 @@ mod tests {
         h.run();
         h.get_by_label("Пропустить запись, если…").click();
         h.run();
+        h.get_by_label("Обновить наклейки").click();
+        h.run();
+        h.get_all_by_label("Наклейки").next().unwrap().click();
+        h.run();
+        h.get_by_label("Avery L7163 — 99,1 × 38,1 мм, 2 × 7")
+            .click();
+        h.run();
         assert_eq!(
             *h.state(),
             [
@@ -284,6 +343,8 @@ mod tests {
                 RibbonCommand::InsertMergeField("Город".into()),
                 RibbonCommand::InsertMergeRule(MergeRule::AddressBlock),
                 RibbonCommand::RuleDialog(RuleKind::SkipIf),
+                RibbonCommand::UpdateLabels,
+                RibbonCommand::MakeLabels(1),
             ]
         );
     }

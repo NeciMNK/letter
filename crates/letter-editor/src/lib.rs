@@ -29,6 +29,7 @@ pub mod equation;
 pub mod fields;
 pub mod format;
 pub mod history;
+pub mod labels;
 pub mod levels;
 pub mod links;
 pub mod lists;
@@ -73,6 +74,7 @@ pub use format::{
     apply_style, format_paragraphs, format_runs, formatting_at, language_at,
 };
 pub use history::{Command, History};
+pub use labels::{LABELS, LabelSpec, has_next_records, make_labels, update_labels};
 pub use levels::{OutlineChange, set_outline_level};
 pub use links::{
     add_bookmark, bookmark_position, bookmark_range, bookmarks, delete_bookmark, link_at, set_link,

@@ -300,6 +300,10 @@ pub enum Command {
     /// Поставить в поля слияния значения записи (данные и номер записи)
     /// или их имена (`None`) — «Просмотр результатов».
     MergePreview(Option<Box<(crate::merge::MergeData, usize)>>),
+    /// «Наклейки»: заменить документ листом наклеек.
+    MakeLabels(Box<crate::labels::LabelSpec>),
+    /// «Обновить наклейки»: повторить первую наклейку во всех.
+    UpdateLabels,
     /// «Заменить все»: найденное `query` заменить на `replacement` во
     /// всём документе. Курсор остаётся в том же абзаце (выделение
     /// снимается).
@@ -576,6 +580,37 @@ impl History {
                     self.push(Patch::Settings { before, after }, selection);
                 }
                 return selection;
+            }
+            Command::MakeLabels(_) | Command::UpdateLabels => {
+                let before = doc.sections.clone();
+                let changed = match &command {
+                    Command::MakeLabels(spec) => {
+                        crate::labels::make_labels(doc, spec);
+                        true
+                    }
+                    _ => crate::labels::update_labels(doc),
+                };
+                if !changed || doc.sections == before {
+                    return selection;
+                }
+                let after = doc.sections.clone();
+                let at = Selection::caret(Position::new(0, 0));
+                self.push(
+                    Patch::Sections {
+                        start: 0,
+                        before,
+                        after,
+                    },
+                    selection,
+                );
+                return if matches!(command, Command::MakeLabels(_)) {
+                    at
+                } else {
+                    Selection {
+                        anchor: clamp(doc, selection.anchor),
+                        focus: clamp(doc, selection.focus),
+                    }
+                };
             }
             Command::Watermark(text) => {
                 let before = doc.sections.clone();
@@ -1104,6 +1139,8 @@ impl History {
             | Command::PageColor(_)
             | Command::AutoHyphenation(_)
             | Command::SetMailMerge(_)
+            | Command::MakeLabels(_)
+            | Command::UpdateLabels
             | Command::EvenOddHeaders(_)
             | Command::Protection(_)
             | Command::WriteProtection(_)
@@ -1784,6 +1821,24 @@ mod tests {
         // Убрать подложку, которой нет, — ничего не меняет.
         h.run(&mut d, caret(0, 0), Command::Watermark(None));
         assert!(!h.can_undo());
+    }
+
+    #[test]
+    fn labels_are_one_undo_step() {
+        let mut d = doc(&["письмо"]);
+        let original = d.clone();
+        let mut h = History::new();
+        let spec = Box::new(crate::labels::LABELS[0]);
+        let at = h.run(&mut d, caret(0, 5), Command::MakeLabels(spec));
+        assert_eq!(at, caret(0, 0));
+        assert!(crate::labels::has_next_records(&d));
+        h.run(&mut d, at, Command::Type("A".into()));
+        h.run(&mut d, caret(0, 1), Command::UpdateLabels);
+        assert!(d.plain_text().contains("«Next Record»A"));
+        h.undo(&mut d);
+        h.undo(&mut d);
+        h.undo(&mut d);
+        assert_eq!(d, original);
     }
 
     #[test]
