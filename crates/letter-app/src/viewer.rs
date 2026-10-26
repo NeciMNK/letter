@@ -870,6 +870,8 @@ pub struct Viewer {
     recipients_dialog: crate::merge_dialogs::RecipientsDialog,
     /// Окно правила рассылки.
     rule_dialog: crate::merge_dialogs::RuleDialog,
+    /// Окно «Конверты».
+    envelope_dialog: crate::merge_dialogs::EnvelopeDialog,
     /// «Режим конструктора» (вкладка «Разработчик»).
     design_mode: bool,
     /// Слияние: выбранные получатели.
@@ -1101,6 +1103,7 @@ impl Viewer {
             control_dialog: ControlDialog::default(),
             recipients_dialog: Default::default(),
             rule_dialog: Default::default(),
+            envelope_dialog: Default::default(),
             design_mode: false,
             mailing: None,
             page_number_dialog: PageNumberDialog::default(),
@@ -1674,6 +1677,7 @@ impl Viewer {
             && !self.control_dialog.open
             && !self.recipients_dialog.open
             && !self.rule_dialog.open
+            && !self.envelope_dialog.open
             && !self.page_number_dialog.open
             && !self.password_dialog.open
             && !self.symbol_dialog.open
@@ -1778,6 +1782,14 @@ impl Viewer {
             }
             if let Some(rule) = self.rule_dialog.ui(&ctx) {
                 self.run_ribbon(&ctx, vec![RibbonCommand::InsertMergeRule(rule)]);
+            }
+            if let Some(envelope) = self.envelope_dialog.ui(&ctx) {
+                let mut commands = vec![Command::AddEnvelope(Box::new(envelope))];
+                if let Some(mailing) = self.mailing.as_ref().filter(|m| m.preview) {
+                    commands.push(mailing.show());
+                }
+                let commands = commands.into_iter().map(RibbonCommand::Edit).collect();
+                self.run_ribbon(&ctx, commands);
             }
             if let Some((at, control)) = self.control_dialog.ui(&ctx) {
                 // Свойства меняются у элемента, для которого открыто окно.
@@ -3184,6 +3196,19 @@ impl Viewer {
                     if let Some(spec) = letter_editor::LABELS.get(index) {
                         let command = Command::MakeLabels(Box::new(*spec));
                         actions.push(Action::Edit(command));
+                    }
+                }
+                RibbonCommand::Envelopes => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &self.document {
+                        let selection = document.selection();
+                        let piece = copy_range(&document.doc, selection.start(), selection.end());
+                        let text = piece
+                            .blocks()
+                            .map(letter_model::Block::plain_text)
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        self.envelope_dialog.show(&text, self.mailing.is_some());
                     }
                 }
                 RibbonCommand::UpdateLabels => {
