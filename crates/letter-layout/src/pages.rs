@@ -48,11 +48,11 @@ use std::sync::Arc;
 use letter_model::{
     Alignment, Anchor, AnchorAlign, Block, Border, Document, Drawing, EMU_PER_POINT,
     FirstLineIndent, HeaderFooter, HeaderFooterKind, HorizontalFrom, ImageData, LevelSuffix,
-    LineSpacing, ListCounters, ListLabel, NoteKind, Numbering, PageBorderDisplay, PageBorders,
-    PageSize, Paragraph, ParagraphBorders, Placement, ResolvedFonts, ResolvedParagraphProps,
-    ResolvedRunProps, RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart,
-    Settings, Styles, TabStopKind, TableCellStyle, Theme, Twips, VerticalAlign, VerticalFrom,
-    Watermark, Wrap, find_watermark,
+    LineNumberRestart, LineSpacing, ListCounters, ListLabel, NoteKind, Numbering,
+    PageBorderDisplay, PageBorders, PageSize, Paragraph, ParagraphBorders, Placement,
+    ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps, RunContent, RunFonts, RunProps,
+    Section, SectionProps, SectionStart, Settings, Styles, TabStopKind, TableCellStyle, Theme,
+    Twips, VerticalAlign, VerticalFrom, Watermark, Wrap, find_watermark,
 };
 
 use crate::fields;
@@ -118,6 +118,9 @@ pub struct Page {
     pub notes: Vec<PageNote>,
     /// Подложка из верхнего колонтитула страницы.
     pub watermark: Option<PageWatermark>,
+    /// Номера строк слева от текста (нумерация строк раздела); надписи
+    /// без поворота.
+    pub line_numbers: Vec<PageWatermark>,
     /// Номер страницы, как его показывает поле PAGE (с учётом «Начать с»
     /// у разделов).
     pub number: usize,
@@ -481,6 +484,21 @@ pub fn layout_document_cached(
         collect_paragraphs(doc, &section.blocks, width, None, &mut all);
     }
     section_starts.push(all.len());
+    // «Запретить нумерацию строк» у абзацев — только если она где-то есть.
+    let numbered = doc
+        .sections
+        .iter()
+        .any(|s| s.props.line_numbering.is_some());
+    let quiet: Vec<bool> = if numbered {
+        all.iter()
+            .map(|item| {
+                doc.resolve_paragraph(&item.paragraph.props)
+                    .suppress_line_numbers
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let labels = list_labels(doc, &all);
     let numbers = NoteNumbers::of(doc);
     let marks: Vec<Vec<String>> = all
@@ -628,7 +646,81 @@ pub fn layout_document_cached(
     let mut pages = pager.pages;
     place_stories(doc, &mut pages, &stories, shaper, library);
     page_background(doc, &mut pages);
+    if numbered {
+        number_lines(doc, &mut pages, &section_starts, &quiet, shaper, library);
+    }
     DocumentLayout { pages }
+}
+
+/// Номера строк разделов с нумерацией строк, как в Word: у строк
+/// текста (не в таблицах и не у абзацев с «Запретить нумерацию строк»),
+/// справа налево от текста на расстоянии `w:distance` (по умолчанию
+/// 0,25 дюйма), каждый `count_by`-й номер.
+fn number_lines(
+    doc: &Document,
+    pages: &mut [Page],
+    section_starts: &[usize],
+    quiet: &[bool],
+    shaper: &mut Shaper,
+    library: &FontLibrary,
+) {
+    let props = doc.resolve_run(
+        &letter_model::ParagraphProps::default(),
+        &RunProps::default(),
+    );
+    let style = text_style(&props, &props.fonts.ascii);
+    let color = match props.color {
+        letter_model::Color::Rgb(r, g, b) => (r, g, b),
+        letter_model::Color::Auto => (0, 0, 0),
+    };
+    let mut count = 0u32;
+    let mut last_section = None;
+    for page in pages.iter_mut() {
+        let mut numbers = Vec::new();
+        let mut page_started = true;
+        for line in &page.lines {
+            if line.cell.is_some() || quiet.get(line.paragraph).copied().unwrap_or(false) {
+                continue;
+            }
+            let section = section_starts
+                .partition_point(|&start| start <= line.paragraph)
+                .saturating_sub(1);
+            let Some(numbering) = doc
+                .sections
+                .get(section)
+                .and_then(|s| s.props.line_numbering)
+            else {
+                continue;
+            };
+            let restart = match numbering.restart {
+                LineNumberRestart::NewPage => page_started || last_section != Some(section),
+                LineNumberRestart::NewSection => last_section != Some(section),
+                LineNumberRestart::Continuous => last_section.is_none(),
+            };
+            page_started = false;
+            last_section = Some(section);
+            count = if restart {
+                numbering.start
+            } else {
+                count.saturating_add(1)
+            };
+            if !count.is_multiple_of(numbering.count_by.max(1)) {
+                continue;
+            }
+            let runs = shaper.shape(library, &count.to_string(), &style);
+            let width: f32 = runs.iter().map(ShapedRun::width).sum();
+            let distance = numbering.distance.map_or(18.0, points);
+            numbers.push(PageWatermark {
+                runs,
+                color,
+                alpha: 255,
+                x: line.x - distance - width,
+                y: line.baseline,
+                rotation: 0.0,
+            });
+        }
+        page.line_numbers = numbers;
+    }
 }
 
 /// Цвет страницы (заливка всего листа под всем остальным) и границы
@@ -2419,6 +2511,7 @@ impl Pager {
             footer: PageStory::default(),
             notes: Vec::new(),
             watermark: None,
+            line_numbers: Vec::new(),
             number,
         });
         self.y = top;
@@ -3667,6 +3760,51 @@ mod tests {
         // «На текущей странице» с другим размером листа — новая страница.
         d.sections[1].props.page_size = Some(PageSize::A4);
         assert_eq!(pages(&lay(&d))[..2], [vec![0], vec![1]]);
+    }
+
+    #[test]
+    fn lines_are_numbered_left_of_the_text() {
+        use letter_model::{LineNumberRestart, LineNumbering};
+        let mut d = doc(singles(80));
+        if let Some(size) = &mut d.sections[0].props.page_size {
+            size.height = Twips(8000);
+        }
+        d.sections[0].props.line_numbering = Some(LineNumbering {
+            count_by: 5,
+            ..LineNumbering::default()
+        });
+        // Третий абзац без номера: номера идут дальше без него.
+        if let Some(Block::Paragraph(p)) = d.sections[0].blocks.get_mut(2) {
+            p.props.suppress_line_numbers = Some(true);
+        }
+        let layout = lay(&d);
+        assert!(layout.pages.len() > 1);
+        let text = |n: &PageWatermark| n.runs.iter().flat_map(|r| r.glyphs.iter()).count();
+        let first = &layout.pages[0];
+        let numbers = &first.line_numbers;
+        assert!(!numbers.is_empty());
+        // 5, 10, 15…: пятая пронумерованная строка — шестая на странице.
+        assert_eq!(numbers[0].y, first.lines[5].baseline);
+        assert_eq!(text(&numbers[0]), 1);
+        assert_eq!(text(&numbers[1]), 2);
+        // Правый край номера — в 0,25 дюйма (18 пт) от текста.
+        let width: f32 = numbers[0].runs.iter().map(ShapedRun::width).sum();
+        assert!((numbers[0].x + width + 18.0 - first.lines[0].x).abs() < 0.01);
+        // На новой странице счёт начинается заново.
+        let second = &layout.pages[1];
+        assert_eq!(second.line_numbers[0].y, second.lines[4].baseline);
+        // Непрерывно: на второй странице счёт продолжается.
+        if let Some(n) = &mut d.sections[0].props.line_numbering {
+            n.restart = LineNumberRestart::Continuous;
+        }
+        let layout = lay(&d);
+        let on_first = layout.pages[0].lines.len() - 1;
+        let second = &layout.pages[1];
+        // Первый номер второй страницы — `on_first + 1`, показан первый
+        // кратный пяти.
+        let shown = (on_first + 1).div_ceil(5) * 5;
+        let index = shown - (on_first + 1);
+        assert_eq!(second.line_numbers[0].y, second.lines[index].baseline);
     }
 
     #[test]

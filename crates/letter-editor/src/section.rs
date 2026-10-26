@@ -3,8 +3,8 @@
 
 use letter_model::{
     Block, Border, BreakKind, Columns, Document, FieldChar, FieldCharKind, HeaderFooter,
-    HeaderFooterKind, Orientation, PageBorders, PageMargins, PageSize, Paragraph, Run, RunContent,
-    Section, SectionProps, SectionStart, Twips,
+    HeaderFooterKind, LineNumbering, Orientation, PageBorders, PageMargins, PageSize, Paragraph,
+    Run, RunContent, Section, SectionProps, SectionStart, Twips,
 };
 
 use crate::edit::{blocks_mut, clamp_offset, find, insert_items, split_content, top_level};
@@ -32,6 +32,8 @@ pub enum PageSetup {
         size: PageSize,
         /// Поля.
         margins: PageMargins,
+        /// Нумерация строк; `None` — без номеров.
+        line_numbering: Option<LineNumbering>,
         /// Во всём документе.
         whole: bool,
     },
@@ -320,10 +322,14 @@ fn apply(props: &mut SectionProps, setup: PageSetup) {
         }
         PageSetup::Borders(preset) => props.page_borders = preset.borders(),
         PageSetup::Page {
-            size: new, margins, ..
+            size: new,
+            margins,
+            line_numbering,
+            ..
         } => {
             props.page_size = Some(new);
             props.margins = Some(margins);
+            props.line_numbering = line_numbering;
         }
     }
 }
@@ -474,11 +480,13 @@ mod tests {
         let page = |whole| PageSetup::Page {
             size,
             margins,
+            line_numbering: Some(LineNumbering::default()),
             whole,
         };
         set_page_setup(&mut d, 0, 0, page(false));
         assert_eq!(d.sections[0].props.page_size, Some(size));
         assert_eq!(d.sections[0].props.margins, Some(margins));
+        assert!(d.sections[0].props.line_numbering.is_some());
         assert_ne!(d.sections[1].props.page_size, Some(size));
         set_page_setup(&mut d, 0, 0, page(true));
         assert_eq!(d.sections[1].props.margins, Some(margins));

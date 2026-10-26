@@ -3597,6 +3597,7 @@ impl Viewer {
                             tab,
                             props.and_then(|p| p.page_size),
                             props.and_then(|p| p.margins),
+                            props.and_then(|p| p.line_numbering),
                             doc.sections.len() > 1,
                         );
                     }
