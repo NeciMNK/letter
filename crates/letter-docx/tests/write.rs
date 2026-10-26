@@ -1132,3 +1132,35 @@ fn shapes_without_source_xml_are_written_anew() {
     assert!(xml.contains("<wpg:wgp"));
     assert_eq!(shapes(&read_bytes(&saved).unwrap()), expected);
 }
+
+#[test]
+fn mail_merge_source_survives_round_trip() {
+    let mut doc = Document::new();
+    doc.settings.mail_merge = Some(letter_model::MailMerge {
+        document_type: "formLetters".into(),
+        data_type: Some("textFile".into()),
+        query: Some("SELECT * FROM /home/nikita/Клиенты.csv".into()),
+        data_source: Some("file:///home/nikita/Клиенты.csv".into()),
+    });
+    let bytes = write_bytes(&doc).unwrap();
+    let parts = zip_parts(&bytes);
+    let rels = String::from_utf8(parts["word/_rels/settings.xml.rels"].clone()).unwrap();
+    assert!(rels.contains("relationships/mailMergeSource"), "{rels}");
+    assert!(rels.contains(r#"TargetMode="External""#));
+    let settings = String::from_utf8(parts["word/settings.xml"].clone()).unwrap();
+    assert!(settings.contains("<w:dataSource r:id="), "{settings}");
+    let again = read_bytes(&bytes).unwrap();
+    assert_eq!(again.settings.mail_merge, doc.settings.mail_merge);
+    // Повторное сохранение ничего не дублирует.
+    let twice = zip_parts(&write_bytes(&again).unwrap());
+    let rels = String::from_utf8(twice["word/_rels/settings.xml.rels"].clone()).unwrap();
+    assert_eq!(rels.matches("mailMergeSource").count(), 1, "{rels}");
+    assert_eq!(
+        round_trip(&again).settings.mail_merge,
+        doc.settings.mail_merge
+    );
+    // Без слияния — обычный документ.
+    let mut plain = again.clone();
+    plain.settings.mail_merge = None;
+    assert_eq!(round_trip(&plain).settings.mail_merge, None);
+}

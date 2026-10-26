@@ -210,6 +210,9 @@ pub enum Command {
     PageColor(Option<Color>),
     /// «Расстановка переносов»: автоматическая (`true`) или нет.
     AutoHyphenation(bool),
+    /// Настройки слияния документа (источник данных рассылки); `None` —
+    /// обычный документ.
+    SetMailMerge(Option<Box<letter_model::MailMerge>>),
     /// «Ограничить редактирование»: новая защита документа; `None` —
     /// снять защиту (пароль проверяет вызывающий, см.
     /// [`crate::protection`]).
@@ -547,6 +550,10 @@ impl History {
             }
             Command::AutoHyphenation(on) => {
                 self.change_settings(doc, selection, |s| s.auto_hyphenation = on);
+                return selection;
+            }
+            Command::SetMailMerge(merge) => {
+                self.change_settings(doc, selection, |s| s.mail_merge = merge.map(|m| *m));
                 return selection;
             }
             Command::Protection(protection) => {
@@ -1096,6 +1103,7 @@ impl History {
             | Command::OutlineLevel(_)
             | Command::PageColor(_)
             | Command::AutoHyphenation(_)
+            | Command::SetMailMerge(_)
             | Command::EvenOddHeaders(_)
             | Command::Protection(_)
             | Command::WriteProtection(_)
