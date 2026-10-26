@@ -201,6 +201,87 @@ impl ContentControl {
         }
     }
 
+    /// Тот же элемент с названием `title` (`w:alias`), тегом `tag` и
+    /// запретом `lock`; пустое название или тег убираются.
+    pub fn with_settings(&self, title: &str, tag: &str, lock: ControlLock) -> ContentControl {
+        let Some(props) = &self.props else {
+            return self.clone();
+        };
+        let xml = props.as_str();
+        let prefix = prefix_of(xml);
+        let mut xml = remove_elements(xml, &["alias", "tag", "lock"]);
+        let element = |local: &str, value: &str| {
+            format!(r#"<{prefix}{local} {prefix}val="{}"/>"#, escape(value))
+        };
+        let mut named = String::new();
+        if !title.is_empty() {
+            named.push_str(&element("alias", title));
+        }
+        if !tag.is_empty() {
+            named.push_str(&element("tag", tag));
+        }
+        // Порядок по схеме: rPr, alias, tag, id, lock…
+        let at = element_end(&xml, "rPr").unwrap_or_else(|| open_end(&xml, "sdtPr"));
+        xml.insert_str(at, &named);
+        let lock = match lock {
+            ControlLock::None => None,
+            ControlLock::Control => Some("sdtLocked"),
+            ControlLock::Content => Some("contentLocked"),
+            ControlLock::Both => Some("sdtContentLocked"),
+        };
+        if let Some(lock) = lock {
+            let at = element_end(&xml, "id").unwrap_or(at + named.len());
+            xml.insert_str(at, &element("lock", lock));
+        }
+        self.with_xml(xml)
+    }
+
+    /// Тот же список (`w:dropDownList` или `w:comboBox`) с пунктами
+    /// `items`.
+    pub fn with_list_items(&self, items: &[ListItem]) -> ContentControl {
+        let Some(props) = &self.props else {
+            return self.clone();
+        };
+        let xml = props.as_str();
+        let prefix = prefix_of(xml);
+        let xml = remove_elements(xml, &["listItem"]);
+        let list: String = items
+            .iter()
+            .map(|item| {
+                format!(
+                    r#"<{prefix}listItem {prefix}displayText="{}" {prefix}value="{}"/>"#,
+                    escape(&item.text),
+                    escape(&item.value)
+                )
+            })
+            .collect();
+        let xml = ["dropDownList", "comboBox"]
+            .iter()
+            .find_map(|local| insert_into(&xml, local, &list))
+            .unwrap_or(xml);
+        self.with_xml(xml)
+    }
+
+    /// Та же дата с образцом `format` (`w:dateFormat`).
+    pub fn with_date_format(&self, format: &str) -> ContentControl {
+        let Some(props) = &self.props else {
+            return self.clone();
+        };
+        let xml = props.as_str();
+        let prefix = prefix_of(xml);
+        let xml = remove_elements(xml, &["dateFormat"]);
+        let element = format!(r#"<{prefix}dateFormat {prefix}val="{}"/>"#, escape(format));
+        let xml = insert_into(&xml, "date", &element).unwrap_or(xml);
+        self.with_xml(xml)
+    }
+
+    fn with_xml(&self, xml: String) -> ContentControl {
+        ContentControl {
+            props: Some(RawXml::new(xml)),
+            end_props: self.end_props.clone(),
+        }
+    }
+
     fn tags(&self) -> impl Iterator<Item = Tag<'_>> {
         tags(self.props.as_ref().map_or("", |p| p.as_str()))
     }
@@ -278,6 +359,79 @@ pub enum ControlLock {
     Content,
     /// И то и другое (`sdtContentLocked`).
     Both,
+}
+
+/// Префикс имён свойств (`w:`) по первому тегу; без префикса — пусто.
+fn prefix_of(xml: &str) -> String {
+    tags(xml)
+        .next()
+        .and_then(|t| t.name.rsplit_once(':'))
+        .map_or(String::new(), |(p, _)| format!("{p}:"))
+}
+
+/// Где кончается открывающий тег первого элемента `local` (у пустого
+/// тега — его начало, чтобы вставка шла перед ним); без элемента — 0.
+fn open_end(xml: &str, local: &str) -> usize {
+    tags(xml)
+        .find(|t| t.local == local && !t.closing)
+        .map_or(0, |t| t.range.end)
+}
+
+/// Где кончается первый элемент `local` целиком (после закрывающего
+/// тега или пустого тега).
+fn element_end(xml: &str, local: &str) -> Option<usize> {
+    element_range(xml, local).map(|r| r.end)
+}
+
+/// Где первый элемент `local` целиком.
+fn element_range(xml: &str, local: &str) -> Option<std::ops::Range<usize>> {
+    let mut found = tags(xml).skip_while(|t| !(t.local == local && !t.closing));
+    let open = found.next()?;
+    if open.self_closing {
+        return Some(open.range);
+    }
+    let mut depth = 0;
+    for tag in found {
+        if tag.local != local || tag.self_closing {
+            continue;
+        }
+        if tag.closing {
+            if depth == 0 {
+                return Some(open.range.start..tag.range.end);
+            }
+            depth -= 1;
+        } else {
+            depth += 1;
+        }
+    }
+    None
+}
+
+/// Убирает все элементы с этими именами.
+fn remove_elements(xml: &str, locals: &[&str]) -> String {
+    let mut xml = xml.to_string();
+    for local in locals {
+        while let Some(range) = element_range(&xml, local) {
+            xml.replace_range(range, "");
+        }
+    }
+    xml
+}
+
+/// Вставляет `inner` в начало элемента `local` (пустой тег становится
+/// открывающим и закрывающим); `None`, если элемента нет.
+fn insert_into(xml: &str, local: &str, inner: &str) -> Option<String> {
+    let tag = tags(xml).find(|t| t.local == local && !t.closing)?;
+    let mut out = xml.to_string();
+    if tag.self_closing {
+        let text = &xml[tag.range.clone()];
+        let open = text.trim_end_matches("/>").trim_end();
+        let replaced = format!("{open}>{inner}</{}>", tag.name);
+        out.replace_range(tag.range, &replaced);
+    } else {
+        out.insert_str(tag.range.end, inner);
+    }
+    Some(out)
 }
 
 /// Открывающий, закрывающий или пустой тег в тексте XML.
@@ -371,6 +525,7 @@ fn unescape(text: &str) -> String {
 fn escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
+        .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
 
@@ -562,6 +717,57 @@ mod tests {
         assert_eq!(date.full_date(), None);
         assert_eq!(dated.full_date(), Some((2026, 10, 23)));
         assert_eq!(redated.full_date(), Some((2027, 1, 1)));
+        let reformatted = redated.with_date_format("d MMMM yyyy");
+        assert_eq!(
+            reformatted.kind(),
+            ControlKind::Date {
+                format: Some("d MMMM yyyy".into())
+            }
+        );
+        assert_eq!(reformatted.full_date(), Some((2027, 1, 1)));
+    }
+
+    #[test]
+    fn settings_and_items() {
+        let control = with_props(
+            r#"<w:rPr><w:b/></w:rPr><w:alias w:val="Старое"/><w:id w:val="7"/><w:lock w:val="contentLocked"/><w:dropDownList/>"#,
+        );
+        let named = control.with_settings("Отдел", "dept", ControlLock::Control);
+        assert_eq!(named.title().as_deref(), Some("Отдел"));
+        assert_eq!(named.tag().as_deref(), Some("dept"));
+        assert_eq!(named.lock(), ControlLock::Control);
+        let xml = named.props.as_ref().unwrap().as_str().to_string();
+        // Порядок по схеме: rPr, alias, tag, id, lock.
+        let place = |s: &str| xml.find(s).unwrap();
+        assert!(place("rPr") < place("alias") && place("alias") < place("w:tag"));
+        assert!(place("w:id") < place("w:lock"));
+        let cleared = named.with_settings("", "", ControlLock::None);
+        assert_eq!(cleared.title(), None);
+        assert_eq!(cleared.tag(), None);
+        assert_eq!(cleared.lock(), ControlLock::None);
+        let items = vec![
+            ListItem {
+                text: "Склад & <офис>".into(),
+                value: "1".into(),
+            },
+            ListItem {
+                text: "Бухгалтерия".into(),
+                value: "2".into(),
+            },
+        ];
+        let listed = cleared.with_list_items(&items);
+        assert_eq!(
+            listed.kind(),
+            ControlKind::List {
+                items: items.clone(),
+                editable: false
+            }
+        );
+        let fewer = listed.with_list_items(&items[1..]);
+        let ControlKind::List { items: now, .. } = fewer.kind() else {
+            panic!("ждали список");
+        };
+        assert_eq!(now, &items[1..]);
     }
 
     #[test]

@@ -12,6 +12,7 @@ mod calendar;
 mod clipboard;
 mod comments;
 mod context_menu;
+mod control_dialog;
 mod design;
 mod developer;
 mod equation;

@@ -444,6 +444,47 @@ pub fn set_control_date(doc: &mut Document, at: Position, date: DateTime) -> Opt
     })
 }
 
+/// Меняет свойства элемента у места `at` (внутри абзаца или блочного) на
+/// `new` — окно «Свойства элемента». У даты с выбранным числом текст
+/// переписывается по новому образцу. `false`, если элемента нет.
+pub fn set_control(doc: &mut Document, at: Position, new: ContentControl) -> bool {
+    let Some((old, start, end)) = control_range(doc, at) else {
+        return false;
+    };
+    let new = Arc::new(new);
+    let same = |c: &ContentControlRef| Arc::ptr_eq(c, &old);
+    for index in start.paragraph..=end.paragraph {
+        let Some(paragraph) = paragraph_mut(doc, index) else {
+            continue;
+        };
+        for control in &mut paragraph.props.controls {
+            if same(control) {
+                *control = new.clone();
+            }
+        }
+        for inline in &mut paragraph.content {
+            if let Inline::Run(run) = inline
+                && run.props.control.as_ref().is_some_and(same)
+            {
+                run.props.control = Some(new.clone());
+            }
+        }
+    }
+    let redate = matches!(new.kind(), ControlKind::Date { .. }) && !new.showing_placeholder();
+    if redate && let Some((year, month, day)) = new.full_date() {
+        let date = DateTime {
+            year,
+            month,
+            day,
+            hour: 0,
+            minute: 0,
+            second: 0,
+        };
+        set_control_date(doc, start, date);
+    }
+    true
+}
+
 /// Заменяет текст элемента у `at` и сам элемент (на `change` от него).
 fn replace_control(
     doc: &mut Document,
@@ -782,6 +823,66 @@ mod tests {
             (Position::new(1, 0), Position::new(2, "два".len()))
         );
         assert!(control_range(&doc, Position::new(3, 0)).is_none());
+    }
+
+    #[test]
+    fn properties_change_and_undo() {
+        use crate::{Command, History, Selection};
+        let date = control(
+            r#"<w:id w:val="5"/><w:date w:fullDate="2026-10-23T00:00:00Z"><w:dateFormat w:val="dd.MM.yyyy"/></w:date>"#,
+        );
+        let mut doc = doc_with(&date, None);
+        let at = Position::new(0, 5);
+        set_control_date(
+            &mut doc,
+            at,
+            DateTime {
+                year: 2026,
+                month: 10,
+                day: 23,
+                ..DateTime::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(text(&doc), "до 23.10.2026 после");
+        let (now, _, _) = control_at(&doc, at).unwrap();
+        let changed = now
+            .with_settings("Срок", "due", ControlLock::Control)
+            .with_date_format("d MMMM yyyy");
+        let mut history = History::default();
+        history.run(
+            &mut doc,
+            Selection::caret(at),
+            Command::SetControl(Box::new(changed)),
+        );
+        assert_eq!(text(&doc), "до 23 октября 2026 после");
+        let (now, _, _) = control_at(&doc, at).unwrap();
+        assert_eq!(now.title().as_deref(), Some("Срок"));
+        assert_eq!(now.lock(), ControlLock::Control);
+        history.undo(&mut doc);
+        assert_eq!(text(&doc), "до 23.10.2026 после");
+        let (now, _, _) = control_at(&doc, at).unwrap();
+        assert_eq!(now.title(), None);
+
+        // Блочный элемент: свойства меняются во всех его абзацах.
+        let block = control("");
+        let mut doc = Document::new();
+        let mut one = Paragraph::from_runs([Run::text("один")]);
+        one.props.controls = vec![block.clone()];
+        let mut two = Paragraph::from_runs([Run::text("два")]);
+        two.props.controls = vec![block.clone()];
+        doc.sections[0].blocks = vec![one.into(), two.into()];
+        let named = block.with_settings("Раздел", "", ControlLock::None);
+        assert!(set_control(&mut doc, Position::new(1, 0), named));
+        for i in 0..2 {
+            let p = paragraph_ref(&doc, i).unwrap();
+            assert_eq!(p.props.controls[0].title().as_deref(), Some("Раздел"));
+        }
+        assert!(!set_control(
+            &mut doc_with(&date, None),
+            Position::new(0, 0),
+            ContentControl::default()
+        ));
     }
 
     #[test]

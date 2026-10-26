@@ -11,13 +11,14 @@ use crate::ribbon::{RibbonCommand, RibbonInfo, group};
 
 /// Подсказки клавиш вкладки (для проверки).
 #[cfg(test)]
-pub const KEYTIPS: [&str; 7] = [
+pub const KEYTIPS: [&str; 8] = [
     "keytip-developer-rich-text",
     "keytip-developer-plain-text",
     "keytip-developer-checkbox",
     "keytip-developer-combo-box",
     "keytip-developer-drop-down",
     "keytip-developer-date",
+    "keytip-developer-properties",
     "keytip-developer-restrict",
 ];
 
@@ -58,6 +59,24 @@ pub fn developer(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                     }
                 });
             }
+            ui.vertical(|ui| {
+                let response = ui
+                    .add_enabled(
+                        enabled && info.in_control,
+                        Button::new(tr("control-properties")),
+                    )
+                    .on_hover_text(tr("control-properties-hint"));
+                keytips::tip(
+                    ui,
+                    &response,
+                    Level::Commands,
+                    "keytip-developer-properties",
+                    TipAction::Command(RibbonCommand::ControlProperties),
+                );
+                if response.clicked() {
+                    out.push(RibbonCommand::ControlProperties);
+                }
+            });
         });
     });
     group(ui, tr("group-protect"), |ui| {
@@ -99,6 +118,7 @@ mod tests {
     fn buttons_insert_controls() {
         let info = RibbonInfo {
             has_document: true,
+            in_control: true,
             ..RibbonInfo::default()
         };
         let mut h = Harness::new_ui_state(
@@ -110,11 +130,14 @@ mod tests {
         h.run();
         h.get_by_label("Выбор даты").click();
         h.run();
+        h.get_by_label("Свойства").click();
+        h.run();
         assert_eq!(
             *h.state(),
             [
                 RibbonCommand::InsertControl(NewControl::CheckBox),
                 RibbonCommand::InsertControl(NewControl::Date),
+                RibbonCommand::ControlProperties,
             ]
         );
     }

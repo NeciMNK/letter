@@ -184,6 +184,8 @@ pub enum RibbonCommand {
     InsertControl(letter_editor::NewControl),
     /// Поставить эту дату в элемент выбора даты у курсора.
     ControlDate(letter_editor::DateTime),
+    /// Окно «Свойства элемента управления содержимым» у курсора.
+    ControlProperties,
     /// Показать или скрыть знаки форматирования.
     ToggleMarks,
     /// Применить стиль с этим идентификатором.
@@ -333,6 +335,8 @@ pub enum RibbonCommand {
 pub struct RibbonInfo {
     /// Документ открыт.
     pub has_document: bool,
+    /// Курсор у элемента управления содержимым.
+    pub in_control: bool,
     /// Есть что отменить и повторить.
     pub can_undo: bool,
     /// Есть что повторить.
