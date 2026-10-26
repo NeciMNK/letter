@@ -50,7 +50,7 @@ use crate::section::{
 use crate::selection::Selection;
 use crate::table::{
     BorderPreset, delete_columns, delete_rows, delete_table, in_table, insert_columns, insert_rows,
-    insert_table, merge_cells, next_cell, set_cell_borders, set_cell_shading,
+    insert_table, merge_cells, move_column_border, next_cell, set_cell_borders, set_cell_shading,
 };
 use crate::toc::{delete_toc, insert_toc, update_tocs};
 use crate::watermark::set_watermark;
@@ -125,6 +125,14 @@ pub enum Command {
     CellShading(Option<Color>),
     /// Объединить выделенные ячейки.
     MergeCells,
+    /// Сдвинуть правую границу ячейки с абзацем `paragraph` на `by`
+    /// твипов (перетаскивание границы столбца мышью).
+    MoveColumnBorder {
+        /// Абзац в ячейке.
+        paragraph: usize,
+        /// Сдвиг, твипы; вправо — больше нуля.
+        by: i32,
+    },
     /// Вставить рисунок у курсора (заменяет выделенное).
     InsertPicture(Box<Picture>),
     /// Новый размер выделенного рисунка, EMU (выделение остаётся).
@@ -712,6 +720,7 @@ impl History {
                 | Command::CellBorders(_)
                 | Command::CellShading(_)
                 | Command::MergeCells
+                | Command::MoveColumnBorder { .. }
                 | Command::ResizePicture { .. }
                 | Command::PictureAnchor(_)
                 | Command::PictureShape(_)
@@ -776,6 +785,8 @@ impl History {
             Command::RestartNumbering | Command::ContinueNumbering => {
                 (start.paragraph, paragraph_count(doc).saturating_sub(1))
             }
+            // Граница столбца — в таблице под мышью, а не у выделения.
+            Command::MoveColumnBorder { paragraph, .. } => (paragraph, paragraph),
             _ => (start.paragraph, end.paragraph),
         };
         let from = top_level(doc, first).or_else(|| top_level(doc, start.paragraph));
@@ -914,6 +925,9 @@ impl History {
             Command::MergeCells => {
                 let at = merge_cells(doc, start.paragraph, end.paragraph);
                 Some(at.map_or(selection, Selection::caret))
+            }
+            Command::MoveColumnBorder { paragraph, by } => {
+                move_column_border(doc, *paragraph, *by).then_some(selection)
             }
             Command::ResizePicture { width, height } => {
                 resize_picture(doc, start, *width, *height);
@@ -1113,6 +1127,7 @@ impl History {
             | Command::CellBorders(_)
             | Command::CellShading(_)
             | Command::MergeCells
+            | Command::MoveColumnBorder { .. }
             | Command::ResizePicture { .. }
             | Command::PictureAnchor(_)
             | Command::PictureShape(_)
@@ -1489,6 +1504,28 @@ mod tests {
         assert_eq!(d.plain_text(), "\nab");
         h.undo(&mut d);
         h.undo(&mut d);
+        h.undo(&mut d);
+        assert_eq!(d, before);
+    }
+
+    #[test]
+    fn column_border_is_undone() {
+        let mut d = doc(&["ab"]);
+        let mut h = History::new();
+        let insert = Command::InsertTable {
+            rows: 2,
+            columns: 2,
+        };
+        h.run(&mut d, Selection::caret(Position::new(0, 0)), insert);
+        let before = d.clone();
+        // Курсор после таблицы, границу тянут мышью в таблице.
+        let at = Selection::caret(Position::new(4, 1));
+        let moved = Command::MoveColumnBorder {
+            paragraph: 1,
+            by: -400,
+        };
+        assert_eq!(h.run(&mut d, at, moved), at);
+        assert_ne!(d, before);
         h.undo(&mut d);
         assert_eq!(d, before);
     }

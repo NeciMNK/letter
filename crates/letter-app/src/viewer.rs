@@ -33,7 +33,9 @@ use letter_editor::{
     language_at, link_at, list_kind, move_cursor, moved_anchor, paragraph_at, picture_at_point,
     picture_ref, select_all, selected_picture, selection_rects, word_at,
 };
-use letter_layout::{DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached};
+use letter_layout::{
+    CellArea, DocumentLayout, FontLibrary, LayoutCache, Shaper, layout_document_cached,
+};
 use letter_model::{
     Alignment, BreakKind, Document, FieldChar, FieldCharKind, NoteKind, Paragraph, Run, RunContent,
     Statistics,
@@ -832,6 +834,8 @@ pub struct Viewer {
     picture_requested: bool,
     /// Размер рисунка меняют мышью: какой маркер тянут и новый размер.
     picture_drag: Option<PictureDrag>,
+    /// Границу столбца таблицы тянут мышью.
+    column_drag: Option<ColumnDrag>,
     /// Курсор сдвинули с клавиатуры: прокрутить так, чтобы он был виден.
     reveal_cursor: bool,
     /// Прокрутить к листу (номер с нуля) так, чтобы место `top` (пт от
@@ -1094,6 +1098,7 @@ impl Viewer {
             open_requested: false,
             picture_requested: false,
             picture_drag: None,
+            column_drag: None,
             reveal_cursor: false,
             scroll_to: None,
             navigation: Default::default(),
@@ -3919,6 +3924,7 @@ impl Viewer {
             document,
             show_marks,
             picture_drag,
+            column_drag,
             spelling,
             design_mode,
             ..
@@ -4129,6 +4135,53 @@ impl Viewer {
                         }));
                     }
                     *picture_drag = None;
+                }
+            }
+            // Границу столбца таблицы тянут мышью, как в Word: указатель
+            // над ней — двойная стрелка, при отпускании столбцы меняют ширину.
+            let border_under = |at: Option<Pos2>| {
+                let at = at.filter(|_| document.story.is_none())?;
+                let page = nearest_page(&placement.clips, at - origin.to_vec2())?;
+                let local = (at - screen_rect(page).min) * points;
+                let near = BORDER_GRIP * points;
+                let (paragraph, cell) = column_border_at(pages.get(page)?, local.x, local.y, near)?;
+                Some(ColumnDrag {
+                    paragraph,
+                    page,
+                    cell,
+                    start: at,
+                    offset: 0.0,
+                })
+            };
+            if picture_drag.is_none() && handle_under(hover).is_none() {
+                if column_drag.is_some() || border_under(hover).is_some() {
+                    ui.ctx().set_cursor_icon(CursorIcon::ResizeColumn);
+                }
+                if press
+                    && response.hovered()
+                    && column_drag.is_none()
+                    && let Some(drag) = border_under(pointer)
+                {
+                    *column_drag = Some(drag);
+                }
+            }
+            if let Some(drag) = column_drag.as_mut() {
+                on_picture = true;
+                if dragging {
+                    if let Some(at) = pointer {
+                        // Ячейка слева не уже 0,5 см, как и в самой правке.
+                        let narrowest = MIN_COLUMN_POINTS - (drag.cell.right - drag.cell.left);
+                        drag.offset = ((at.x - drag.start.x) * points).max(narrowest);
+                    }
+                } else {
+                    let by = (drag.offset * 20.0).round() as i32;
+                    if by != 0 {
+                        menu.push(RibbonCommand::Edit(Command::MoveColumnBorder {
+                            paragraph: drag.paragraph,
+                            by,
+                        }));
+                    }
+                    *column_drag = None;
                 }
             }
             // Нажатие на сам выделенный рисунок не начинает выделение текста.
@@ -4453,6 +4506,19 @@ impl Viewer {
                     None => rect,
                 };
                 crate::picture::paint_frame(ui.painter(), rect);
+            }
+            // Пока тянут границу столбца — пунктир на её новом месте.
+            if let Some(drag) = *column_drag
+                && drag.page < placement.rects.len()
+            {
+                let page = screen_rect(drag.page);
+                let x = page.min.x + (drag.cell.right + drag.offset) / points;
+                ui.painter().extend(egui::Shape::dashed_line(
+                    &[pos2(x, page.top()), pos2(x, page.bottom())],
+                    egui::Stroke::new(1.0, Color32::from_gray(60)),
+                    3.0,
+                    3.0,
+                ));
             }
             let rects = if framed.is_some() {
                 Vec::new()
@@ -4886,6 +4952,40 @@ fn paint_outline_marks(
 
 /// Лист под точкой `point` (координаты содержимого прокрутки) или,
 /// если точка между листами, ближайший по вертикали.
+/// Насколько близко к границе столбца её можно взять мышью, точки экрана.
+const BORDER_GRIP: f32 = 3.0;
+/// Самый узкий столбец при перетаскивании границы, пт (как в правке).
+const MIN_COLUMN_POINTS: f32 = 14.4;
+
+/// Граница столбца таблицы, которую тянут мышью.
+#[derive(Debug, Clone, Copy)]
+struct ColumnDrag {
+    /// Абзац в ячейке слева от границы.
+    paragraph: usize,
+    /// Лист (номер с нуля).
+    page: usize,
+    /// Ячейка слева от границы, пт на листе.
+    cell: CellArea,
+    /// Где нажали кнопку мыши, точки экрана.
+    start: Pos2,
+    /// На сколько сдвинута граница, пт; вправо — больше нуля.
+    offset: f32,
+}
+
+/// Правая граница ячейки таблицы у места `x`, `y` листа (пт) — не дальше
+/// `near` пт: абзац в ячейке слева от границы и сама ячейка.
+fn column_border_at(
+    page: &letter_layout::Page,
+    x: f32,
+    y: f32,
+    near: f32,
+) -> Option<(usize, CellArea)> {
+    page.lines
+        .iter()
+        .filter_map(|l| Some((l.paragraph, l.cell?)))
+        .find(|(_, c)| (c.right - x).abs() <= near && (c.top..=c.bottom).contains(&y))
+}
+
 fn nearest_page(rects: &[Rect], point: Pos2) -> Option<usize> {
     rects
         .iter()
@@ -5809,6 +5909,87 @@ mod tests {
         let document = viewer.document.as_ref().unwrap();
         assert_eq!(document.layout.pages.len(), 1);
         assert_eq!(document.layout.pages[0].lines.len(), 1);
+    }
+
+    #[test]
+    fn table_columns_are_resized_with_the_mouse() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("table.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        frame(&ctx, &mut viewer, screen());
+
+        let document = viewer.document.as_ref().unwrap();
+        let line = document.layout.pages[0]
+            .lines
+            .iter()
+            .find(|l| l.cell.is_some())
+            .unwrap();
+        let (paragraph, cell) = (line.paragraph, line.cell.unwrap());
+        let grid = |viewer: &Viewer| -> Vec<i32> {
+            let doc = &viewer.document.as_ref().unwrap().doc;
+            doc.sections
+                .iter()
+                .flat_map(|s| &s.blocks)
+                .find_map(|b| match b {
+                    letter_model::Block::Table(t) => Some(t.grid.iter().map(|t| t.0).collect()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let before = grid(&viewer);
+        let scale = viewer.zoom() * SCREEN_PIXELS_PER_POINT;
+        let page = place_pages(
+            &[(
+                document.layout.pages[0].width,
+                document.layout.pages[0].height,
+            )],
+            viewer.zoom(),
+            viewer.view_size.x,
+        )
+        .rects[0];
+        let origin = viewer.view_origin;
+        let at = move |x: f32, y: f32| origin + page.min.to_vec2() + vec2(x, y) * scale;
+        let button = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        let cursor = viewer.selection();
+
+        // Правую границу первой ячейки — на 18 пт вправо.
+        let y = (cell.top + cell.bottom) / 2.0;
+        let border = at(cell.right, y);
+        let moved = at(cell.right + 18.0, y);
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![Event::PointerMoved(border), button(border, true)]),
+        );
+        frame(&ctx, &mut viewer, events(vec![Event::PointerMoved(moved)]));
+        frame(
+            &ctx,
+            &mut viewer,
+            events(vec![Event::PointerMoved(moved), button(moved, false)]),
+        );
+        frame(&ctx, &mut viewer, screen());
+        let after = grid(&viewer);
+        assert_eq!(after[0], before[0] + 360, "{before:?} → {after:?}");
+        assert_eq!(after.iter().sum::<i32>(), before.iter().sum::<i32>());
+        // Текст не выделился, курсор на месте.
+        assert_eq!(viewer.selection(), cursor);
+        let document = viewer.document.as_ref().unwrap();
+        let line = document.layout.pages[0]
+            .lines
+            .iter()
+            .find(|l| l.paragraph == paragraph)
+            .unwrap();
+        assert!((line.cell.unwrap().right - (cell.right + 18.0)).abs() < 0.5);
+
+        // Ctrl+Z возвращает ширины.
+        frame(&ctx, &mut viewer, key(Key::Z, Modifiers::COMMAND));
+        assert_eq!(grid(&viewer), before);
     }
 
     #[test]
