@@ -12,9 +12,13 @@
 # Готовый файл .flatpak ставится командой `flatpak install letter.flatpak`.
 app-id: io.github.bikhe.letter
 runtime: org.freedesktop.Platform
-runtime-version: "24.08"
+runtime-version: "25.08"
 sdk: org.freedesktop.Sdk
 command: letter
+# Описание для магазинов уже готово (.metainfo.xml); сборщик из Ubuntu
+# ищет для его обработки программу appstream-compose, которой в новых
+# средах Flatpak нет.
+appstream-compose: false
 finish-args:
   # Окно: Wayland, а где его нет — X11; видеокарта для отрисовки.
   - --share=ipc
