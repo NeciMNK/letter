@@ -12,6 +12,7 @@ use crate::icons::{self, Icon};
 use crate::print::{PageChoice, PrintJob, Printers, parse_pages, with_copies};
 use crate::ribbon::{ACCENT, RibbonCommand};
 use crate::settings::{AUTOSAVE_RANGE, Settings};
+use crate::templates::Template;
 use crate::theme::{Palette, ThemeChoice};
 
 /// Страница представления «Файл».
@@ -81,6 +82,17 @@ pub struct BackstageInfo {
     pub settings: Settings,
     /// Принтеры; `None` — ещё ищутся.
     pub printers: Option<Printers>,
+    /// Шаблоны для «Создать»: встроенные, потом личные.
+    pub templates: Vec<Template>,
+}
+
+/// Что нарисовать в миниатюре.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Thumb {
+    /// Страница открытого документа (номер с нуля) — «Печать».
+    Page(usize),
+    /// Первая страница шаблона (номер в [`BackstageInfo::templates`]).
+    Template(usize),
 }
 
 /// Настройки на странице «Печать».
@@ -172,13 +184,14 @@ impl Backstage {
     }
 
     /// Рисует представление на всё окно и возвращает выбранные команды.
-    /// `preview` рисует страницу документа (номер с нуля) в прямоугольник
-    /// — для предварительного просмотра на странице «Печать».
+    /// `preview` рисует страницу документа или шаблона в прямоугольник —
+    /// для предварительного просмотра на странице «Печать» и миниатюр
+    /// шаблонов на странице «Создать».
     pub fn ui(
         &mut self,
         ui: &mut Ui,
         info: &BackstageInfo,
-        preview: &mut dyn FnMut(&Painter, usize, Rect),
+        preview: &mut dyn FnMut(&Painter, Thumb, Rect),
     ) -> Vec<RibbonCommand> {
         let mut out = Vec::new();
         if ui.input(|i| i.key_pressed(Key::Escape)) {
@@ -255,17 +268,19 @@ impl Backstage {
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| match page {
                     Page::Info => info_page(ui, info, &mut out),
-                    Page::New => new_page(ui, &mut out),
+                    Page::New => new_page(ui, info, preview, &mut out),
                     Page::Open | Page::Print => open_page(ui, info, &mut out),
                     Page::Export => export_page(ui, &mut out),
                     Page::Options => options_page(ui, info.settings, &mut out),
                 });
             });
         // Команды с файлами закрывают представление, как в Word.
-        if out
-            .iter()
-            .any(|c| !matches!(c, RibbonCommand::ChangeSettings(_)))
-        {
+        if out.iter().any(|c| {
+            !matches!(
+                c,
+                RibbonCommand::ChangeSettings(_) | RibbonCommand::AddTemplate
+            )
+        }) {
             self.open = false;
         }
         out
@@ -341,16 +356,92 @@ fn info_page(ui: &mut Ui, info: &BackstageInfo, out: &mut Vec<RibbonCommand>) {
         });
 }
 
-/// «Создать»: новый пустой документ.
-fn new_page(ui: &mut Ui, out: &mut Vec<RibbonCommand>) {
+/// Размер миниатюры шаблона (лист A4 в уменьшении).
+const THUMB: egui::Vec2 = egui::Vec2::new(150.0, 212.0);
+
+/// Плитка шаблона: миниатюра и имя под ней. Возвращает, нажата ли.
+fn template_tile(
+    ui: &mut Ui,
+    name: &str,
+    index: Option<usize>,
+    preview: &mut dyn FnMut(&Painter, Thumb, Rect),
+) -> bool {
+    let palette = Palette::of(ui.ctx());
+    // Размер плитки известен заранее: так ряд плиток переносится.
+    let size = vec2(THUMB.x, THUMB.y + 24.0);
+    ui.allocate_ui_with_layout(size, Layout::top_down(Align::Min), |ui| {
+        ui.set_min_size(size);
+        let (rect, response) = ui.allocate_exact_size(THUMB, egui::Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, name));
+        let painter = ui.painter();
+        painter.rect_filled(rect, 2.0, Color32::WHITE);
+        if let Some(index) = index {
+            preview(painter, Thumb::Template(index), rect);
+        }
+        let stroke = if response.hovered() {
+            egui::Stroke::new(2.0, ACCENT)
+        } else {
+            egui::Stroke::new(1.0, palette.border)
+        };
+        painter.rect_stroke(rect, 2.0, stroke, egui::StrokeKind::Inside);
+        ui.label(RichText::new(name).size(13.0));
+        response.clicked()
+    })
+    .inner
+}
+
+/// «Создать»: пустой документ, встроенные шаблоны и личные шаблоны.
+fn new_page(
+    ui: &mut Ui,
+    info: &BackstageInfo,
+    preview: &mut dyn FnMut(&Painter, Thumb, Rect),
+    out: &mut Vec<RibbonCommand>,
+) {
     heading(ui, tr("backstage-new"));
-    let tile = egui::Button::new(RichText::new(tr("new-document")).size(15.0))
-        .min_size(vec2(160.0, 200.0))
-        .fill(Palette::of(ui.ctx()).card)
-        .stroke(egui::Stroke::new(1.0, Palette::of(ui.ctx()).border));
-    if ui.add(tile).on_hover_text(tr("backstage-blank")).clicked() {
-        out.push(RibbonCommand::New);
-    }
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        let tiles = |ui: &mut Ui,
+                     items: &[(usize, &Template)],
+                     preview: &mut dyn FnMut(&Painter, Thumb, Rect),
+                     out: &mut Vec<RibbonCommand>,
+                     blank: bool| {
+            let wrapped = Layout::left_to_right(Align::TOP).with_main_wrap(true);
+            ui.with_layout(wrapped, |ui| {
+                ui.spacing_mut().item_spacing = vec2(20.0, 16.0);
+                if blank && template_tile(ui, tr("new-document"), None, preview) {
+                    out.push(RibbonCommand::New);
+                }
+                for (index, template) in items {
+                    if template_tile(ui, &template.name(), Some(*index), preview) {
+                        out.push(RibbonCommand::NewFromTemplate((*template).clone()));
+                    }
+                }
+            });
+        };
+        let (builtin, personal): (Vec<_>, Vec<_>) = info
+            .templates
+            .iter()
+            .enumerate()
+            .partition(|(_, t)| matches!(t, Template::Builtin(_)));
+        ui.label(RichText::new(tr("backstage-builtin-templates")).size(16.0));
+        ui.add_space(6.0);
+        tiles(ui, &builtin, preview, out, true);
+        ui.add_space(20.0);
+        ui.label(RichText::new(tr("backstage-personal-templates")).size(16.0));
+        ui.add_space(6.0);
+        if personal.is_empty() {
+            ui.label(RichText::new(tr("backstage-personal-empty")).color(Color32::GRAY));
+        } else {
+            tiles(ui, &personal, preview, out, false);
+        }
+        ui.add_space(10.0);
+        if ui
+            .button(tr("backstage-add-template"))
+            .on_hover_text(tr("backstage-add-template-hint"))
+            .clicked()
+        {
+            out.push(RibbonCommand::AddTemplate);
+        }
+    });
 }
 
 /// «Открыть»: «Обзор» и последние файлы.
@@ -398,7 +489,7 @@ fn print_page(
     settings: &mut PrintSettings,
     document: &DocumentInfo,
     info: &BackstageInfo,
-    preview: &mut dyn FnMut(&Painter, usize, Rect),
+    preview: &mut dyn FnMut(&Painter, Thumb, Rect),
     out: &mut Vec<RibbonCommand>,
 ) {
     let total = document.pages.max(1);
@@ -494,7 +585,7 @@ fn print_page(
     if width > 0.0 && height > 0.0 && sheet_area.width() > 0.0 && sheet_area.height() > 0.0 {
         let scale = (sheet_area.width() / width).min(sheet_area.height() / height);
         let sheet = Rect::from_center_size(sheet_area.center(), vec2(width, height) * scale);
-        preview(ui.painter(), settings.preview, sheet);
+        preview(ui.painter(), Thumb::Page(settings.preview), sheet);
     }
     let bar_rect = Rect::from_min_max(egui::pos2(area.min.x, area.max.y - bar), area.max);
     ui.scope_builder(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
@@ -679,23 +770,25 @@ mod tests {
     }
 
     fn harness(info: BackstageInfo) -> Harness<'static, State> {
+        sized_harness(info, vec2(1000.0, 700.0))
+    }
+
+    fn sized_harness(info: BackstageInfo, size: egui::Vec2) -> Harness<'static, State> {
         let mut backstage = Backstage::default();
         backstage.show(Page::Info);
-        Harness::builder()
-            .with_size(vec2(1000.0, 700.0))
-            .build_ui_state(
-                |ui, state: &mut State| {
-                    if state.backstage.open {
-                        let out = state.backstage.ui(ui, &state.info, &mut |_, _, _| {});
-                        state.out.extend(out);
-                    }
-                },
-                State {
-                    backstage,
-                    info,
-                    out: Vec::new(),
-                },
-            )
+        Harness::builder().with_size(size).build_ui_state(
+            |ui, state: &mut State| {
+                if state.backstage.open {
+                    let out = state.backstage.ui(ui, &state.info, &mut |_, _, _| {});
+                    state.out.extend(out);
+                }
+            },
+            State {
+                backstage,
+                info,
+                out: Vec::new(),
+            },
+        )
     }
 
     #[test]
@@ -710,6 +803,9 @@ mod tests {
             recent: vec![PathBuf::from("/tmp/a.docx")],
             settings: Settings::default(),
             printers: None,
+            templates: crate::templates::Builtin::ALL
+                .map(Template::Builtin)
+                .to_vec(),
         };
         let mut h = harness(info);
         h.run();
@@ -723,6 +819,57 @@ mod tests {
         assert_eq!(h.state().out, vec![RibbonCommand::SaveAsFormat("rtf")]);
         // Команда с файлом закрывает представление.
         assert!(!h.state().backstage.open);
+    }
+
+    #[test]
+    fn new_page_offers_templates() {
+        let info = BackstageInfo {
+            templates: crate::templates::Builtin::ALL
+                .map(Template::Builtin)
+                .to_vec(),
+            ..BackstageInfo::default()
+        };
+        // Все плитки и кнопка видны без прокрутки.
+        let mut h = sized_harness(info, vec2(1500.0, 1100.0));
+        h.state_mut().backstage.show(Page::New);
+        h.run();
+        assert!(
+            h.query_by_label_contains("Здесь появятся ваши шаблоны")
+                .is_some()
+        );
+        h.get_all_by_label("Резюме").next().unwrap().click();
+        h.run();
+        assert_eq!(
+            h.state().out,
+            [RibbonCommand::NewFromTemplate(Template::Builtin(
+                crate::templates::Builtin::Resume
+            ))]
+        );
+        h.state_mut().out.clear();
+        h.state_mut().backstage.show(Page::New);
+        h.state_mut()
+            .info
+            .templates
+            .push(Template::Personal("/tmp/Бланк.dotx".into()));
+        h.run();
+        h.get_all_by_label("Бланк").next().unwrap().click();
+        h.run();
+        h.state_mut().backstage.show(Page::New);
+        h.run();
+        h.get_all_by_label("Новый документ").next().unwrap().click();
+        h.run();
+        h.state_mut().backstage.show(Page::New);
+        h.run();
+        h.get_by_label("Добавить шаблон…").click();
+        h.run();
+        assert_eq!(
+            h.state().out,
+            [
+                RibbonCommand::NewFromTemplate(Template::Personal("/tmp/Бланк.dotx".into())),
+                RibbonCommand::New,
+                RibbonCommand::AddTemplate,
+            ]
+        );
     }
 
     #[test]
@@ -758,6 +905,7 @@ mod tests {
                 names: vec!["Office".into(), "Home".into()],
                 default: Some("Home".into()),
             }),
+            templates: Vec::new(),
         };
         let mut backstage = Backstage::default();
         backstage.show(Page::Print);
@@ -767,8 +915,10 @@ mod tests {
                 |ui, state: &mut PrintState| {
                     if state.backstage.open {
                         let previewed = &mut state.previewed;
-                        let out = state.backstage.ui(ui, &state.info, &mut |_, page, _| {
-                            previewed.push(page);
+                        let out = state.backstage.ui(ui, &state.info, &mut |_, thumb, _| {
+                            if let Thumb::Page(page) = thumb {
+                                previewed.push(page);
+                            }
                         });
                         state.out.extend(out);
                     }

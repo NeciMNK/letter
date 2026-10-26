@@ -39,8 +39,9 @@ use letter_model::{
     Statistics,
 };
 use letter_render::{MarkKind, PagePainter, SCREEN_PIXELS_PER_POINT, formatting_marks};
+use std::collections::HashMap;
 
-use crate::backstage::{Backstage, BackstageInfo, DocumentInfo, Page};
+use crate::backstage::{Backstage, BackstageInfo, DocumentInfo, Page, Thumb};
 use crate::bookmark_dialog::{BookmarkAction, BookmarkDialog};
 use crate::clipboard::{Clipboard, PasteMode, SystemBuffer};
 use crate::control_dialog::ControlDialog;
@@ -726,6 +727,8 @@ fn take_shortcuts(ctx: &Context, table: &[Shortcut], global_only: bool) -> Vec<R
 enum Intent {
     /// Создать новый документ.
     New,
+    /// Создать документ по шаблону.
+    NewFrom(crate::templates::Template),
     /// Открыть файл; `None` — сначала выбрать его.
     Open(Option<PathBuf>),
     /// Закрыть документ, оставив программу открытой.
@@ -870,6 +873,9 @@ pub struct Viewer {
     recipients_dialog: crate::merge_dialogs::RecipientsDialog,
     /// Окно правила рассылки.
     rule_dialog: crate::merge_dialogs::RuleDialog,
+    /// Первые страницы шаблонов «Создать» (по шаблону и языку).
+    template_pages:
+        HashMap<(crate::templates::Template, crate::i18n::Language), Option<letter_layout::Page>>,
     /// Окно «Конверты».
     envelope_dialog: crate::merge_dialogs::EnvelopeDialog,
     /// «Режим конструктора» (вкладка «Разработчик»).
@@ -1103,6 +1109,7 @@ impl Viewer {
             control_dialog: ControlDialog::default(),
             recipients_dialog: Default::default(),
             rule_dialog: Default::default(),
+            template_pages: HashMap::new(),
             envelope_dialog: Default::default(),
             design_mode: false,
             mailing: None,
@@ -1259,6 +1266,63 @@ impl Viewer {
             recent: self.recent.items().to_vec(),
             settings: self.settings,
             printers: self.printers.as_ref().and_then(|p| p.get()),
+            templates: self.templates(),
+        }
+    }
+
+    /// Шаблоны для «Создать»: встроенные и личные из папки программы.
+    fn templates(&self) -> Vec<crate::templates::Template> {
+        use crate::templates::{Builtin, Template};
+        let personal = self
+            .dir
+            .as_deref()
+            .map(|dir| crate::templates::personal(&crate::templates::personal_dir(dir)))
+            .unwrap_or_default();
+        Builtin::ALL
+            .map(Template::Builtin)
+            .into_iter()
+            .chain(personal.into_iter().map(Template::Personal))
+            .collect()
+    }
+
+    /// Первая страница шаблона для миниатюры (вёрстка запоминается).
+    fn template_page(
+        &mut self,
+        template: &crate::templates::Template,
+    ) -> Option<&letter_layout::Page> {
+        let key = (template.clone(), crate::i18n::language());
+        if !self.template_pages.contains_key(&key) {
+            let page = template.document().ok().and_then(|doc| {
+                let mut cache = LayoutCache::default();
+                layout_document_cached(&doc, &mut self.shaper, &self.library, &mut cache)
+                    .pages
+                    .into_iter()
+                    .next()
+            });
+            self.template_pages.insert(key.clone(), page);
+        }
+        self.template_pages.get(&key).and_then(Option::as_ref)
+    }
+
+    /// «Создать → Добавить шаблон…»: файл шаблона копируется в папку
+    /// личных шаблонов.
+    fn add_template(&mut self) {
+        let Some(dir) = self.dir.clone() else {
+            return;
+        };
+        let mut dialog = rfd::FileDialog::new()
+            .set_title(tr("backstage-add-template"))
+            .add_filter(tr("filter-dotx"), &["dotx", "dotm", "dot"]);
+        if let Some(start) = self.dialog_dir() {
+            dialog = dialog.set_directory(start);
+        }
+        let Some(file) = dialog.pick_file() else {
+            return;
+        };
+        if let Err(message) =
+            crate::templates::add_personal(&crate::templates::personal_dir(&dir), &file)
+        {
+            self.report("error-templates", message);
         }
     }
 
@@ -1285,6 +1349,10 @@ impl Viewer {
     fn perform(&mut self, intent: Intent) {
         match intent {
             Intent::New => self.new_document(),
+            Intent::NewFrom(template) => match template.document() {
+                Ok(doc) => self.show(None, doc),
+                Err(message) => self.report("error-open", message),
+            },
             Intent::Open(Some(path)) => self.open_or_report(&path),
             Intent::Open(None) => self.pick_file(),
             Intent::Recover(index) => self.recover(index),
@@ -1729,9 +1797,25 @@ impl Viewer {
                 }
             }
             let info = self.backstage_info();
+            // Миниатюры шаблонов верстаются заранее (один раз).
+            if self.backstage.page == crate::backstage::Page::New {
+                for template in &info.templates {
+                    self.template_page(template);
+                }
+            }
+            let language = crate::i18n::language();
             let (library, painter, document) = (&self.library, &mut self.painter, &self.document);
-            let mut preview = |p: &egui::Painter, index: usize, rect: egui::Rect| {
-                if let Some(page) = document.as_ref().and_then(|d| d.layout.pages.get(index)) {
+            let template_pages = &self.template_pages;
+            let templates = &info.templates;
+            let mut preview = |p: &egui::Painter, thumb: Thumb, rect: egui::Rect| {
+                let page = match thumb {
+                    Thumb::Page(index) => document.as_ref().and_then(|d| d.layout.pages.get(index)),
+                    Thumb::Template(index) => templates
+                        .get(index)
+                        .and_then(|t| template_pages.get(&(t.clone(), language)))
+                        .and_then(Option::as_ref),
+                };
+                if let Some(page) = page {
                     painter.paint_page(p, library, page, rect);
                 }
             };
@@ -3028,6 +3112,10 @@ impl Viewer {
         for command in commands {
             match command {
                 RibbonCommand::New => self.request(Intent::New),
+                RibbonCommand::NewFromTemplate(template) => {
+                    self.request(Intent::NewFrom(template));
+                }
+                RibbonCommand::AddTemplate => self.add_template(),
                 RibbonCommand::Open => self.open_requested = true,
                 RibbonCommand::OpenRecent(path) => self.request(Intent::Open(Some(path))),
                 RibbonCommand::Save => {
@@ -7079,6 +7167,44 @@ mod tests {
         drop(viewer);
         assert_eq!(std::fs::read_dir(&autosave).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn new_document_from_template() {
+        use crate::templates::{Builtin, Template};
+        let dir = crate::files::tests::temp_dir("templates-viewer");
+        let ctx = Context::default();
+        let mut viewer = Viewer::with_storage(FontLibrary::embedded_only(), Some(dir.clone()));
+        // Личный шаблон — файл в папке шаблонов.
+        let folder = crate::templates::personal_dir(&dir);
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut doc = crate::files::blank();
+        doc.sections[0].blocks = vec![letter_model::Paragraph::text("Бланк заказа").into()];
+        std::fs::write(
+            folder.join("Заказ.dotx"),
+            letter_docx::write_bytes(&doc).unwrap(),
+        )
+        .unwrap();
+        let templates = viewer.backstage_info().templates;
+        assert_eq!(templates.len(), Builtin::ALL.len() + 1);
+        let personal = templates.last().unwrap().clone();
+        assert_eq!(personal.name(), "Заказ");
+        assert!(viewer.template_page(&personal).is_some());
+        assert!(
+            viewer
+                .template_page(&Template::Builtin(Builtin::Memo))
+                .is_some()
+        );
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::NewFromTemplate(personal)]);
+        let document = viewer.document.as_ref().unwrap();
+        assert_eq!(document.doc.plain_text(), "Бланк заказа");
+        // Документ по шаблону — без имени: «Сохранить» спросит, куда.
+        assert!(document.path.is_none());
+        let letter = Template::Builtin(Builtin::Letter);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::NewFromTemplate(letter)]);
+        let text = viewer.document.as_ref().unwrap().doc.plain_text();
+        assert!(text.contains("С уважением,"), "{text}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

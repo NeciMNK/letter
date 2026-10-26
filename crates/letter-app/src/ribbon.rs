@@ -208,6 +208,10 @@ pub enum RibbonCommand {
     MakeLabels(usize),
     /// «Обновить наклейки».
     UpdateLabels,
+    /// «Создать» по шаблону.
+    NewFromTemplate(crate::templates::Template),
+    /// «Создать → Добавить шаблон…»: скопировать файл в личные шаблоны.
+    AddTemplate,
     /// Открыть окно «Конверты».
     Envelopes,
     /// «Изменить список получателей».
