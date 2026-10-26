@@ -1,9 +1,10 @@
 //! Окна рассылок: «Изменить список получателей» (отметки, сортировка,
-//! фильтр) и правила «Если… то… иначе», «Пропустить запись, если…».
+//! фильтр), правила «Если… то… иначе», «Пропустить запись, если…» и
+//! «Конверты».
 //! Окна только собирают ответ; документ меняет просмотрщик.
 
 use eframe::egui::{self, Context, Key, RichText, TextEdit, Ui};
-use letter_editor::{Compare, MergeData, MergeRule};
+use letter_editor::{Compare, ENVELOPES, Envelope, MergeData, MergeRule};
 
 use crate::i18n::tr;
 
@@ -323,6 +324,122 @@ impl RuleDialog {
     }
 }
 
+/// Окно «Конверты».
+#[derive(Debug, Clone, Default)]
+pub struct EnvelopeDialog {
+    /// Окно открыто.
+    pub open: bool,
+    /// Адрес получателя.
+    pub delivery: String,
+    /// Обратный адрес (запоминается до конца работы программы).
+    pub return_address: String,
+    /// Номер размера в [`ENVELOPES`].
+    pub size: usize,
+    /// Вместо адреса — блок адреса рассылки.
+    pub address_block: bool,
+    /// Выбраны получатели (можно поставить блок адреса).
+    recipients: bool,
+}
+
+impl EnvelopeDialog {
+    /// Открывает окно; `delivery` — выделенный текст (адрес получателя),
+    /// `recipients` — выбраны ли получатели рассылки.
+    pub fn show(&mut self, delivery: &str, recipients: bool) {
+        self.open = true;
+        self.delivery = delivery.to_string();
+        self.recipients = recipients;
+        self.address_block = recipients && delivery.trim().is_empty();
+    }
+
+    /// Рисует окно; после «Добавить в документ» возвращает конверт.
+    pub fn ui(&mut self, ctx: &Context) -> Option<Envelope> {
+        if !self.open {
+            return None;
+        }
+        let mut done = None;
+        let mut close = false;
+        let mut open = true;
+        egui::Window::new(tr("envelope-title"))
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                let label = ui.label(tr("envelope-delivery"));
+                let block = self.address_block && self.recipients;
+                ui.add_enabled(
+                    !block,
+                    TextEdit::multiline(&mut self.delivery)
+                        .desired_rows(4)
+                        .desired_width(340.0),
+                )
+                .labelled_by(label.id);
+                if self.recipients {
+                    ui.checkbox(&mut self.address_block, tr("envelope-address-block"));
+                }
+                let label = ui.label(tr("envelope-return"));
+                ui.add(
+                    TextEdit::multiline(&mut self.return_address)
+                        .desired_rows(3)
+                        .desired_width(340.0),
+                )
+                .labelled_by(label.id);
+                ui.horizontal(|ui| {
+                    let label = ui.label(tr("envelope-size"));
+                    let shown = |k: usize| {
+                        ENVELOPES.get(k).map_or(String::new(), |e| {
+                            let mm = |t: letter_model::Twips| t.to_mm().round();
+                            format!(
+                                "{} ({} × {} {})",
+                                e.name,
+                                mm(e.width),
+                                mm(e.height),
+                                tr("unit-mm")
+                            )
+                        })
+                    };
+                    egui::ComboBox::from_id_salt("envelope-size")
+                        .selected_text(shown(self.size))
+                        .show_ui(ui, |ui| {
+                            for k in 0..ENVELOPES.len() {
+                                ui.selectable_value(&mut self.size, k, shown(k));
+                            }
+                        })
+                        .response
+                        .labelled_by(label.id);
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button(tr("envelope-add")).clicked() {
+                        done = Some(self.envelope());
+                    }
+                    if ui.button(tr("cancel")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if !open || close || done.is_some() || ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.open = false;
+        }
+        done
+    }
+
+    /// Конверт из полей окна.
+    fn envelope(&self) -> Envelope {
+        let address_block = self.address_block && self.recipients;
+        Envelope {
+            size: ENVELOPES.get(self.size).copied().unwrap_or(ENVELOPES[0]),
+            delivery: if address_block {
+                String::new()
+            } else {
+                self.delivery.clone()
+            },
+            return_address: self.return_address.clone(),
+            address_block,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,5 +505,36 @@ mod tests {
                 value: String::new(),
             }
         );
+    }
+
+    #[test]
+    fn envelope_is_built() {
+        let mut dialog = EnvelopeDialog::default();
+        dialog.show("", true);
+        dialog.return_address = "Москва".into();
+        dialog.size = 2;
+        type State = (EnvelopeDialog, Option<Envelope>);
+        let mut h = Harness::new_ui_state(
+            |ui, state: &mut State| {
+                if let Some(done) = state.0.ui(ui.ctx()) {
+                    state.1 = Some(done);
+                }
+            },
+            (dialog, None),
+        );
+        h.run();
+        h.get_by_label("Добавить в документ").click();
+        h.run();
+        let envelope = h.state().1.clone().expect("конверт");
+        assert!(envelope.address_block);
+        assert_eq!(envelope.size, ENVELOPES[2]);
+        assert_eq!(envelope.return_address, "Москва");
+        assert!(!h.state().0.open);
+        // Без получателей блока адреса нет.
+        let mut dialog = EnvelopeDialog::default();
+        dialog.show("Петрову", false);
+        dialog.address_block = true;
+        assert_eq!(dialog.envelope().delivery, "Петрову");
+        assert!(!dialog.envelope().address_block);
     }
 }

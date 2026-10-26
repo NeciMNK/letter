@@ -1,5 +1,5 @@
-//! F9.6: лист наклеек переживает сохранение в .docx и помещается на
-//! одну страницу, а слияние даёт по листу на каждые N записей.
+//! F9.6: лист наклеек и конверт переживают сохранение в .docx и
+//! помещаются на свои страницы, а слияние даёт по листу на каждые N записей.
 
 // В тестах падение на unwrap() и есть сигнал ошибки.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -44,5 +44,32 @@ fn label_sheet_survives_round_trip_and_fits_a_page() {
             .pages
             .len();
         assert_eq!(pages, 2, "{}", spec.name);
+    }
+}
+
+#[test]
+fn envelope_survives_round_trip_and_takes_one_page() {
+    let library = FontLibrary::embedded_only();
+    for size in letter_editor::ENVELOPES {
+        let mut doc = Document::new();
+        doc.sections[0].blocks = vec![letter_model::Paragraph::text("Письмо").into()];
+        let envelope = letter_editor::Envelope {
+            size,
+            delivery: "Петрову П. П.\nул. Мира, 1\nОмск".into(),
+            return_address: "Иванов И. И.\nМосква".into(),
+            address_block: false,
+        };
+        letter_editor::add_envelope(&mut doc, &envelope);
+        let bytes = letter_docx::write_bytes(&doc).unwrap();
+        let again = letter_docx::read_bytes(&bytes).unwrap();
+        assert!(letter_editor::has_envelope(&again), "{}", size.name);
+        assert_eq!(again.sections[0].blocks, doc.sections[0].blocks);
+        assert_eq!(
+            again.sections[0].props.page_size,
+            doc.sections[0].props.page_size
+        );
+        let layout = layout_document(&again, &mut Shaper::new(), &library);
+        // Конверт и письмо.
+        assert_eq!(layout.pages.len(), 2, "{}", size.name);
     }
 }

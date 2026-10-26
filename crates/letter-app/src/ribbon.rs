@@ -208,6 +208,8 @@ pub enum RibbonCommand {
     MakeLabels(usize),
     /// «Обновить наклейки».
     UpdateLabels,
+    /// Открыть окно «Конверты».
+    Envelopes,
     /// «Изменить список получателей».
     EditRecipients,
     /// Вставить блок адреса, строку приветствия или номер записи.

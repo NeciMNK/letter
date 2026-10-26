@@ -304,6 +304,8 @@ pub enum Command {
     MakeLabels(Box<crate::labels::LabelSpec>),
     /// «Обновить наклейки»: повторить первую наклейку во всех.
     UpdateLabels,
+    /// «Конверты → Добавить в документ»: конверт в начале документа.
+    AddEnvelope(Box<crate::envelope::Envelope>),
     /// «Заменить все»: найденное `query` заменить на `replacement` во
     /// всём документе. Курсор остаётся в том же абзаце (выделение
     /// снимается).
@@ -581,20 +583,20 @@ impl History {
                 }
                 return selection;
             }
-            Command::MakeLabels(_) | Command::UpdateLabels => {
+            Command::MakeLabels(_) | Command::UpdateLabels | Command::AddEnvelope(_) => {
                 let before = doc.sections.clone();
-                let changed = match &command {
-                    Command::MakeLabels(spec) => {
-                        crate::labels::make_labels(doc, spec);
-                        true
+                let (changed, at) = match &command {
+                    Command::MakeLabels(spec) => (true, crate::labels::make_labels(doc, spec)),
+                    Command::AddEnvelope(envelope) => {
+                        (true, crate::envelope::add_envelope(doc, envelope))
                     }
-                    _ => crate::labels::update_labels(doc),
+                    _ => (crate::labels::update_labels(doc), Position::new(0, 0)),
                 };
                 if !changed || doc.sections == before {
                     return selection;
                 }
                 let after = doc.sections.clone();
-                let at = Selection::caret(Position::new(0, 0));
+                let at = Selection::caret(at);
                 self.push(
                     Patch::Sections {
                         start: 0,
@@ -603,7 +605,7 @@ impl History {
                     },
                     selection,
                 );
-                return if matches!(command, Command::MakeLabels(_)) {
+                return if !matches!(command, Command::UpdateLabels) {
                     at
                 } else {
                     Selection {
@@ -1141,6 +1143,7 @@ impl History {
             | Command::SetMailMerge(_)
             | Command::MakeLabels(_)
             | Command::UpdateLabels
+            | Command::AddEnvelope(_)
             | Command::EvenOddHeaders(_)
             | Command::Protection(_)
             | Command::WriteProtection(_)

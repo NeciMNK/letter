@@ -25,6 +25,7 @@ pub mod compare;
 pub mod controls;
 pub mod cover;
 pub mod edit;
+pub mod envelope;
 pub mod equation;
 pub mod fields;
 pub mod format;
@@ -67,6 +68,7 @@ pub use edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, paragraph_count,
     paragraph_mut, paragraph_ref, split_paragraph,
 };
+pub use envelope::{ENVELOPES, Envelope, EnvelopeSize, add_envelope, has_envelope};
 pub use equation::{insert_math, math_ref, new_math, set_math};
 pub use fields::{DateTime, FieldContext, format_date, update_fields};
 pub use format::{

@@ -15,7 +15,8 @@ use crate::ribbon::{RibbonCommand, RibbonInfo, big_label, group, row_group};
 
 /// Подсказки клавиш вкладки (для проверки).
 #[cfg(test)]
-pub const KEYTIPS: [&str; 12] = [
+pub const KEYTIPS: [&str; 13] = [
+    "keytip-mailings-envelopes",
     "keytip-mailings-labels",
     "keytip-mailings-update-labels",
     "keytip-mailings-recipients",
@@ -100,6 +101,16 @@ pub fn mailings(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     let merge = &info.mailing;
     let has_data = enabled && !merge.fields.is_empty();
     row_group(ui, tr("group-mailings-start"), |ui| {
+        let command = RibbonCommand::Envelopes;
+        big(
+            ui,
+            Icon::Envelopes,
+            "envelopes",
+            enabled,
+            false,
+            command,
+            out,
+        );
         menu_button(
             ui,
             Icon::Labels,
@@ -308,6 +319,8 @@ mod tests {
         h.run();
         h.get_by_label("Выбрать получателей").click();
         h.run();
+        h.get_all_by_label("Конверты").next().unwrap().click();
+        h.run();
         h.get_by_label(">").click();
         h.run();
         h.get_all_by_label("Найти и объединить")
@@ -338,6 +351,7 @@ mod tests {
             *h.state(),
             [
                 RibbonCommand::PickRecipients,
+                RibbonCommand::Envelopes,
                 RibbonCommand::MergeRecord(1),
                 RibbonCommand::FinishMerge,
                 RibbonCommand::InsertMergeField("Город".into()),
