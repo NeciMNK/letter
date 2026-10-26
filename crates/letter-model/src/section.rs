@@ -33,6 +33,44 @@ pub struct PageNumbering {
     pub format: Option<NumberFormat>,
 }
 
+/// Когда нумерация строк начинается заново (`w:restart`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineNumberRestart {
+    /// На каждой странице (`newPage`, так по умолчанию в Word).
+    #[default]
+    NewPage,
+    /// В каждом разделе (`newSection`).
+    NewSection,
+    /// Непрерывно (`continuous`).
+    Continuous,
+}
+
+/// Нумерация строк раздела: «Макет → Номера строк» или окно «Параметры
+/// страницы».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineNumbering {
+    /// Показывать каждый n-й номер (`w:countBy`).
+    pub count_by: u32,
+    /// Первый номер (`w:start` плюс один: в файле хранится число до
+    /// первого номера).
+    pub start: u32,
+    /// Расстояние от текста до номера (`w:distance`); `None` — «Авто».
+    pub distance: Option<Twips>,
+    /// Когда начинать заново.
+    pub restart: LineNumberRestart,
+}
+
+impl Default for LineNumbering {
+    fn default() -> LineNumbering {
+        LineNumbering {
+            count_by: 1,
+            start: 1,
+            distance: None,
+            restart: LineNumberRestart::NewPage,
+        }
+    }
+}
+
 /// Параметры страницы раздела. `None` — не задано в файле;
 /// тогда используются [`PageSize::A4`] и [`PageMargins::default`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -56,6 +94,8 @@ pub struct SectionProps {
     /// Нумерация страниц (`w:pgNumType`); `None` — как у предыдущего
     /// раздела, арабскими цифрами.
     pub page_numbering: Option<PageNumbering>,
+    /// Нумерация строк (`w:lnNumType`); `None` — строки не нумеруются.
+    pub line_numbering: Option<LineNumbering>,
     /// Свойства, которые программа пока не понимает (колонтитулы, колонки,
     /// сетка и т. п.), в порядке из файла.
     pub unknown: Vec<RawXml>,

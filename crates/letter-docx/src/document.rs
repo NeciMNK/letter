@@ -9,11 +9,11 @@ use std::sync::Arc;
 use letter_model::{
     Block, Bookmark, BreakKind, Color, Columns, ContentControl, ContentControlRef, Document,
     FieldChar, FieldCharKind, FirstLineIndent, HalfPoints, HeaderFooter, HeaderFooterKind,
-    HeaderFooters, Hyperlink, Indentation, Inline, LineSpacing, Note, NoteKind, NoteReference,
-    NumberingRef, Orientation, PageBorderDisplay, PageBorders, PageMargins, PageNumbering,
-    PageSize, Paragraph, ParagraphProps, RawXml, Revision, RevisionKind, Run, RunContent, RunFonts,
-    RunProps, Section, SectionProps, SectionStart, Spacing, Symbol, TabStop, ThemeColor, Twips,
-    Underline, VerticalAlign,
+    HeaderFooters, Hyperlink, Indentation, Inline, LineNumberRestart, LineNumbering, LineSpacing,
+    Note, NoteKind, NoteReference, NumberingRef, Orientation, PageBorderDisplay, PageBorders,
+    PageMargins, PageNumbering, PageSize, Paragraph, ParagraphProps, RawXml, Revision,
+    RevisionKind, Run, RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart,
+    Spacing, Symbol, TabStop, ThemeColor, Twips, Underline, VerticalAlign,
 };
 
 use crate::ReadError;
@@ -463,6 +463,7 @@ pub(crate) fn read_paragraph_props(
                 "suppressAutoHyphens" => set(&mut props.suppress_auto_hyphens, toggle(child)),
                 "pageBreakBefore" => set(&mut props.page_break_before, toggle(child)),
                 "widowControl" => set(&mut props.widow_control, toggle(child)),
+                "suppressLineNumbers" => set(&mut props.suppress_line_numbers, toggle(child)),
                 "tabs" if props.tabs.is_empty() => {
                     read_tabs(child).map(|t| props.tabs = t).is_some()
                 }
@@ -858,6 +859,7 @@ fn read_section_props(sect: &Element) -> SectionProps {
                 "titlePg" => toggle(child).map(|on| props.title_page = on).is_some(),
                 "pgBorders" => set(&mut props.page_borders, read_page_borders(child)),
                 "pgNumType" => set(&mut props.page_numbering, read_page_numbering(child)),
+                "lnNumType" => set(&mut props.line_numbering, read_line_numbering(child)),
                 _ => false,
             };
         if !understood {
@@ -865,6 +867,38 @@ fn read_section_props(sect: &Element) -> SectionProps {
         }
     }
     props
+}
+
+/// `w:lnNumType`: нумерация строк. `None`, если что-то непонятно — тогда
+/// элемент сохраняется как есть.
+fn read_line_numbering(element: &Element) -> Option<LineNumbering> {
+    if !element.only_attrs(&["countBy", "start", "distance", "restart"])
+        || element.elements().next().is_some()
+    {
+        return None;
+    }
+    let number = |name: &str| -> Option<Option<u32>> {
+        match element.w_attr(name) {
+            Some(v) => v.trim().parse().ok().map(Some),
+            None => Some(None),
+        }
+    };
+    let restart = match element.w_attr("restart") {
+        None | Some("newPage") => LineNumberRestart::NewPage,
+        Some("newSection") => LineNumberRestart::NewSection,
+        Some("continuous") => LineNumberRestart::Continuous,
+        Some(_) => return None,
+    };
+    let distance = match element.w_attr("distance") {
+        Some(v) => Some(Twips(v.trim().parse().ok()?)),
+        None => None,
+    };
+    Some(LineNumbering {
+        count_by: number("countBy")?.unwrap_or(1).max(1),
+        start: number("start")?.unwrap_or(0).saturating_add(1),
+        distance,
+        restart,
+    })
 }
 
 /// `w:pgNumType`: начальный номер и вид номеров страниц. `None`, если

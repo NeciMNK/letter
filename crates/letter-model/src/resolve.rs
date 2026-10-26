@@ -67,6 +67,8 @@ pub struct ResolvedParagraphProps {
     /// «Запрет висячих строк». Если ни один слой его не задал —
     /// включён, как в Word.
     pub widow_control: bool,
+    /// «Запретить нумерацию строк».
+    pub suppress_line_numbers: bool,
     /// Позиции табуляции из всех слоёв по возрастанию, без
     /// [`TabStopKind::Clear`].
     pub tabs: Vec<TabStop>,
@@ -246,6 +248,7 @@ impl Document {
             overlay(&mut acc.keep_lines, &layer.keep_lines);
             overlay(&mut acc.page_break_before, &layer.page_break_before);
             overlay(&mut acc.widow_control, &layer.widow_control);
+            overlay(&mut acc.suppress_line_numbers, &layer.suppress_line_numbers);
             overlay(&mut acc.shading, &layer.shading);
             overlay(&mut acc.suppress_auto_hyphens, &layer.suppress_auto_hyphens);
         }
@@ -264,6 +267,7 @@ impl Document {
             keep_lines: acc.keep_lines.unwrap_or(false),
             page_break_before: acc.page_break_before.unwrap_or(false),
             widow_control: acc.widow_control.unwrap_or(true),
+            suppress_line_numbers: acc.suppress_line_numbers.unwrap_or(false),
             tabs,
             numbering,
             borders,
