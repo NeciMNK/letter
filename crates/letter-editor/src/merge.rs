@@ -351,7 +351,7 @@ fn mark(kind: FieldCharKind) -> RunContent {
 }
 
 /// Элементы поля: начало, код, разделитель, результат, конец.
-fn field_items(code: String, result: &str) -> Vec<RunContent> {
+pub(crate) fn field_items(code: String, result: &str) -> Vec<RunContent> {
     vec![
         mark(FieldCharKind::Begin),
         RunContent::FieldCode(code),
@@ -701,7 +701,20 @@ fn condition_holds(field: &Field) -> Option<(bool, Vec<String>)> {
 /// Новый результат поля рассылки; `None` — поле не рассылки или его не
 /// надо менять.
 fn merge_value(field: &Field, record: Option<(&MergeData, usize)>) -> Option<String> {
-    match field.name().as_str() {
+    let name = field.name();
+    // Записи кончились (наклейки после последней) — поля пустые.
+    if let Some((data, row)) = record
+        && row >= data.rows.len()
+        && MERGE_FIELDS.contains(&name.as_str())
+        && name != "SKIPIF"
+    {
+        return Some(String::new());
+    }
+    match name.as_str() {
+        "NEXT" => Some(match record {
+            Some(_) => String::new(),
+            None => crate::labels::NEXT_SHOWN.into(),
+        }),
         "MERGEREC" => Some(record.map_or_else(
             || "«MERGEREC»".into(),
             |(data, row)| {
@@ -737,23 +750,51 @@ fn merge_value(field: &Field, record: Option<(&MergeData, usize)>) -> Option<Str
 /// Ставит в поля слияния значения записи `record` (`Some((данные,
 /// номер))`) или их имена `«имя»` (`None`). Возвращает, сколько полей
 /// поменялось.
+///
+/// Поле `NEXT` («Следующая запись», наклейки) переводит следующие за
+/// ним поля на следующую отмеченную запись.
 pub fn show_record(doc: &mut Document, record: Option<(&MergeData, usize)>) -> usize {
     let mut changed = 0;
+    let mut record = record;
     for index in 0..paragraph_count(doc) {
         let Some(paragraph) = paragraph_mut(doc, index) else {
             continue;
         };
-        changed += show_in_paragraph(paragraph, record);
+        let (count, next) = show_in_paragraph(paragraph, record);
+        changed += count;
+        record = next;
     }
     changed
 }
 
+/// Следующая отмеченная запись после `row`; нет — `data.rows.len()`.
+fn next_row(data: &MergeData, row: usize) -> usize {
+    (row + 1..data.rows.len())
+        .find(|r| data.included(*r))
+        .unwrap_or(data.rows.len())
+}
+
 /// [`show_record`] для одного абзаца: сначала вложенные поля, потом
-/// внешние (условие `IF` смотрит на результаты вложенных).
-fn show_in_paragraph(paragraph: &mut Paragraph, record: Option<(&MergeData, usize)>) -> usize {
+/// внешние (условие `IF` смотрит на результаты вложенных). Возвращает,
+/// сколько полей поменялось, и запись после абзаца (после полей `NEXT`).
+fn show_in_paragraph<'a>(
+    paragraph: &mut Paragraph,
+    record: Option<(&'a MergeData, usize)>,
+) -> (usize, Option<(&'a MergeData, usize)>) {
     let Some(deepest) = fields(paragraph).iter().map(|f| f.depth).max() else {
-        return 0;
+        return (0, record);
     };
+    // Запись для каждого поля: после каждого `NEXT` — следующая.
+    let mut current = record;
+    let records: Vec<Option<(&MergeData, usize)>> = fields(paragraph)
+        .iter()
+        .map(|field| {
+            if field.depth == 0 && field.name() == "NEXT" {
+                current = current.map(|(data, row)| (data, next_row(data, row)));
+            }
+            current
+        })
+        .collect();
     let mut changed = 0;
     for depth in (0..=deepest).rev() {
         let codes = codes_with_results(paragraph);
@@ -766,6 +807,7 @@ fn show_in_paragraph(paragraph: &mut Paragraph, record: Option<(&MergeData, usiz
                     code: codes.get(k).cloned().unwrap_or_default(),
                     ..field
                 };
+                let record = records.get(k).copied().flatten();
                 Some((k, merge_value(&field, record)?))
             })
             .collect();
@@ -781,7 +823,7 @@ fn show_in_paragraph(paragraph: &mut Paragraph, record: Option<(&MergeData, usiz
     if changed > 0 {
         line_breaks(paragraph);
     }
-    changed
+    (changed, current)
 }
 
 /// Переводы строки в тексте абзаца (из значений таблицы и блока адреса)
@@ -866,10 +908,18 @@ fn skipped(doc: &Document) -> bool {
 /// отмеченную запись (кроме пропущенных правилом `SKIPIF`), каждая с
 /// новой страницы. Поля рассылки в копиях становятся обычным текстом.
 /// Без записей — копия `doc` как есть.
+///
+/// В листе наклеек каждая копия берёт столько записей, сколько в ней
+/// наклеек (полей `NEXT` плюс одна).
 pub fn merge_all(doc: &Document, data: &MergeData) -> Document {
     let mut out = doc.clone();
     out.sections.clear();
-    for row in data.records() {
+    let step = 1
+        + (0..paragraph_count(doc))
+            .filter_map(|index| paragraph_ref(doc, index))
+            .map(crate::labels::next_count)
+            .sum::<usize>();
+    for row in data.records().into_iter().step_by(step) {
         let mut one = doc.clone();
         show_record(&mut one, Some((data, row)));
         if skipped(&one) {

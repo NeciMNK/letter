@@ -119,6 +119,8 @@ pub enum Icon {
     MergePreview,
     /// «Найти и объединить».
     FinishMerge,
+    /// «Наклейки».
+    Labels,
     /// «Изменить список получателей».
     EditRecipients,
     /// «Блок адреса».
@@ -288,6 +290,7 @@ impl Icon {
             Icon::MergeField => ("braces", '\u{E36A}'),
             Icon::MergePreview => ("scan-eye", '\u{E536}'),
             Icon::FinishMerge => ("mails", '\u{E369}'),
+            Icon::Labels => ("tags", '\u{E35C}'),
             Icon::EditRecipients => ("user-pen", '\u{E5FC}'),
             Icon::AddressBlock => ("map-pinned", '\u{E53D}'),
             Icon::GreetingLine => ("hand", '\u{E1D7}'),
@@ -504,7 +507,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 83] = [
+    const ALL: [Icon; 84] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -558,6 +561,7 @@ mod tests {
         Icon::MergeField,
         Icon::MergePreview,
         Icon::FinishMerge,
+        Icon::Labels,
         Icon::EditRecipients,
         Icon::AddressBlock,
         Icon::GreetingLine,

@@ -2914,8 +2914,10 @@ impl Viewer {
                     records: mailing.data.records().len(),
                     record: mailing.record,
                     preview: mailing.preview,
+                    labels: false,
                 };
             }
+            info.mailing.labels = letter_editor::has_next_records(&document.doc);
             info.in_control =
                 letter_editor::control_range(&document.doc, document.cursor).is_some();
             info.outline_level =
@@ -3174,6 +3176,18 @@ impl Viewer {
                 }
                 RibbonCommand::InsertMergeRule(rule) => {
                     actions.push(Action::Edit(Command::InsertMergeRule(Box::new(rule))));
+                    if let Some(mailing) = self.mailing.as_ref().filter(|m| m.preview) {
+                        actions.push(Action::Edit(mailing.show()));
+                    }
+                }
+                RibbonCommand::MakeLabels(index) => {
+                    if let Some(spec) = letter_editor::LABELS.get(index) {
+                        let command = Command::MakeLabels(Box::new(*spec));
+                        actions.push(Action::Edit(command));
+                    }
+                }
+                RibbonCommand::UpdateLabels => {
+                    actions.push(Action::Edit(Command::UpdateLabels));
                     if let Some(mailing) = self.mailing.as_ref().filter(|m| m.preview) {
                         actions.push(Action::Edit(mailing.show()));
                     }
