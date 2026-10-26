@@ -12,3 +12,4 @@ Thumbs.db
 # Временные файлы Word рядом с открытыми документами
 ~$*
 /packaging/flatpak/letter
+/docs/book

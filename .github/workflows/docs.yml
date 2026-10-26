@@ -1,0 +1,53 @@
+# Сайт с руководством пользователя (F10.6): `docs/` собирается mdBook.
+# В каждом PR, меняющем руководство, — проверка сборки; после слияния в
+# main сайт выкладывается на GitHub Pages
+# (https://<владелец>.github.io/letter/). Для выкладки один раз включите
+# в репозитории Settings → Pages → Source: «GitHub Actions»; пока это не
+# сделано, шаг выкладки помечается ошибкой, но остальное не мешает.
+name: Руководство
+
+on:
+  push:
+    branches: [main]
+    paths: ["docs/**", ".github/workflows/docs.yml"]
+  pull_request:
+    paths: ["docs/**", ".github/workflows/docs.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Сборка сайта
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Установить mdBook
+        run: |
+          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.5.4/mdbook-v0.5.4-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP" mdbook
+      - run: '"$RUNNER_TEMP/mdbook" build docs'
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/book
+
+  deploy:
+    name: Выкладка на GitHub Pages
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

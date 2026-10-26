@@ -172,6 +172,43 @@ mod tests {
         find(&table(), key, Some(key), modifiers, false)
     }
 
+    /// Сочетание так, как оно записано в руководстве: «Ctrl+Shift+=».
+    fn combo(shortcut: &Shortcut) -> String {
+        let m = shortcut.modifiers;
+        let mut text = String::new();
+        for (on, name) in [(m.command, "Ctrl+"), (m.alt, "Alt+"), (m.shift, "Shift+")] {
+            if on {
+                text.push_str(name);
+            }
+        }
+        text.push_str(match shortcut.key {
+            Key::ArrowLeft => "←",
+            Key::ArrowRight => "→",
+            Key::Space => "Пробел",
+            Key::Minus => "-",
+            Key::Plus => "+",
+            Key::Equals => "=",
+            Key::OpenBracket => "[",
+            Key::CloseBracket => "]",
+            Key::Period => ".",
+            Key::Comma => ",",
+            key => key.name(),
+        });
+        text
+    }
+
+    #[test]
+    fn user_guide_lists_every_shortcut() {
+        let guide = include_str!("../../../docs/src/shortcuts.md");
+        for shortcut in table() {
+            let combo = combo(&shortcut);
+            assert!(
+                guide.contains(&format!("`{combo}`")),
+                "{combo} нет в docs/src/shortcuts.md"
+            );
+        }
+    }
+
     #[test]
     fn no_duplicates() {
         let table = table();
