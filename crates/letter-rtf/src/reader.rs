@@ -11,12 +11,14 @@
 //! у текста. Стили читаются из `\stylesheet` и сохраняются со своим
 //! оформлением, чтобы при сохранении в .docx их можно было применить.
 
+use std::sync::Arc;
+
 use letter_model::{
-    Alignment, Block, BreakKind, Color, Document, FirstLineIndent, HalfPoints, Highlight,
-    Indentation, Inline, LineSpacing, Orientation, PageMargins, PageSize, Paragraph,
-    ParagraphProps, Run, RunContent, RunFonts, RunProps, Section, SectionProps, Spacing, Style,
-    StyleKind, TabLeader, TabStop, TabStopKind, Table, TableCell, TableRow, Twips, Underline,
-    VerticalAlign,
+    Alignment, Block, BreakKind, Color, Document, EMU_PER_POINT, FirstLineIndent, HalfPoints,
+    Highlight, ImageData, Indentation, Inline, LineSpacing, Orientation, PageMargins, PageSize,
+    Paragraph, ParagraphProps, Picture, Run, RunContent, RunFonts, RunProps, Section, SectionProps,
+    Spacing, Style, StyleKind, TabLeader, TabStop, TabStopKind, Table, TableCell, TableRow, Twips,
+    Underline, VerticalAlign,
 };
 
 use crate::ReadError;
@@ -54,6 +56,21 @@ enum Dest {
     DefaultChars,
     /// Оформление абзацев по умолчанию (`\*\defpap`).
     DefaultParagraph,
+    /// Картинка (`\pict`): шестнадцатеричные байты.
+    Picture,
+}
+
+/// Читаемая картинка `\pict`.
+#[derive(Debug, Clone, Default)]
+struct Pict {
+    /// Вид: `png` или `jpeg`; другие (WMF, EMF…) не читаются.
+    kind: Option<&'static str>,
+    /// Размер без масштаба (`\picwgoal`, `\pichgoal`), твипы.
+    goal: (i32, i32),
+    /// Масштаб (`\picscalex`, `\picscaley`), проценты.
+    scale: (i32, i32),
+    /// Шестнадцатеричные цифры байтов.
+    hex: String,
 }
 
 /// Поле сведений о документе (`\info`).
@@ -223,6 +240,8 @@ struct Reader {
     stack: Vec<State>,
     /// Сколько знаков ещё пропустить после `\uN`.
     skip: usize,
+    /// Читаемая картинка.
+    pict: Pict,
     /// Первая половина суррогатной пары после `\uN`.
     high_surrogate: Option<u16>,
     codepage: u16,
@@ -290,6 +309,7 @@ impl Reader {
             },
             stack: Vec::new(),
             skip: 0,
+            pict: Pict::default(),
             high_surrogate: None,
             codepage: 1252,
             default_font: 0,
@@ -348,6 +368,11 @@ impl Reader {
                     return;
                 }
                 self.control(name, param);
+            }
+            Token::Bytes(bytes) if self.state.dest == Dest::Picture => {
+                self.state.fresh = false;
+                let hex = bytes.iter().filter(|b| b.is_ascii_hexdigit());
+                self.pict.hex.extend(hex.map(|&b| char::from(b)));
             }
             Token::Bytes(mut bytes) => {
                 if self.skip > 0 {
@@ -416,6 +441,7 @@ impl Reader {
             Dest::DefaultChars if self.state.dest != Dest::DefaultChars => {
                 self.default_chars = Some(inner.chars);
             }
+            Dest::Picture if self.state.dest != Dest::Picture => self.finish_picture(),
             Dest::DefaultParagraph if self.state.dest != Dest::DefaultParagraph => {
                 self.default_para = Some(inner.para);
             }
@@ -467,8 +493,19 @@ impl Reader {
                 self.info.push((field, String::new()));
                 Dest::Info(field)
             }
-            // Картинки, колонтитулы, сноски, примечания, фигуры, списки,
-            // служебные таблицы — пока не поддерживаются.
+            // Картинка: PNG или JPEG из `\*\shppict` или просто `\pict`;
+            // запасная картинка для старых программ (`\nonshppict`)
+            // пропускается.
+            "shppict" if self.state.dest == Dest::Body => Dest::Body,
+            "pict" if self.state.dest == Dest::Body => {
+                self.pict = Pict {
+                    scale: (100, 100),
+                    ..Pict::default()
+                };
+                Dest::Picture
+            }
+            // Колонтитулы, сноски, примечания, фигуры, списки, служебные
+            // таблицы — пока не поддерживаются.
             "pict" | "header" | "headerl" | "headerr" | "headerf" | "footer" | "footerl"
             | "footerr" | "footerf" | "footnote" | "annotation" | "atnid" | "atnauthor" | "shp"
             | "shpinst" | "nonshppict" | "shppict" | "object" | "objdata" | "objclass"
@@ -491,6 +528,19 @@ impl Reader {
         let on = param != Some(0);
         match self.state.dest {
             Dest::Skip | Dest::Info(_) | Dest::InfoGroup => return,
+            Dest::Picture => {
+                let pict = &mut self.pict;
+                match name {
+                    "pngblip" => pict.kind = Some("png"),
+                    "jpegblip" => pict.kind = Some("jpeg"),
+                    "picwgoal" => pict.goal.0 = value,
+                    "pichgoal" => pict.goal.1 = value,
+                    "picscalex" => pict.scale.0 = value,
+                    "picscaley" => pict.scale.1 = value,
+                    _ => {}
+                }
+                return;
+            }
             Dest::FontTable => {
                 match name {
                     "f" => self.font_number = Some(value),
@@ -774,8 +824,54 @@ impl Reader {
                     value.push_str(text);
                 }
             }
-            Dest::Skip | Dest::InfoGroup | Dest::DefaultChars | Dest::DefaultParagraph => {}
+            Dest::Skip
+            | Dest::InfoGroup
+            | Dest::DefaultChars
+            | Dest::DefaultParagraph
+            | Dest::Picture => {}
         }
+    }
+
+    /// Закрыта группа `\pict`: картинка PNG или JPEG — рисунок в тексте.
+    fn finish_picture(&mut self) {
+        let pict = std::mem::take(&mut self.pict);
+        let Some(kind) = pict.kind else {
+            return;
+        };
+        let bytes: Vec<u8> = pict
+            .hex
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .filter_map(|pair| {
+                let text = std::str::from_utf8(pair).ok()?;
+                u8::from_str_radix(text, 16).ok()
+            })
+            .collect();
+        let (w, h) = pict.goal;
+        if bytes.is_empty() || w <= 0 || h <= 0 {
+            return;
+        }
+        // Твипы с масштабом → EMU (в пункте 20 твипов).
+        let emu = |twips: i32, scale: i32| {
+            let scale = if scale > 0 { scale } else { 100 };
+            i64::from(twips) * i64::from(scale) / 100 * EMU_PER_POINT / 20
+        };
+        self.push(RunContent::Picture(Picture {
+            drawing: None,
+            width: emu(w, pict.scale.0),
+            height: emu(h, pict.scale.1),
+            image: Some(Arc::new(ImageData {
+                name: format!("media/image.{kind}"),
+                bytes,
+                chart: None,
+            })),
+            relationship: None,
+            raw: None,
+            anchor: None,
+            shape: None,
+        }));
     }
 
     fn finish_font(&mut self) {
