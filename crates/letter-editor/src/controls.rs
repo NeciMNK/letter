@@ -350,7 +350,190 @@ fn segments(paragraph: &Paragraph) -> Vec<(usize, usize, Option<ContentControlRe
 /// Показывает ли элемент у места `at` текст-подсказку: тогда набранный
 /// текст заменяет её (см. [`set_control_text`]).
 pub fn placeholder_at(doc: &Document, at: Position) -> bool {
-    control_at(doc, at).is_some_and(|(c, _, _)| c.showing_placeholder())
+    control_range(doc, at).is_some_and(|(c, _, _)| c.showing_placeholder())
+}
+
+/// Все элементы управления документа (в строке и блочные) и где они, по
+/// порядку — для «Режима конструктора».
+pub fn controls_in(doc: &Document) -> Vec<(ContentControlRef, Position, Position)> {
+    let mut out: Vec<(ContentControlRef, Position, Position)> = Vec::new();
+    let seen = |out: &[(ContentControlRef, Position, Position)], c: &ContentControlRef| {
+        out.iter().any(|(o, _, _)| Arc::ptr_eq(o, c))
+    };
+    for index in 0..crate::edit::paragraph_count(doc) {
+        let Some(paragraph) = paragraph_ref(doc, index) else {
+            continue;
+        };
+        for control in &paragraph.props.controls {
+            if !seen(&out, control) {
+                let (start, end) = block_range(doc, index, control);
+                out.push((control.clone(), start, end));
+            }
+        }
+        for (start, end, control) in segments(paragraph) {
+            if let Some(control) = control
+                && start < end
+                && !seen(&out, &control)
+                && let Some(found) = control_at(doc, Position::new(index, start))
+            {
+                out.push(found);
+            }
+        }
+    }
+    out
+}
+
+/// Тексты-подсказки, которые снова появляются в элементе, когда его
+/// содержимое стёрли (как в Word). По умолчанию — английские тексты Word;
+/// программа ставит их на языке интерфейса.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaceholderTexts {
+    /// У текстовых элементов.
+    pub text: String,
+    /// У списков.
+    pub list: String,
+    /// У выбора даты.
+    pub date: String,
+}
+
+impl Default for PlaceholderTexts {
+    fn default() -> PlaceholderTexts {
+        PlaceholderTexts {
+            text: "Click or tap here to enter text.".into(),
+            list: "Choose an item.".into(),
+            date: "Click or tap to enter a date.".into(),
+        }
+    }
+}
+
+impl PlaceholderTexts {
+    /// Подсказка элемента вида `kind`; у флажка, рисунка и блока из
+    /// коллекции подсказки нет.
+    fn for_kind(&self, kind: &ControlKind) -> Option<&str> {
+        match kind {
+            ControlKind::CheckBox { .. } | ControlKind::Picture | ControlKind::Gallery => None,
+            ControlKind::List { .. } => Some(&self.list),
+            ControlKind::Date { .. } => Some(&self.date),
+            ControlKind::RichText | ControlKind::Text => Some(&self.text),
+        }
+    }
+}
+
+/// Стоит ли `a` раньше `b`.
+fn earlier(a: Position, b: Position) -> bool {
+    (a.paragraph, a.offset) < (b.paragraph, b.offset)
+}
+
+/// Элемент, внутри которого целиком лежит правка `start..end` (у
+/// Backspace и Delete без выделения — стираемый знак: `forward` —
+/// направление), и стоит ли он внутри абзаца (а не блочный).
+pub(crate) fn enclosing_control(
+    doc: &Document,
+    start: Position,
+    end: Position,
+    forward: Option<bool>,
+) -> Option<(ContentControlRef, bool)> {
+    let (control, from, to) = control_range(doc, start)?;
+    let inside = if start != end {
+        !earlier(start, from) && !earlier(to, end)
+    } else {
+        match forward {
+            Some(false) => earlier(from, start) && !earlier(to, start),
+            Some(true) => !earlier(start, from) && earlier(start, to),
+            None => false,
+        }
+    };
+    let inline = control_at(doc, start).is_some_and(|(c, _, _)| Arc::ptr_eq(&c, &control));
+    inside.then_some((control, inline))
+}
+
+/// После правки внутри элемента `control` (см. [`enclosing_control`]):
+/// если стёрто всё его содержимое, элемент не пропадает, а снова
+/// показывает подсказку у места `at`; набранное на месте стёртого
+/// (`at..typed_end`) остаётся внутри элемента.
+pub(crate) fn keep_control(
+    doc: &mut Document,
+    (control, inline): (ContentControlRef, bool),
+    at: Position,
+    typed_end: Position,
+    texts: &PlaceholderTexts,
+) {
+    let typed = at.paragraph == typed_end.paragraph && at.offset < typed_end.offset;
+    let Some(paragraph) = paragraph_ref(doc, at.paragraph) else {
+        return;
+    };
+    let same = |c: &ContentControlRef| Arc::ptr_eq(c, &control);
+    if inline {
+        // Пустые фрагменты после стирания не в счёт.
+        if paragraph.runs().any(|r| {
+            r.props.control.as_ref().is_some_and(same)
+                && r.content.iter().map(item_len).sum::<usize>() > 0
+        }) {
+            return;
+        }
+        if typed {
+            let kept = Arc::new(control.without_placeholder());
+            if let Some(paragraph) = paragraph_mut(doc, at.paragraph) {
+                crate::format::apply(paragraph, at.offset, typed_end.offset, |props| {
+                    props.control = Some(kept.clone());
+                    if is_placeholder_style(props.style.as_deref()) {
+                        props.style = None;
+                    }
+                });
+            }
+            return;
+        }
+        insert_placeholder(doc, at, &control, texts);
+        return;
+    }
+    // Блочный элемент остаётся в абзаце, но абзац опустел.
+    if typed || text_len(paragraph) > 0 || !paragraph.props.controls.iter().any(same) {
+        return;
+    }
+    insert_placeholder(doc, at, &control, texts);
+}
+
+/// Вставляет подсказку элемента `control` у места `at` и помечает элемент
+/// «показывает подсказку» (у блочного — в свойствах абзаца).
+fn insert_placeholder(
+    doc: &mut Document,
+    at: Position,
+    control: &ContentControlRef,
+    texts: &PlaceholderTexts,
+) {
+    let Some(text) = texts.for_kind(&control.kind()).map(str::to_string) else {
+        return;
+    };
+    let style = placeholder_style(doc);
+    let shown = Arc::new(control.with_placeholder());
+    let Some(paragraph) = paragraph_mut(doc, at.paragraph) else {
+        return;
+    };
+    let mut block = false;
+    for c in &mut paragraph.props.controls {
+        if Arc::ptr_eq(c, control) {
+            *c = shown.clone();
+            block = true;
+        }
+    }
+    let offset = clamp_offset(paragraph, at.offset);
+    let mut props = props_before(paragraph, offset);
+    props.style = Some(style);
+    if !block {
+        props.control = Some(shown);
+    }
+    let tail = split_content(paragraph, offset);
+    paragraph.content.push(Inline::Run(Run {
+        props,
+        content: vec![RunContent::Text(text)],
+    }));
+    paragraph.content.extend(tail);
+    tidy(paragraph);
+}
+
+/// Стиль подсказки («Placeholder Text»).
+fn is_placeholder_style(style: Option<&str>) -> bool {
+    style.is_some_and(|s| s.eq_ignore_ascii_case("PlaceholderText"))
 }
 
 /// Можно ли править текст от `start` до `end`: ни он, ни абзацы вокруг
@@ -492,7 +675,9 @@ fn replace_control(
     text: &str,
     change: impl FnOnce(&ContentControl) -> ContentControl,
 ) -> Option<Position> {
-    let (control, start, _) = control_at(doc, at)?;
+    let Some((control, start, _)) = control_at(doc, at) else {
+        return replace_block_control(doc, at, text, change);
+    };
     if !control.content_editable() {
         return None;
     }
@@ -523,18 +708,43 @@ fn replace_control(
             vec![RunContent::Text(text.to_string())]
         };
         // Подсказка у Word оформлена стилем «Текст заполнителя» (серым).
-        if placeholder_style
-            && run
-                .props
-                .style
-                .as_deref()
-                .is_some_and(|s| s.eq_ignore_ascii_case("PlaceholderText"))
-        {
+        if placeholder_style && is_placeholder_style(run.props.style.as_deref()) {
             run.props.style = None;
         }
         true
     });
     Some(Position::new(at.paragraph, start.offset + text.len()))
+}
+
+/// Как [`replace_control`], но у блочного элемента: все его абзацы
+/// становятся одним абзацем с текстом `text`.
+fn replace_block_control(
+    doc: &mut Document,
+    at: Position,
+    text: &str,
+    change: impl FnOnce(&ContentControl) -> ContentControl,
+) -> Option<Position> {
+    let (control, start, end) = control_range(doc, at)?;
+    if !control.content_editable() {
+        return None;
+    }
+    let new = Arc::new(change(&control));
+    let start = crate::edit::delete_range(doc, start, end);
+    let after = crate::edit::insert_text(doc, start, text);
+    let paragraph = paragraph_mut(doc, start.paragraph)?;
+    for c in &mut paragraph.props.controls {
+        if Arc::ptr_eq(c, &control) {
+            *c = new.clone();
+        }
+    }
+    for inline in &mut paragraph.content {
+        if let Inline::Run(run) = inline
+            && is_placeholder_style(run.props.style.as_deref())
+        {
+            run.props.style = None;
+        }
+    }
+    Some(after)
 }
 
 #[cfg(test)]
@@ -883,6 +1093,117 @@ mod tests {
             Position::new(0, 0),
             ContentControl::default()
         ));
+    }
+
+    #[test]
+    fn erased_control_shows_placeholder() {
+        use crate::{Command, History, Selection};
+        let c = control(r#"<w:id w:val="1"/><w:text/>"#);
+        let mut doc = doc_with(&c, None);
+        let mut history = History::default();
+        let texts = PlaceholderTexts {
+            text: "Введите.".into(),
+            ..PlaceholderTexts::default()
+        };
+        history.set_placeholders(texts);
+        let (from, to) = (Position::new(0, 5), Position::new(0, 5 + "элемент".len()));
+        // Всё содержимое выделено и стёрто — на месте подсказка.
+        let after = history.run(&mut doc, Selection::new(from, to), Command::DeleteBackward);
+        assert_eq!(text(&doc), "до Введите. после");
+        assert_eq!(after.focus, from);
+        assert!(placeholder_at(&doc, from));
+        let p = paragraph_ref(&doc, 0).unwrap();
+        let shown = p.runs().nth(1).unwrap();
+        assert_eq!(shown.props.style.as_deref(), Some("PlaceholderText"));
+        // Набор заменяет подсказку, текст снова в элементе.
+        history.run(&mut doc, Selection::caret(from), Command::Type("Я".into()));
+        assert_eq!(text(&doc), "до Я после");
+        assert!(control_at(&doc, from).is_some());
+        // Backspace по последнему знаку — снова подсказка.
+        let end = Position::new(0, 5 + "Я".len());
+        history.run(&mut doc, Selection::caret(end), Command::DeleteBackward);
+        assert_eq!(text(&doc), "до Введите. после");
+        // Набор поверх выделенного содержимого остаётся в элементе.
+        history.undo(&mut doc);
+        history.undo(&mut doc);
+        history.undo(&mut doc);
+        assert_eq!(text(&doc), "до элемент после");
+        history.run(
+            &mut doc,
+            Selection::new(from, to),
+            Command::Type("Ия".into()),
+        );
+        assert_eq!(text(&doc), "до Ия после");
+        let (_, start, end) = control_at(&doc, from).expect("элемент на месте");
+        assert_eq!((start.offset, end.offset), (5, 5 + "Ия".len()));
+        // Стирание вместе с краями элемента удаляет его.
+        let all = Selection::new(Position::new(0, 0), Position::new(0, 9));
+        history.run(&mut doc, all, Command::DeleteBackward);
+        assert_eq!(text(&doc), " после");
+        assert!(!placeholder_at(&doc, Position::new(0, 0)));
+        // «Режим конструктора»: подсказку правят как текст.
+        let shown = control(r#"<w:showingPlcHdr/>"#);
+        let mut doc = doc_with(&shown, Some("PlaceholderText"));
+        let mut history = History::default();
+        history.set_design_mode(true);
+        history.run(
+            &mut doc,
+            Selection::caret(Position::new(0, 7)),
+            Command::Type("!".into()),
+        );
+        assert_eq!(text(&doc), "до э!лемент после");
+    }
+
+    #[test]
+    fn lists_all_controls() {
+        let inline = control("<w:text/>");
+        let mut doc = doc_with(&inline, None);
+        let block = control("");
+        let mut one = Paragraph::from_runs([Run::text("один")]);
+        one.props.controls = vec![block.clone()];
+        let mut two = Paragraph::from_runs([Run::text("два")]);
+        two.props.controls = vec![block.clone()];
+        doc.sections[0].blocks.extend([one.into(), two.into()]);
+        let all = controls_in(&doc);
+        assert_eq!(all.len(), 2);
+        assert!(Arc::ptr_eq(&all[0].0, &inline));
+        assert_eq!((all[0].1.offset, all[0].2.offset), (5, 5 + "элемент".len()));
+        assert!(Arc::ptr_eq(&all[1].0, &block));
+        assert_eq!(
+            (all[1].1, all[1].2),
+            (Position::new(1, 0), Position::new(2, 6))
+        );
+    }
+
+    #[test]
+    fn block_placeholder() {
+        use crate::{Command, History, Selection};
+        let c = control("<w:showingPlcHdr/>");
+        let mut doc = Document::new();
+        let mut one = Paragraph::from_runs([Run::text("Подсказка").with_props(RunProps {
+            style: Some("PlaceholderText".into()),
+            ..RunProps::default()
+        })]);
+        one.props.controls = vec![c.clone()];
+        let mut two = Paragraph::from_runs([Run::text("вторая")]);
+        two.props.controls = vec![c.clone()];
+        doc.sections[0].blocks = vec![one.into(), two.into()];
+        let mut history = History::default();
+        assert!(placeholder_at(&doc, Position::new(0, 2)));
+        history.run(
+            &mut doc,
+            Selection::caret(Position::new(0, 2)),
+            Command::Type("Текст".into()),
+        );
+        assert_eq!(text(&doc), "Текст");
+        let p = paragraph_ref(&doc, 0).unwrap();
+        assert!(!p.props.controls[0].showing_placeholder());
+        assert!(p.runs().all(|r| r.props.style.is_none()));
+        // Всё стёрли — подсказка возвращается.
+        let all = Selection::new(Position::new(0, 0), Position::new(0, "Текст".len()));
+        history.run(&mut doc, all, Command::DeleteBackward);
+        assert_eq!(text(&doc), "Click or tap here to enter text.");
+        assert!(placeholder_at(&doc, Position::new(0, 0)));
     }
 
     #[test]

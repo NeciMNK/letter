@@ -437,12 +437,28 @@ pub struct History {
     last_id: u64,
     /// Автор исправлений (см. [`History::set_author`]).
     author: String,
+    /// Подсказки элементов управления (см. [`History::set_placeholders`]).
+    placeholders: crate::controls::PlaceholderTexts,
+    /// «Режим конструктора»: подсказку правят как обычный текст.
+    design_mode: bool,
 }
 
 impl History {
     /// Имя автора, которым подписываются исправления.
     pub fn set_author(&mut self, author: impl Into<String>) {
         self.author = author.into();
+    }
+
+    /// Тексты, которые снова появляются в элементе управления, когда его
+    /// содержимое стёрли.
+    pub fn set_placeholders(&mut self, texts: crate::controls::PlaceholderTexts) {
+        self.placeholders = texts;
+    }
+
+    /// «Режим конструктора»: набор в подсказке не заменяет её, а правит
+    /// как обычный текст.
+    pub fn set_design_mode(&mut self, on: bool) {
+        self.design_mode = on;
     }
 
     /// Автор исправлений; если не задан — «letter».
@@ -488,7 +504,9 @@ impl History {
         }
         let command = match command {
             // Набранный текст заменяет подсказку элемента целиком.
-            Command::Type(text) if selection.is_empty() && placeholder_at(doc, start) => {
+            Command::Type(text)
+                if !self.design_mode && selection.is_empty() && placeholder_at(doc, start) =>
+            {
                 Command::ControlText(text)
             }
             // В таблице Tab переходит в следующую ячейку, а в последней
@@ -740,6 +758,17 @@ impl History {
         };
 
         let author = self.author().to_string();
+        // Стёртое содержимое элемента управления сменяется подсказкой.
+        let kept = matches!(
+            command,
+            Command::Type(_)
+                | Command::DeleteBackward
+                | Command::DeleteForward
+                | Command::PasteText(_)
+        )
+        .then(|| crate::controls::enclosing_control(doc, start, end, forward))
+        .flatten()
+        .filter(|_| !tracking && !self.design_mode);
         let at = if erasing && tracking {
             let revision = revision_now(RevisionKind::Delete, &author);
             let end = delete_tracked(doc, start, end, &revision);
@@ -1054,6 +1083,12 @@ impl History {
             | Command::RejectRevisions { .. }
             | Command::Watermark(_) => at,
         };
+        if let Some(kept) = kept {
+            // Backspace и Delete без выделения стирают у курсора, а не у `at`.
+            let typed = matches!(command, Command::Type(_) | Command::PasteText(_));
+            let place = if typed { at } else { focus };
+            crate::controls::keep_control(doc, kept, place, focus, &self.placeholders);
+        }
         let after = after.unwrap_or(Selection::caret(focus));
 
         let patch = match saved {

@@ -841,6 +841,8 @@ pub struct Viewer {
     bookmark_dialog: BookmarkDialog,
     /// Окно «Свойства элемента управления содержимым».
     control_dialog: ControlDialog,
+    /// «Режим конструктора» (вкладка «Разработчик»).
+    design_mode: bool,
     page_number_dialog: PageNumberDialog,
     /// Окно «Ограничить редактирование».
     protect_dialog: ProtectDialog,
@@ -1066,6 +1068,7 @@ impl Viewer {
             link_dialog: LinkDialog::default(),
             bookmark_dialog: BookmarkDialog::default(),
             control_dialog: ControlDialog::default(),
+            design_mode: false,
             page_number_dialog: PageNumberDialog::default(),
             protect_dialog: ProtectDialog::default(),
             spelling: crate::spelling::Spelling::start(dir.clone()),
@@ -1957,6 +1960,10 @@ impl Viewer {
         // движением курсора и в конце.
         let mut stale = false;
         let locked = document.locked();
+        document
+            .history
+            .set_placeholders(crate::developer::placeholder_texts());
+        document.history.set_design_mode(self.design_mode);
         for action in actions {
             // В защищённом документе можно двигать курсор, выделять
             // и копировать, но не править.
@@ -2738,6 +2745,7 @@ impl Viewer {
         };
         if let Some(document) = &self.document {
             info.has_document = true;
+            info.design_mode = self.design_mode;
             info.in_control =
                 letter_editor::control_range(&document.doc, document.cursor).is_some();
             info.outline_level =
@@ -2955,6 +2963,7 @@ impl Viewer {
                 RibbonCommand::ControlDate(date) => {
                     actions.push(Action::Edit(Command::ControlDate(date)));
                 }
+                RibbonCommand::DesignMode => self.design_mode = !self.design_mode,
                 RibbonCommand::ControlProperties => {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
                     if let Some(document) = &self.document
@@ -3527,6 +3536,7 @@ impl Viewer {
             show_marks,
             picture_drag,
             spelling,
+            design_mode,
             ..
         } = self;
         let Some(document) = document else {
@@ -3967,7 +3977,16 @@ impl Viewer {
                             .as_ref()
                             .is_some_and(|(now, _, _)| Arc::ptr_eq(now, c))
                     });
-                for (found, strong) in [(hovered, false), (current, true)] {
+                // В «Режиме конструктора» видны рамки всех элементов.
+                let frames: Vec<_> = if *design_mode {
+                    letter_editor::controls_in(doc)
+                        .into_iter()
+                        .map(|found| (Some(found), true))
+                        .collect()
+                } else {
+                    vec![(hovered, false), (current, true)]
+                };
+                for (found, strong) in frames {
                     let Some((control, start, end)) = found else {
                         continue;
                     };
@@ -5527,6 +5546,30 @@ mod tests {
         assert_eq!(control.title().as_deref(), Some("Имя"));
         assert_eq!(control.tag().as_deref(), Some("name"));
         assert_eq!(control.lock(), letter_model::ControlLock::Control);
+    }
+
+    #[test]
+    fn erased_control_shows_placeholder_again() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.new_document();
+        let kind = letter_editor::NewControl::RichText;
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::InsertControl(kind)]);
+        let typed = Command::Type("Иван".into());
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Edit(typed)]);
+        let document = viewer.document.as_mut().unwrap();
+        let end = Position::new(0, "Иван".len());
+        document.set_selection(Selection::new(Position::new(0, 0), end));
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Edit(Command::DeleteBackward)]);
+        assert_eq!(first_text(&mut viewer), "Место для ввода текста.");
+        // «Режим конструктора»: набор не заменяет подсказку.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::DesignMode]);
+        assert!(viewer.ribbon_info().design_mode);
+        let typed = Command::Type("!".into());
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Edit(typed)]);
+        assert_eq!(first_text(&mut viewer), "!Место для ввода текста.");
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::DesignMode]);
+        assert!(!viewer.ribbon_info().design_mode);
     }
 
     #[test]

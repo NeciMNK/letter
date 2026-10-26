@@ -56,9 +56,9 @@ pub use comments::{
 };
 pub use compare::compare_documents;
 pub use controls::{
-    ControlSetup, NewControl, choose_list_item, control_at, control_range, editable,
-    insert_control, placeholder_at, removes_locked_control, set_control, set_control_date,
-    set_control_text, toggle_checkbox,
+    ControlSetup, NewControl, PlaceholderTexts, choose_list_item, control_at, control_range,
+    controls_in, editable, insert_control, placeholder_at, removes_locked_control, set_control,
+    set_control_date, set_control_text, toggle_checkbox,
 };
 pub use cover::{CoverLayout, CoverPage, insert_cover_page};
 pub use edit::{
