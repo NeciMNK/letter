@@ -349,6 +349,7 @@ fn everything() -> Document {
         keep_lines: Some(false),
         page_break_before: Some(true),
         widow_control: Some(false),
+        suppress_line_numbers: Some(false),
         suppress_auto_hyphens: Some(true),
         tabs: vec![
             TabStop {
@@ -1228,5 +1229,38 @@ fn excluded_recipients_survive_round_trip() {
     assert_eq!(
         round_trip(&again).settings.mail_merge,
         doc.settings.mail_merge
+    );
+}
+
+#[test]
+fn line_numbers_survive_round_trip() {
+    use letter_model::{LineNumberRestart, LineNumbering};
+    let mut doc = Document::new();
+    let lines = LineNumbering {
+        count_by: 5,
+        start: 10,
+        distance: Some(Twips(360)),
+        restart: LineNumberRestart::Continuous,
+    };
+    doc.sections[0].props.line_numbering = Some(lines);
+    let mut quiet = Paragraph::from_runs([Run::text("без номеров")]);
+    quiet.props.suppress_line_numbers = Some(true);
+    doc.sections[0].blocks = vec![
+        Paragraph::from_runs([Run::text("строка")]).into(),
+        quiet.into(),
+    ];
+    let back = round_trip(&doc);
+    assert_eq!(back.sections[0].props.line_numbering, Some(lines));
+    assert!(back.sections[0].props.unknown.is_empty());
+    let Block::Paragraph(p) = &back.sections[0].blocks[1] else {
+        panic!("нет абзаца");
+    };
+    assert_eq!(p.props.suppress_line_numbers, Some(true));
+    // По умолчанию в Word: каждая строка, с 1, заново на каждой странице.
+    doc.sections[0].props.line_numbering = Some(LineNumbering::default());
+    let back = round_trip(&doc);
+    assert_eq!(
+        back.sections[0].props.line_numbering,
+        Some(LineNumbering::default())
     );
 }

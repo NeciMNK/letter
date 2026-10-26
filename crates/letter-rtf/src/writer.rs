@@ -315,6 +315,7 @@ impl Writer {
             keep_lines: Some(resolved.keep_lines),
             page_break_before: Some(resolved.page_break_before),
             widow_control: Some(resolved.widow_control),
+            suppress_line_numbers: None,
             tabs: resolved.tabs.clone(),
             borders: None,
             shading: None,

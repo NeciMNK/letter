@@ -10,9 +10,10 @@ use std::sync::Arc;
 use letter_model::{
     Block, BreakKind, Color, Columns, ContentControl, ContentControlRef, ControlNesting,
     ControlStep, Document, FieldChar, FieldCharKind, FirstLineIndent, HeaderFooterKind, Hyperlink,
-    Inline, LineSpacing, Note, NoteKind, Orientation, PageBorderDisplay, PageBorders, Paragraph,
-    ParagraphProps, RawXml, RevisionKind, Run, RunContent, RunFonts, RunProps, Section,
-    SectionProps, SectionStart, Style, StyleKind, Styles, ThemeColor, VerticalAlign,
+    Inline, LineNumberRestart, LineSpacing, Note, NoteKind, Orientation, PageBorderDisplay,
+    PageBorders, Paragraph, ParagraphProps, RawXml, RevisionKind, Run, RunContent, RunFonts,
+    RunProps, Section, SectionProps, SectionStart, Style, StyleKind, Styles, ThemeColor,
+    VerticalAlign,
 };
 
 use crate::document::{W_NS, is_w_ns};
@@ -558,6 +559,7 @@ pub(crate) fn paragraph_props(props: &ParagraphProps, section: Option<&SectionPr
         ("keepLines", props.keep_lines),
         ("pageBreakBefore", props.page_break_before),
         ("widowControl", props.widow_control),
+        ("suppressLineNumbers", props.suppress_line_numbers),
         ("suppressAutoHyphens", props.suppress_auto_hyphens),
     ];
     for (name, value) in toggles {
@@ -961,6 +963,22 @@ fn section_props(props: &SectionProps) -> String {
     }
     if let Some(borders) = &props.page_borders {
         children.push("pgBorders", page_borders_xml(borders));
+    }
+    if let Some(lines) = &props.line_numbering {
+        let mut attrs = vec![("w:countBy", lines.count_by.to_string())];
+        if lines.start > 1 {
+            attrs.push(("w:start", (lines.start - 1).to_string()));
+        }
+        if let Some(distance) = lines.distance {
+            attrs.push(("w:distance", distance.0.to_string()));
+        }
+        let restart = match lines.restart {
+            LineNumberRestart::NewPage => "newPage",
+            LineNumberRestart::NewSection => "newSection",
+            LineNumberRestart::Continuous => "continuous",
+        };
+        attrs.push(("w:restart", restart.to_string()));
+        children.push("lnNumType", empty("w:lnNumType", &attrs));
     }
     if let Some(numbering) = &props.page_numbering {
         let mut attrs = Vec::new();

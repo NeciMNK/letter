@@ -83,8 +83,9 @@ pub use run::{
     VerticalAlign,
 };
 pub use section::{
-    Columns, HeaderFooter, HeaderFooterKind, HeaderFooters, Orientation, PageBorderDisplay,
-    PageBorders, PageMargins, PageNumbering, PageSize, Section, SectionProps, SectionStart,
+    Columns, HeaderFooter, HeaderFooterKind, HeaderFooters, LineNumberRestart, LineNumbering,
+    Orientation, PageBorderDisplay, PageBorders, PageMargins, PageNumbering, PageSize, Section,
+    SectionProps, SectionStart,
 };
 pub use shape::{
     ColorBase, ColorMod, ColorScheme, DEFAULT_LINE_WIDTH, DEFAULT_TEXT_INSETS, Frame, Geometry,

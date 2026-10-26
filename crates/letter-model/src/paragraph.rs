@@ -109,6 +109,8 @@ pub struct ParagraphProps {
     /// «Запрет висячих строк»: одна строка абзаца не остаётся одна
     /// внизу или вверху страницы.
     pub widow_control: Option<bool>,
+    /// «Запретить нумерацию строк» (`w:suppressLineNumbers`).
+    pub suppress_line_numbers: Option<bool>,
     /// Позиции табуляции. Пусто — в этом слое не заданы. Позиция вида
     /// [`TabStopKind::Clear`] убирает унаследованную от стиля.
     pub tabs: Vec<TabStop>,
