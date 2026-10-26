@@ -186,6 +186,8 @@ pub enum RibbonCommand {
     ControlDate(letter_editor::DateTime),
     /// Окно «Свойства элемента управления содержимым» у курсора.
     ControlProperties,
+    /// Включить или выключить «Режим конструктора».
+    DesignMode,
     /// Показать или скрыть знаки форматирования.
     ToggleMarks,
     /// Применить стиль с этим идентификатором.
@@ -337,6 +339,8 @@ pub struct RibbonInfo {
     pub has_document: bool,
     /// Курсор у элемента управления содержимым.
     pub in_control: bool,
+    /// Включён «Режим конструктора».
+    pub design_mode: bool,
     /// Есть что отменить и повторить.
     pub can_undo: bool,
     /// Есть что повторить.

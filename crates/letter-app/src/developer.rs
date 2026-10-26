@@ -11,7 +11,7 @@ use crate::ribbon::{RibbonCommand, RibbonInfo, group};
 
 /// Подсказки клавиш вкладки (для проверки).
 #[cfg(test)]
-pub const KEYTIPS: [&str; 8] = [
+pub const KEYTIPS: [&str; 9] = [
     "keytip-developer-rich-text",
     "keytip-developer-plain-text",
     "keytip-developer-checkbox",
@@ -19,6 +19,7 @@ pub const KEYTIPS: [&str; 8] = [
     "keytip-developer-drop-down",
     "keytip-developer-date",
     "keytip-developer-properties",
+    "keytip-developer-design-mode",
     "keytip-developer-restrict",
 ];
 
@@ -76,6 +77,22 @@ pub fn developer(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 if response.clicked() {
                     out.push(RibbonCommand::ControlProperties);
                 }
+                let response = ui
+                    .add_enabled(
+                        enabled,
+                        Button::new(tr("design-mode")).selected(info.design_mode),
+                    )
+                    .on_hover_text(tr("design-mode-hint"));
+                keytips::tip(
+                    ui,
+                    &response,
+                    Level::Commands,
+                    "keytip-developer-design-mode",
+                    TipAction::Command(RibbonCommand::DesignMode),
+                );
+                if response.clicked() {
+                    out.push(RibbonCommand::DesignMode);
+                }
             });
         });
     });
@@ -97,6 +114,16 @@ pub fn developer(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
             out.push(RibbonCommand::RestrictEditing);
         }
     });
+}
+
+/// Подсказки, которые снова появляются в стёртом элементе (на языке
+/// интерфейса).
+pub fn placeholder_texts() -> letter_editor::PlaceholderTexts {
+    letter_editor::PlaceholderTexts {
+        text: tr("control-placeholder-text").into(),
+        list: tr("control-placeholder-list").into(),
+        date: tr("control-placeholder-date").into(),
+    }
 }
 
 /// Текст-подсказка нового элемента вида `kind` (на языке интерфейса).
@@ -132,12 +159,15 @@ mod tests {
         h.run();
         h.get_by_label("Свойства").click();
         h.run();
+        h.get_by_label("Режим конструктора").click();
+        h.run();
         assert_eq!(
             *h.state(),
             [
                 RibbonCommand::InsertControl(NewControl::CheckBox),
                 RibbonCommand::InsertControl(NewControl::Date),
                 RibbonCommand::ControlProperties,
+                RibbonCommand::DesignMode,
             ]
         );
     }

@@ -236,6 +236,34 @@ impl ContentControl {
         self.with_xml(xml)
     }
 
+    /// Тот же элемент с пометкой «показывает подсказку»
+    /// (`w:showingPlcHdr`).
+    pub fn with_placeholder(&self) -> ContentControl {
+        let Some(props) = &self.props else {
+            return self.clone();
+        };
+        if self.showing_placeholder() {
+            return self.clone();
+        }
+        let mut xml = props.as_str().to_string();
+        let prefix = prefix_of(&xml);
+        // Порядок по схеме: …, id, lock, placeholder, temporary, showingPlcHdr.
+        let at = [
+            "temporary",
+            "placeholder",
+            "lock",
+            "id",
+            "tag",
+            "alias",
+            "rPr",
+        ]
+        .iter()
+        .find_map(|local| element_end(&xml, local))
+        .unwrap_or_else(|| open_end(&xml, "sdtPr"));
+        xml.insert_str(at, &format!("<{prefix}showingPlcHdr/>"));
+        self.with_xml(xml)
+    }
+
     /// Тот же список (`w:dropDownList` или `w:comboBox`) с пунктами
     /// `items`.
     pub fn with_list_items(&self, items: &[ListItem]) -> ContentControl {
@@ -741,6 +769,10 @@ mod tests {
         let place = |s: &str| xml.find(s).unwrap();
         assert!(place("rPr") < place("alias") && place("alias") < place("w:tag"));
         assert!(place("w:id") < place("w:lock"));
+        let shown = named.with_placeholder();
+        assert!(shown.showing_placeholder());
+        assert_eq!(shown.with_placeholder(), shown);
+        assert_eq!(shown.without_placeholder(), named);
         let cleared = named.with_settings("", "", ControlLock::None);
         assert_eq!(cleared.title(), None);
         assert_eq!(cleared.tag(), None);
