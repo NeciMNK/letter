@@ -97,6 +97,8 @@ pub enum Icon {
     ShapeFill,
     /// Контур фигуры.
     ShapeOutline,
+    /// Уравнение.
+    Equation,
     /// Поля страницы.
     Margins,
     /// Ориентация листа.
@@ -247,6 +249,7 @@ impl Icon {
             Icon::Shapes => ("shapes", '\u{E4B3}'),
             Icon::ShapeFill => ("paint-bucket", '\u{E2E6}'),
             Icon::ShapeOutline => ("pen-line", '\u{E130}'),
+            Icon::Equation => ("sigma", '\u{E201}'),
             Icon::Margins => ("fullscreen", '\u{E534}'),
             Icon::Orientation => ("rectangle-horizontal", '\u{E376}'),
             Icon::PageSize => ("scaling", '\u{E2EC}'),
@@ -459,7 +462,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 68] = [
+    const ALL: [Icon; 69] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -502,6 +505,7 @@ mod tests {
         Icon::Shapes,
         Icon::ShapeFill,
         Icon::ShapeOutline,
+        Icon::Equation,
         Icon::Margins,
         Icon::Orientation,
         Icon::PageSize,

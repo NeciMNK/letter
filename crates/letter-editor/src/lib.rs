@@ -25,6 +25,7 @@ pub mod compare;
 pub mod controls;
 pub mod cover;
 pub mod edit;
+pub mod equation;
 pub mod fields;
 pub mod format;
 pub mod history;
@@ -63,6 +64,7 @@ pub use edit::{
     delete_backward, delete_forward, delete_range, insert_line_break, insert_text, paragraph_count,
     paragraph_mut, paragraph_ref, split_paragraph,
 };
+pub use equation::{insert_math, math_ref, new_math, set_math};
 pub use fields::{DateTime, FieldContext, format_date, update_fields};
 pub use format::{
     BorderEdge, ParagraphChanges, ParagraphFormat, RunChanges, RunFormat, align_paragraphs,

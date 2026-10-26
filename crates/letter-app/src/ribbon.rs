@@ -54,6 +54,8 @@ pub enum Tab {
     PictureFormat,
     /// «Формат фигуры»: видна, только когда выделена фигура.
     ShapeFormat,
+    /// «Уравнение»: видна, когда курсор у формулы.
+    Equation,
     /// «Колонтитулы»: видна, пока колонтитул открыт для правки.
     HeaderFooter,
     /// «Структура»: видна в режиме «Структура».
@@ -86,6 +88,7 @@ impl Tab {
             Tab::TableLayout => "keytip-tab-table-layout",
             Tab::PictureFormat => "keytip-tab-picture-format",
             Tab::ShapeFormat => "keytip-tab-shape-format",
+            Tab::Equation => "keytip-tab-equation",
             Tab::HeaderFooter => "keytip-tab-header-footer",
             Tab::Outline => "keytip-tab-outline",
         }
@@ -105,6 +108,7 @@ impl Tab {
             Tab::TableLayout => tr("tab-table-layout"),
             Tab::PictureFormat => tr("tab-picture-format"),
             Tab::ShapeFormat => tr("tab-shape-format"),
+            Tab::Equation => tr("tab-equation"),
             Tab::HeaderFooter => tr("tab-header-footer"),
             Tab::Outline => tr("tab-outline"),
         }
@@ -238,6 +242,10 @@ pub enum RibbonCommand {
     /// «Вставка → Фигуры»: новая фигура (имя готовой фигуры или
     /// [`letter_editor::TEXT_BOX`]).
     InsertShape(&'static str),
+    /// «Вставка → Уравнение»: новая формула у курсора.
+    InsertEquation,
+    /// Заменить формулу в позиции новой (вкладка «Уравнение»).
+    SetEquation(letter_editor::Position, Box<letter_model::Math>),
     /// «Обтекание текстом» выделенного рисунка.
     PictureWrap(letter_editor::PictureWrap),
     /// Открыть для правки верхний (`header`) или нижний колонтитул.
@@ -384,6 +392,8 @@ pub struct RibbonInfo {
     pub shape: Option<letter_model::Shape>,
     /// Размер выделенного рисунка или фигуры, EMU.
     pub picture_size: Option<(i64, i64)>,
+    /// Формула у курсора или выделенная: её место и она сама.
+    pub equation: Option<(letter_editor::Position, letter_model::Math)>,
     /// Параметры страницы раздела с курсором.
     pub section: Option<letter_model::SectionProps>,
     /// Открыт колонтитул: `Some(true)` — верхний, `Some(false)` — нижний.
@@ -459,6 +469,9 @@ impl Ribbon {
         if self.tab == Tab::ShapeFormat && info.shape.is_none() {
             self.tab = Tab::Home;
         }
+        if self.tab == Tab::Equation && info.equation.is_none() {
+            self.tab = Tab::Home;
+        }
         // Вкладка колонтитулов открывается вместе с колонтитулом.
         if info.story.is_some() && !self.story_open {
             self.tab = Tab::HeaderFooter;
@@ -519,6 +532,7 @@ impl Ribbon {
             Tab::TableLayout => crate::insert::table_layout(ui, info, out),
             Tab::PictureFormat => crate::insert::picture_format(ui, info, out),
             Tab::ShapeFormat => crate::insert::shape_format(ui, info, out),
+            Tab::Equation => crate::equation::equation(ui, info, out),
             Tab::HeaderFooter => crate::headers::header_footer(ui, info, out),
             Tab::Outline => crate::outlining::outlining(ui, info, out),
         });
@@ -550,6 +564,9 @@ impl Ribbon {
                 contextual.push(Tab::ShapeFormat);
             } else if info.picture_wrap.is_some() {
                 contextual.push(Tab::PictureFormat);
+            }
+            if info.equation.is_some() {
+                contextual.push(Tab::Equation);
             }
             if info.story.is_some() {
                 contextual.push(Tab::HeaderFooter);
@@ -1065,6 +1082,8 @@ mod tests {
             .with_size(vec2(600.0, 400.0))
             .build_ui_state(
                 |ui, state: &mut (Ribbon, RibbonInfo, f32)| {
+                    // Знаки вкладки «Уравнение» — из шрифта символов.
+                    crate::symbols::install(ui.ctx());
                     let top = ui.cursor().top();
                     state.0.ui(ui, &state.1);
                     state.2 = ui.cursor().top() - top;
@@ -1077,6 +1096,7 @@ mod tests {
             Tab::TableLayout,
             Tab::PictureFormat,
             Tab::ShapeFormat,
+            Tab::Equation,
             Tab::HeaderFooter,
             Tab::Outline,
         ]);
@@ -1085,6 +1105,12 @@ mod tests {
             // Вкладка фигуры видна, когда выделена фигура, а не картинка.
             h.state_mut().1.shape = (tab == Tab::ShapeFormat).then(letter_model::Shape::default);
             h.state_mut().1.picture_size = Some((914_400, 914_400));
+            h.state_mut().1.equation = (tab == Tab::Equation).then(|| {
+                (
+                    letter_editor::Position::new(0, 0),
+                    letter_model::Math::default(),
+                )
+            });
             h.state_mut().0.tab = tab;
             h.run();
             assert_eq!(h.state().0.tab, tab);

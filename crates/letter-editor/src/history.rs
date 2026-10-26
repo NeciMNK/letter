@@ -9,8 +9,8 @@
 
 use letter_model::{
     Alignment, Anchor, Block, BreakKind, Color, Comment, Document, DocumentProtection,
-    HeaderFooter, HeaderFooterKind, Hyperlink, Note, NoteKind, Picture, RevisionKind, Section,
-    SectionStart, Settings, Shape, WriteProtection,
+    HeaderFooter, HeaderFooterKind, Hyperlink, Math, Note, NoteKind, Picture, RevisionKind,
+    Section, SectionStart, Settings, Shape, WriteProtection,
 };
 
 use crate::Position;
@@ -140,6 +140,10 @@ pub enum Command {
     /// Новый вид выделенной фигуры: контур, заливка, линия (выделение
     /// остаётся).
     PictureShape(Box<Shape>),
+    /// Вставить формулу у курсора (вместо выделенного).
+    InsertMath(Box<Math>),
+    /// Заменить формулу в начале выделения новой.
+    SetMath(Box<Math>),
     /// Разрыв страницы (Ctrl+Enter) или колонки (Ctrl+Shift+Enter)
     /// у курсора (заменяет выделенное).
     Break(BreakKind),
@@ -412,6 +416,9 @@ struct Step {
     after: Selection,
     /// Набранный текст, если шаг — набор (для объединения по словам).
     typed: Option<String>,
+    /// Шаг — правка формулы с вкладки «Уравнение»: правки одной формулы
+    /// подряд отменяются одним шагом.
+    math: bool,
 }
 
 /// Отмена и повтор.
@@ -624,6 +631,7 @@ impl History {
                 | Command::ResizePicture { .. }
                 | Command::PictureAnchor(_)
                 | Command::PictureShape(_)
+                | Command::SetMath(_)
                 | Command::PageSetup(_)
                 | Command::HeaderFooter { .. }
                 | Command::TitlePage { .. }
@@ -815,6 +823,10 @@ impl History {
                 crate::shape::set_picture_shape(doc, start, (**shape).clone());
                 Some(selection)
             }
+            Command::SetMath(math) => {
+                crate::equation::set_math(doc, start, (**math).clone());
+                Some(selection)
+            }
             Command::PageSetup(setup) => {
                 set_page_setup(doc, start.paragraph, end.paragraph, *setup);
                 Some(selection)
@@ -938,6 +950,7 @@ impl History {
             Command::PasteText(text) => insert_plain_text(doc, at, text),
             Command::InsertTable { rows, columns } => insert_table(doc, at, *rows, *columns),
             Command::InsertPicture(picture) => insert_picture(doc, at, (**picture).clone()),
+            Command::InsertMath(math) => crate::equation::insert_math(doc, at, (**math).clone()),
             Command::InsertNote(kind) => insert_note(doc, at, *kind).0,
             Command::InsertToc(context) => insert_toc(doc, at, context),
             Command::Break(kind) => insert_break(doc, at, *kind),
@@ -981,6 +994,7 @@ impl History {
             | Command::ResizePicture { .. }
             | Command::PictureAnchor(_)
             | Command::PictureShape(_)
+            | Command::SetMath(_)
             | Command::PageSetup(_)
             | Command::HeaderFooter { .. }
             | Command::TitlePage { .. }
@@ -1046,6 +1060,7 @@ impl History {
         if unchanged {
             return after;
         }
+        let math = matches!(command, Command::SetMath(_));
         let typed = match &command {
             Command::Type(text) => Some(text.clone()),
             _ => None,
@@ -1058,6 +1073,7 @@ impl History {
             before: selection,
             after,
             typed,
+            math,
         };
         if !std::mem::take(&mut self.sealed)
             && let Some(last) = self.undo.last_mut()
@@ -1112,6 +1128,7 @@ impl History {
             before: selection,
             after: selection,
             typed: None,
+            math: false,
         });
         self.sealed = true;
         if self.undo.len() > LIMIT {
@@ -1173,10 +1190,21 @@ enum Saved {
 /// в одних и тех же блоках, курсор с тех пор не двигали, и это не
 /// начало нового слова (Word отменяет набранное по словам).
 fn joins(last: &Step, next: &Step) -> bool {
+    if last.math && next.math {
+        return same_place(last, next) && last.after == next.before;
+    }
     let (Some(previous), Some(typed)) = (&last.typed, &next.typed) else {
         return false;
     };
-    let same_place = match (&last.patch, &next.patch) {
+    let new_word =
+        previous.ends_with(char::is_whitespace) && !typed.starts_with(char::is_whitespace);
+    same_place(last, next) && next.before.is_empty() && last.after == next.before && !new_word
+}
+
+/// Шаг `next` правит те же блоки, что `last`, и начинает с того, чем
+/// `last` закончил.
+fn same_place(last: &Step, next: &Step) -> bool {
+    match (&last.patch, &next.patch) {
         (
             Patch::Blocks {
                 section: s1,
@@ -1192,10 +1220,7 @@ fn joins(last: &Step, next: &Step) -> bool {
             },
         ) => s1 == s2 && b1 == b2 && after == before,
         _ => false,
-    };
-    let new_word =
-        previous.ends_with(char::is_whitespace) && !typed.starts_with(char::is_whitespace);
-    same_place && next.before.is_empty() && last.after == next.before && !new_word
+    }
 }
 
 #[cfg(test)]

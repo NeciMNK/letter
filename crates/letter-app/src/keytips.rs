@@ -87,6 +87,7 @@ pub fn tab_tips() -> Vec<(&'static str, TipAction)> {
         Tab::TableLayout,
         Tab::PictureFormat,
         Tab::ShapeFormat,
+        Tab::Equation,
         Tab::HeaderFooter,
     ]) {
         tips.push((tab.keytip(), TipAction::Tab(tab)));
@@ -427,6 +428,7 @@ mod tests {
                 &crate::insert::DESIGN_KEYTIPS[..],
                 &crate::insert::PICTURE_KEYTIPS[..],
                 &crate::insert::SHAPE_KEYTIPS[..],
+                &crate::equation::KEYTIPS[..],
                 &crate::layout::KEYTIPS[..],
                 &crate::headers::KEYTIPS[..],
                 &crate::references::KEYTIPS[..],

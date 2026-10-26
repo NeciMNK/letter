@@ -150,6 +150,27 @@ fn caret_phase(elapsed: f64) -> (bool, f64) {
     }
 }
 
+/// Формула, которую правит вкладка «Уравнение»: выделенная целиком или
+/// стоящая сразу перед или за курсором. Возвращает её место.
+fn equation_at(doc: &Document, selection: Selection) -> Option<(Position, &letter_model::Math)> {
+    let (start, end) = (selection.start(), selection.end());
+    let len = letter_model::OBJECT_CHAR.len_utf8();
+    if start.paragraph != end.paragraph {
+        return None;
+    }
+    let at = |p: Position| letter_editor::math_ref(doc, p).map(|m| (p, m));
+    if end.offset == start.offset + len {
+        return at(start);
+    }
+    if start != end {
+        return None;
+    }
+    at(start).or_else(|| {
+        let before = Position::new(start.paragraph, start.offset.checked_sub(len)?);
+        at(before)
+    })
+}
+
 /// Переходит по ссылке у места `at`: адрес открывается в браузере;
 /// для ссылки на закладку возвращает, где закладка.
 fn follow_link(ctx: &Context, doc: &Document, at: Position) -> Option<Position> {
@@ -2270,6 +2291,30 @@ impl Viewer {
         }
     }
 
+    /// Вставляет у курсора пустую формулу, выделяет её и открывает
+    /// вкладку «Уравнение» с курсором в поле линейного вида.
+    fn insert_equation(&mut self, ctx: &Context) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        let at = document.selection().start();
+        let math = letter_editor::new_math(&document.doc, at, "");
+        self.apply_actions(ctx, vec![Action::Edit(Command::InsertMath(Box::new(math)))]);
+        if let Some(document) = &mut self.document {
+            let end = document.cursor;
+            let start = Position::new(
+                end.paragraph,
+                end.offset
+                    .saturating_sub(letter_model::OBJECT_CHAR.len_utf8()),
+            );
+            if letter_editor::math_ref(&document.doc, start).is_some() {
+                document.set_selection(Selection::new(start, end));
+                self.ribbon.tab = crate::ribbon::Tab::Equation;
+                ctx.memory_mut(|m| m.request_focus(crate::equation::field_id()));
+            }
+        }
+    }
+
     /// Вставляет рисунок из файла картинки у курсора.
     fn insert_picture_file(&mut self, ctx: &Context, path: &Path) {
         match crate::picture::picture_from_file(path) {
@@ -2716,6 +2761,7 @@ impl Viewer {
             info.shape = picture
                 .and_then(|(at, _)| letter_editor::shape_ref(&document.doc, at))
                 .cloned();
+            info.equation = equation_at(&document.doc, selection).map(|(at, m)| (at, m.clone()));
             info.section =
                 letter_editor::section_props(&document.doc, document.cursor.paragraph).cloned();
             info.auto_hyphenation = document.doc.settings.auto_hyphenation;
@@ -2914,6 +2960,21 @@ impl Viewer {
                 RibbonCommand::InsertShape(name) => {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
                     self.insert_shape(ctx, name);
+                }
+                RibbonCommand::InsertEquation => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    self.insert_equation(ctx);
+                }
+                RibbonCommand::SetEquation(at, math) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    if let Some(document) = &mut self.document {
+                        let end = Position::new(
+                            at.paragraph,
+                            at.offset + letter_model::OBJECT_CHAR.len_utf8(),
+                        );
+                        document.set_selection(Selection::new(at, end));
+                    }
+                    actions.push(Action::Edit(Command::SetMath(math)));
                 }
                 RibbonCommand::EditHeaderFooter { header } => {
                     self.apply_actions(ctx, std::mem::take(&mut actions));
@@ -5309,6 +5370,38 @@ mod tests {
         let end = document.cursor;
         document.set_selection(Selection::new(end, end));
         assert!(viewer.ribbon_info().shape.is_none());
+    }
+
+    #[test]
+    fn equation_is_inserted_and_edited() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.new_document();
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::InsertEquation]);
+        assert_eq!(viewer.ribbon.tab, crate::ribbon::Tab::Equation);
+        let (at, math) = viewer.ribbon_info().equation.expect("формула выделена");
+        assert!(math.display);
+        // Правки в поле линейного вида меняют документ и отменяются разом.
+        for text in ["x", "x^", "x^2"] {
+            let math = Box::new(letter_model::Math::from_linear(text, true));
+            viewer.run_ribbon(&ctx, vec![RibbonCommand::SetEquation(at, math)]);
+        }
+        let linear = |viewer: &Viewer| viewer.ribbon_info().equation.map(|(_, m)| m.linear_text());
+        assert_eq!(linear(&viewer).as_deref(), Some("x^2"));
+        let doc = &viewer.document.as_ref().unwrap().doc;
+        let reread = letter_docx::read_bytes(&letter_docx::write_bytes(doc).unwrap()).unwrap();
+        let again = letter_editor::math_ref(&reread, at).expect("формула прочитана");
+        assert_eq!(again.linear_text(), "x^2");
+        assert!(again.display);
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
+        assert_eq!(linear(&viewer).as_deref(), Some(""));
+        // Курсор сразу за формулой — вкладка остаётся; дальше — нет.
+        let document = viewer.document.as_mut().unwrap();
+        let end = Position::new(0, letter_model::OBJECT_CHAR.len_utf8());
+        document.set_selection(Selection::new(end, end));
+        assert!(viewer.ribbon_info().equation.is_some());
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Edit(Command::Type(" y".into()))]);
+        assert!(viewer.ribbon_info().equation.is_none());
     }
 
     /// PNG 1 × 1 с прозрачной точкой.

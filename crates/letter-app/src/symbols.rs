@@ -9,9 +9,10 @@ use eframe::egui::{
 };
 
 use crate::i18n::tr;
-use crate::icons::Icon;
+use crate::icons::{Icon, icon_button};
 use crate::insert::menu_button;
-use crate::ribbon::{RibbonCommand, RibbonInfo, group};
+use crate::keytips::{self, Level, TipAction};
+use crate::ribbon::{RibbonCommand, RibbonInfo, big_label, row_group};
 
 /// Знаки меню, пока недавних нет (как в Word).
 const COMMON: [char; 20] = [
@@ -111,7 +112,30 @@ pub fn install(ctx: &Context) {
 
 /// Группа «Символы» вкладки «Вставка».
 pub fn group_ui(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
-    group(ui, tr("group-symbols"), |ui| {
+    row_group(ui, tr("group-symbols"), |ui| {
+        ui.vertical(|ui| {
+            let response = icon_button(
+                ui,
+                Icon::Equation,
+                tr("equation"),
+                vec2(44.0, 34.0),
+                info.has_document,
+                false,
+            )
+            .on_hover_text(tr("equation-insert-hint"));
+            let command = RibbonCommand::InsertEquation;
+            keytips::tip(
+                ui,
+                &response,
+                Level::Commands,
+                "keytip-insert-equation",
+                TipAction::Command(command.clone()),
+            );
+            if response.clicked() {
+                out.push(command);
+            }
+            big_label(ui, tr("equation"));
+        });
         menu_button(
             ui,
             Icon::Symbol,

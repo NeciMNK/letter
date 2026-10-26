@@ -20,7 +20,8 @@ const SQUARE: f32 = 16.0;
 
 /// Подсказки клавиш вкладки «Вставка» (для проверки).
 #[cfg(test)]
-pub const INSERT_KEYTIPS: [&str; 14] = [
+pub const INSERT_KEYTIPS: [&str; 15] = [
+    "keytip-insert-equation",
     "keytip-insert-shapes",
     "keytip-insert-cover",
     "keytip-insert-blank-page",
