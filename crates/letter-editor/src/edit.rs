@@ -448,6 +448,17 @@ pub(crate) fn insert_items(paragraph: &mut Paragraph, offset: usize, items: Vec<
         Some(_) if inner > 0 => k + 1,
         _ => k,
     };
+    // В конце результата поля — за концом поля: набранное после поля не
+    // попадает в его результат (и не пропадёт при обновлении поля).
+    let mut index = index;
+    if index > 0 {
+        while matches!(
+            run.content.get(index),
+            Some(RunContent::FieldChar(c)) if c.kind == letter_model::FieldCharKind::End
+        ) {
+            index += 1;
+        }
+    }
     for (n, item) in items.into_iter().enumerate() {
         run.content.insert(index + n, item);
     }

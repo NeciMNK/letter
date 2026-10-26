@@ -291,6 +291,9 @@ pub enum Command {
     UpdateFields(Box<FieldContext>),
     /// Вставить поле слияния столбца с этим именем (рассылки).
     InsertMergeField(String),
+    /// Вставить особое поле рассылки: блок адреса, строку приветствия,
+    /// правило.
+    InsertMergeRule(Box<crate::merge::MergeRule>),
     /// Поставить в поля слияния значения записи (данные и номер записи)
     /// или их имена (`None`) — «Просмотр результатов».
     MergePreview(Option<Box<(crate::merge::MergeData, usize)>>),
@@ -1026,6 +1029,7 @@ impl History {
             Command::InsertMath(math) => crate::equation::insert_math(doc, at, (**math).clone()),
             Command::InsertNote(kind) => insert_note(doc, at, *kind).0,
             Command::InsertMergeField(name) => crate::merge::insert_merge_field(doc, at, name),
+            Command::InsertMergeRule(rule) => crate::merge::insert_merge_rule(doc, at, rule),
             Command::InsertToc(context) => insert_toc(doc, at, context),
             Command::Break(kind) => insert_break(doc, at, *kind),
             Command::BlankPage => {

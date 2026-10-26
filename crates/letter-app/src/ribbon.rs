@@ -201,6 +201,12 @@ pub enum RibbonCommand {
     MergeRecord(i32),
     /// «Найти и объединить»: новый документ по копии на запись.
     FinishMerge,
+    /// «Изменить список получателей».
+    EditRecipients,
+    /// Вставить блок адреса, строку приветствия или номер записи.
+    InsertMergeRule(letter_editor::MergeRule),
+    /// Открыть окно правила рассылки.
+    RuleDialog(crate::merge_dialogs::RuleKind),
     /// Включить или выключить «Режим конструктора».
     DesignMode,
     /// Показать или скрыть знаки форматирования.

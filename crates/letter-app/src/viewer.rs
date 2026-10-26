@@ -746,7 +746,7 @@ enum Intent {
 struct Mailing {
     /// Таблица получателей.
     data: letter_editor::MergeData,
-    /// Показанная запись (с 0).
+    /// Показанная запись: номер среди отмеченных (с 0).
     record: usize,
     /// Включён «Просмотр результатов».
     preview: bool,
@@ -756,10 +756,11 @@ impl Mailing {
     /// Команда, которая ставит в поля слияния то, что сейчас нужно
     /// видеть: значения записи или имена полей.
     fn show(&self) -> Command {
-        Command::MergePreview(
-            self.preview
-                .then(|| Box::new((self.data.clone(), self.record))),
-        )
+        Command::MergePreview(self.preview.then(|| {
+            let records = self.data.records();
+            let row = records.get(self.record).or(records.last()).copied();
+            Box::new((self.data.clone(), row.unwrap_or(0)))
+        }))
     }
 }
 
@@ -865,6 +866,10 @@ pub struct Viewer {
     bookmark_dialog: BookmarkDialog,
     /// Окно «Свойства элемента управления содержимым».
     control_dialog: ControlDialog,
+    /// Окно «Изменить список получателей».
+    recipients_dialog: crate::merge_dialogs::RecipientsDialog,
+    /// Окно правила рассылки.
+    rule_dialog: crate::merge_dialogs::RuleDialog,
     /// «Режим конструктора» (вкладка «Разработчик»).
     design_mode: bool,
     /// Слияние: выбранные получатели.
@@ -1094,6 +1099,8 @@ impl Viewer {
             link_dialog: LinkDialog::default(),
             bookmark_dialog: BookmarkDialog::default(),
             control_dialog: ControlDialog::default(),
+            recipients_dialog: Default::default(),
+            rule_dialog: Default::default(),
             design_mode: false,
             mailing: None,
             page_number_dialog: PageNumberDialog::default(),
@@ -1592,6 +1599,8 @@ impl Viewer {
             && !self.link_dialog.open
             && !self.bookmark_dialog.open
             && !self.control_dialog.open
+            && !self.recipients_dialog.open
+            && !self.rule_dialog.open
             && !self.page_number_dialog.open
             && !self.password_dialog.open
             && !self.symbol_dialog.open
@@ -1689,6 +1698,13 @@ impl Viewer {
             }
             if let Some(action) = self.bookmark_dialog.ui(&ctx) {
                 self.bookmark_action(&ctx, action);
+            }
+            if let Some(data) = self.recipients_dialog.ui(&ctx) {
+                let commands = self.set_recipients(data).map(RibbonCommand::Edit);
+                self.run_ribbon(&ctx, commands.into_iter().collect());
+            }
+            if let Some(rule) = self.rule_dialog.ui(&ctx) {
+                self.run_ribbon(&ctx, vec![RibbonCommand::InsertMergeRule(rule)]);
             }
             if let Some((at, control)) = self.control_dialog.ui(&ctx) {
                 // Свойства меняются у элемента, для которого открыто окно.
@@ -2822,7 +2838,7 @@ impl Viewer {
             if let Some(mailing) = &self.mailing {
                 info.mailing = crate::mailings::MailingInfo {
                     fields: mailing.data.headers.clone(),
-                    records: mailing.data.rows.len(),
+                    records: mailing.data.records().len(),
                     record: mailing.record,
                     preview: mailing.preview,
                 };
@@ -3065,12 +3081,28 @@ impl Viewer {
                 }
                 RibbonCommand::MergeRecord(step) => {
                     if let Some(mailing) = &mut self.mailing {
-                        let last = mailing.data.rows.len().saturating_sub(1);
+                        let last = mailing.data.records().len().saturating_sub(1);
                         let record = mailing.record as i64 + i64::from(step);
                         mailing.record = record.clamp(0, last as i64) as usize;
                         if mailing.preview {
                             actions.push(Action::Edit(mailing.show()));
                         }
+                    }
+                }
+                RibbonCommand::EditRecipients => {
+                    if let Some(mailing) = &self.mailing {
+                        self.recipients_dialog.show(&mailing.data);
+                    }
+                }
+                RibbonCommand::RuleDialog(kind) => {
+                    if let Some(mailing) = &self.mailing {
+                        self.rule_dialog.show(kind, &mailing.data.headers);
+                    }
+                }
+                RibbonCommand::InsertMergeRule(rule) => {
+                    actions.push(Action::Edit(Command::InsertMergeRule(Box::new(rule))));
+                    if let Some(mailing) = self.mailing.as_ref().filter(|m| m.preview) {
+                        actions.push(Action::Edit(mailing.show()));
                     }
                 }
                 RibbonCommand::FinishMerge => {
@@ -5739,6 +5771,48 @@ mod tests {
         let texts: Vec<String> = merged.blocks().map(|b| b.plain_text()).collect();
         assert_eq!(texts, ["Здравствуйте, Анна", "Здравствуйте, Борис"]);
         assert!(!letter_editor::has_merge_fields(merged));
+    }
+
+    #[test]
+    fn mail_merge_rules_and_chosen_recipients() {
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.new_document();
+        let mut data =
+            letter_editor::MergeData::from_csv("Имя;Город\nАнна;Тверь\nБорис;Омск\nВера;Сочи\n");
+        data.set_included(1, false);
+        viewer.set_recipients(data);
+        assert_eq!(viewer.ribbon_info().mailing.records, 2);
+        let rule = letter_editor::MergeRule::If {
+            field: "Город".into(),
+            compare: letter_editor::Compare::Equal,
+            value: "Сочи".into(),
+            then: "юг".into(),
+            otherwise: "север".into(),
+        };
+        let commands = vec![
+            RibbonCommand::InsertMergeField("Имя".into()),
+            RibbonCommand::Edit(Command::Type(" ".into())),
+            RibbonCommand::InsertMergeRule(rule),
+            RibbonCommand::MergePreview(true),
+            RibbonCommand::MergeRecord(1),
+        ];
+        viewer.run_ribbon(&ctx, commands);
+        // Вторая отмеченная запись — Вера (Борис снят); «Сочи» — скрытый
+        // результат поля внутри кода IF.
+        assert_eq!(first_text(&mut viewer), "Вера Сочиюг");
+        let doc = &viewer.document.as_ref().unwrap().doc;
+        let reread = letter_docx::read_bytes(&letter_docx::write_bytes(doc).unwrap()).unwrap();
+        assert_eq!(
+            letter_editor::paragraph_ref(&reread, 0)
+                .unwrap()
+                .plain_text(),
+            "Вера Сочиюг"
+        );
+        viewer.finish_merge();
+        let merged = &viewer.document.as_ref().unwrap().doc;
+        let texts: Vec<String> = merged.blocks().map(|b| b.plain_text()).collect();
+        assert_eq!(texts, ["Анна север", "Вера юг"]);
     }
 
     #[test]
