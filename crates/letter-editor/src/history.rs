@@ -51,7 +51,7 @@ use crate::selection::Selection;
 use crate::table::{
     BorderPreset, delete_columns, delete_rows, delete_table, in_table, insert_columns, insert_rows,
     insert_table, merge_cells, move_column_border, next_cell, set_cell_borders, set_cell_shading,
-    set_table_look, set_table_style,
+    set_table_look, set_table_style, split_cell,
 };
 use crate::toc::{delete_toc, insert_toc, update_tocs};
 use crate::watermark::set_watermark;
@@ -138,6 +138,13 @@ pub enum Command {
     TableStyle(Box<letter_model::Style>),
     /// Параметры стиля таблицы с курсором.
     TableLook(letter_model::TableLook),
+    /// Разделить ячейку с курсором на столбцы и строки.
+    SplitCells {
+        /// Столбцов.
+        columns: usize,
+        /// Строк.
+        rows: usize,
+    },
     /// Вставить рисунок у курсора (заменяет выделенное).
     InsertPicture(Box<Picture>),
     /// Новый размер выделенного рисунка, EMU (выделение остаётся).
@@ -728,6 +735,7 @@ impl History {
                 | Command::MoveColumnBorder { .. }
                 | Command::TableStyle(_)
                 | Command::TableLook(_)
+                | Command::SplitCells { .. }
                 | Command::ResizePicture { .. }
                 | Command::PictureAnchor(_)
                 | Command::PictureShape(_)
@@ -942,6 +950,9 @@ impl History {
             Command::TableLook(look) => {
                 set_table_look(doc, selection.focus.paragraph, *look).then_some(selection)
             }
+            Command::SplitCells { columns, rows } => {
+                split_cell(doc, selection.focus.paragraph, *columns, *rows).map(Selection::caret)
+            }
             Command::ResizePicture { width, height } => {
                 resize_picture(doc, start, *width, *height);
                 Some(selection)
@@ -1143,6 +1154,7 @@ impl History {
             | Command::MoveColumnBorder { .. }
             | Command::TableStyle(_)
             | Command::TableLook(_)
+            | Command::SplitCells { .. }
             | Command::ResizePicture { .. }
             | Command::PictureAnchor(_)
             | Command::PictureShape(_)
@@ -1540,6 +1552,16 @@ mod tests {
             by: -400,
         };
         assert_eq!(h.run(&mut d, at, moved), at);
+        assert_ne!(d, before);
+        h.undo(&mut d);
+        assert_eq!(d, before);
+        // «Разделить ячейки» тоже отменяется.
+        let cell = Selection::caret(Position::new(1, 0));
+        let split = Command::SplitCells {
+            columns: 2,
+            rows: 2,
+        };
+        assert_eq!(h.run(&mut d, cell, split), cell);
         assert_ne!(d, before);
         h.undo(&mut d);
         assert_eq!(d, before);

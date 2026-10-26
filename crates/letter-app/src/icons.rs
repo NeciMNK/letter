@@ -211,6 +211,8 @@ pub enum Icon {
     BorderRight,
     /// Объединить ячейки.
     MergeCells,
+    /// Разделить ячейки.
+    SplitCells,
     /// Создать примечание.
     NewComment,
     /// Удалить примечание.
@@ -338,6 +340,7 @@ impl Icon {
             Icon::BorderLeft => ("panel-left", '\u{E12A}'),
             Icon::BorderRight => ("panel-right", '\u{E431}'),
             Icon::MergeCells => ("table-cells-merge", '\u{E5C7}'),
+            Icon::SplitCells => ("table-cells-split", '\u{E5C8}'),
             Icon::NewComment => ("message-square-plus", '\u{E40C}'),
             Icon::DeleteComment => ("message-square-x", '\u{E577}'),
             Icon::Comments => ("messages-square", '\u{E40D}'),

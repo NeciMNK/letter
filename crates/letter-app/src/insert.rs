@@ -41,8 +41,9 @@ pub const INSERT_KEYTIPS: [&str; 15] = [
 
 /// Подсказки клавиш вкладки «Макет таблицы» (для проверки).
 #[cfg(test)]
-pub const TABLE_KEYTIPS: [&str; 6] = [
+pub const TABLE_KEYTIPS: [&str; 7] = [
     "keytip-table-merge",
+    "keytip-table-split",
     "keytip-table-delete",
     "keytip-table-above",
     "keytip-table-below",
@@ -390,27 +391,40 @@ fn table_picker(ui: &mut Ui, out: &mut Vec<RibbonCommand>) {
 pub fn table_layout(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     let enabled = info.has_document && info.in_table;
     group(ui, tr("group-merge"), |ui| {
-        let response = icon_button(
-            ui,
-            Icon::MergeCells,
-            tr("merge-cells"),
-            vec2(44.0, 34.0),
-            enabled && info.can_merge,
-            false,
-        )
-        .on_hover_text(tr("merge-cells"));
-        let command = RibbonCommand::Edit(Command::MergeCells);
-        keytips::tip(
-            ui,
-            &response,
-            Level::Commands,
-            "keytip-table-merge",
-            TipAction::Command(command.clone()),
-        );
-        if response.clicked() {
-            out.push(command);
-        }
-        big_label(ui, tr("merge-cells"));
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                let response = icon_button(
+                    ui,
+                    Icon::MergeCells,
+                    tr("merge-cells"),
+                    vec2(44.0, 34.0),
+                    enabled && info.can_merge,
+                    false,
+                )
+                .on_hover_text(tr("merge-cells"));
+                let command = RibbonCommand::Edit(Command::MergeCells);
+                keytips::tip(
+                    ui,
+                    &response,
+                    Level::Commands,
+                    "keytip-table-merge",
+                    TipAction::Command(command.clone()),
+                );
+                if response.clicked() {
+                    out.push(command);
+                }
+                big_label(ui, tr("merge-cells"));
+            });
+            menu_button(
+                ui,
+                Icon::SplitCells,
+                tr("split-cells"),
+                tr("split-cells-hint"),
+                "keytip-table-split",
+                enabled,
+                |ui| split_menu(ui, out),
+            );
+        });
     });
     group(ui, tr("group-rows-columns"), |ui| {
         ui.horizontal(|ui| {
@@ -792,6 +806,28 @@ pub fn table_design(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>
             },
         );
     });
+}
+
+/// Меню «Разделить ячейки»: число столбцов и строк и кнопка «ОК».
+/// Числа помнятся между открытиями меню, как в окне Word.
+fn split_menu(ui: &mut Ui, out: &mut Vec<RibbonCommand>) {
+    let id = egui::Id::NULL.with("letter-split-cells");
+    let (mut columns, mut rows) = ui.data(|d| d.get_temp::<(usize, usize)>(id).unwrap_or((2, 1)));
+    egui::Grid::new("letter-split-grid").show(ui, |ui| {
+        let label = ui.label(tr("split-columns"));
+        ui.add(egui::DragValue::new(&mut columns).range(1..=63))
+            .labelled_by(label.id);
+        ui.end_row();
+        let label = ui.label(tr("split-rows"));
+        ui.add(egui::DragValue::new(&mut rows).range(1..=63))
+            .labelled_by(label.id);
+        ui.end_row();
+    });
+    ui.data_mut(|d| d.insert_temp(id, (columns, rows)));
+    if ui.button(tr("ok")).clicked() {
+        out.push(RibbonCommand::Edit(Command::SplitCells { columns, rows }));
+        ui.close();
+    }
 }
 
 /// Образцы стилей таблиц по семь в ряд; возвращает выбранный стиль.

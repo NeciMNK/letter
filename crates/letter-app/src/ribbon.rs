@@ -1243,11 +1243,22 @@ mod tests {
         h.run();
         h.get_by_label("Вставить слева").click();
         h.run();
+        h.get_all_by_label("Разделить ячейки")
+            .next()
+            .expect("кнопка")
+            .click();
+        h.run();
+        h.get_by_label("ОК").click();
+        h.run();
         assert_eq!(
             h.state().out,
             vec![
                 RibbonCommand::Edit(letter_editor::Command::InsertRows { below: true }),
                 RibbonCommand::Edit(letter_editor::Command::InsertColumns { right: false }),
+                RibbonCommand::Edit(letter_editor::Command::SplitCells {
+                    columns: 2,
+                    rows: 1
+                }),
             ]
         );
         h.state_mut().out.clear();
