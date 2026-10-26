@@ -1,7 +1,7 @@
 //! HTML: чтение в модель и запись.
 
 mod css;
-mod lexer;
+pub(crate) mod lexer;
 mod write;
 
 pub use write::write;

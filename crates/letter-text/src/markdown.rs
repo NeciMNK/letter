@@ -69,8 +69,13 @@ pub fn read(text: &str) -> Document {
         ..ParagraphProps::default()
     };
 
+    // Внутри картинки, ставшей рисунком: её подпись не нужна.
+    let mut in_picture = false;
     for event in Parser::new_ext(text, options) {
         let current = runs.last().cloned().unwrap_or_default();
+        if in_picture && !matches!(event, Event::End(TagEnd::Image)) {
+            continue;
+        }
         match event {
             Event::Start(tag) => {
                 let mut run = current.clone();
@@ -137,6 +142,14 @@ pub fn read(text: &str) -> Document {
                             ..ParagraphProps::default()
                         });
                     }
+                    Tag::Image { dest_url, .. } => {
+                        if let Some(picture) =
+                            crate::images::picture_from_data_uri(&dest_url, None, None)
+                        {
+                            builder.content(RunContent::Picture(picture), &current);
+                            in_picture = true;
+                        }
+                    }
                     Tag::Emphasis => run.italic = Some(true),
                     Tag::Strong => run.bold = Some(true),
                     Tag::Strikethrough => run.strike = Some(true),
@@ -156,6 +169,7 @@ pub fn read(text: &str) -> Document {
                     runs.push(RunProps::default());
                 }
                 match tag {
+                    TagEnd::Image => in_picture = false,
                     TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item => {
                         item_open = false;
                         builder.end_paragraph();
@@ -202,10 +216,20 @@ pub fn read(text: &str) -> Document {
             }
             Event::SoftBreak => builder.text(" ", &current),
             Event::HardBreak => builder.line_break(&current),
+            Event::Html(html) if html_picture(&html).is_some() => {
+                // Рисунок отдельным блоком — свой абзац.
+                if let Some(picture) = html_picture(&html) {
+                    builder.start_paragraph(paragraph_props(&lists, quotes));
+                    builder.content(RunContent::Picture(picture), &current);
+                    builder.end_paragraph();
+                }
+            }
             Event::InlineHtml(html) | Event::Html(html) => {
                 let tag = html.trim().to_ascii_lowercase().replace(' ', "");
                 if matches!(tag.as_str(), "<br>" | "<br/>") {
                     builder.line_break(&current);
+                } else if let Some(picture) = html_picture(&html) {
+                    builder.content(RunContent::Picture(picture), &current);
                 }
             }
             Event::TaskListMarker(checked) => {
@@ -382,6 +406,8 @@ struct Marks {
     italic: bool,
     strike: bool,
     code: bool,
+    /// Готовая разметка (рисунок): пишется как есть.
+    raw: bool,
 }
 
 /// Текст абзаца с разметкой. `skip` — сколько знаков пропустить в начале
@@ -399,6 +425,7 @@ fn inline(doc: &Document, p: &Paragraph, skip: usize, cell: bool) -> String {
             italic: r.italic && !base.italic,
             strike: r.strike || r.double_strike,
             code: is_monospace(&r.fonts.ascii),
+            raw: false,
         };
         for item in &run.content {
             let piece = match item {
@@ -407,8 +434,22 @@ fn inline(doc: &Document, p: &Paragraph, skip: usize, cell: bool) -> String {
                 RunContent::Math(m) => m.linear_text().replace('\n', " "),
                 RunContent::Tab => "\t".to_owned(),
                 RunContent::Break(BreakKind::Line) => "\n".to_owned(),
+                RunContent::Picture(picture) => {
+                    // Картинка — внутри файла, тегом `<img>`: так
+                    // сохраняется и её размер.
+                    if let Some((src, width, height)) = crate::images::data_uri(picture) {
+                        let tag = format!(
+                            "<img src=\"{src}\" width=\"{width}\" height=\"{height}\" alt=\"\">"
+                        );
+                        let raw = Marks {
+                            raw: true,
+                            ..Marks::default()
+                        };
+                        segments.push((raw, tag));
+                    }
+                    continue;
+                }
                 RunContent::Break(_)
-                | RunContent::Picture(_)
                 | RunContent::FieldChar(_)
                 | RunContent::FieldCode(_)
                 | RunContent::NoteReference(_)
@@ -449,9 +490,35 @@ fn inline(doc: &Document, p: &Paragraph, skip: usize, cell: bool) -> String {
     out
 }
 
+/// Рисунок из тега `<img>` с картинкой внутри файла (`data:`).
+fn html_picture(html: &str) -> Option<letter_model::Picture> {
+    crate::html::lexer::tokens(html)
+        .into_iter()
+        .find_map(|token| match token {
+            crate::html::lexer::Token::Start { name, attrs } if name == "img" => {
+                let attr = |key: &str| {
+                    attrs
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .map(|(_, v)| v.as_str())
+                };
+                let pixels = |key: &str| attr(key).and_then(|v| v.trim().parse().ok());
+                crate::images::picture_from_data_uri(
+                    attr("src")?,
+                    pixels("width"),
+                    pixels("height"),
+                )
+            }
+            _ => None,
+        })
+}
+
 /// Кусок текста в знаках выделения. Пробелы по краям выносятся наружу:
 /// `** a**` в Markdown не работает.
 fn marked(text: &str, marks: Marks, line_start: bool) -> String {
+    if marks.raw {
+        return text.to_owned();
+    }
     let body = text.trim_matches(' ');
     if body.is_empty() {
         return text.to_owned();
@@ -510,6 +577,46 @@ fn escape(text: &str, line_start: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pictures_are_kept_inside_the_file() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/docx/image.docx");
+        let bytes = std::fs::read(fixture).expect("файл");
+        let source = letter_docx::read_bytes(&bytes).expect("docx");
+        let pictures = |doc: &Document| -> Vec<letter_model::Picture> {
+            doc.blocks()
+                .filter_map(|b| match b {
+                    Block::Paragraph(p) => Some(p),
+                    _ => None,
+                })
+                .flat_map(|p| p.runs())
+                .flat_map(|r| r.content.iter())
+                .filter_map(|c| match c {
+                    RunContent::Picture(p) => Some(p.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let before = pictures(&source);
+        assert!(!before.is_empty());
+        let text = write(&source);
+        assert!(text.contains("<img src=\"data:image/"), "{text}");
+        let back = read(&text);
+        let after = pictures(&back);
+        assert_eq!(after.len(), before.len());
+        let image = |p: &letter_model::Picture| p.image.as_ref().map(|i| i.bytes.clone());
+        assert_eq!(image(&after[0]), image(&before[0]));
+        assert!((after[0].width - before[0].width).abs() <= 9525);
+        // Обычная картинка Markdown с картинкой внутри — тоже рисунок,
+        // по ссылке — остаётся подпись.
+        let gif = crate::images::base64_encode(b"GIF89a\x05\x00\x02\x00");
+        let doc = read(&format!(
+            "a ![x](data:image/gif;base64,{gif}) b ![logo](http://e.com/a.png)"
+        ));
+        assert_eq!(pictures(&doc).len(), 1);
+        assert_eq!(texts(&doc), ["a \u{FFFC} b logo"]);
+    }
 
     fn texts(doc: &Document) -> Vec<String> {
         doc.blocks().map(Block::plain_text).collect()
