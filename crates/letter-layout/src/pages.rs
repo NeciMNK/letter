@@ -51,8 +51,8 @@ use letter_model::{
     LineSpacing, ListCounters, ListLabel, NoteKind, Numbering, PageBorderDisplay, PageBorders,
     PageSize, Paragraph, ParagraphBorders, Placement, ResolvedFonts, ResolvedParagraphProps,
     ResolvedRunProps, RunContent, RunFonts, RunProps, Section, SectionProps, SectionStart,
-    Settings, Styles, TabStopKind, Theme, Twips, VerticalAlign, VerticalFrom, Watermark, Wrap,
-    find_watermark,
+    Settings, Styles, TabStopKind, TableCellStyle, Theme, Twips, VerticalAlign, VerticalFrom,
+    Watermark, Wrap, find_watermark,
 };
 
 use crate::fields;
@@ -427,17 +427,17 @@ struct Entry {
     label: Option<ListLabel>,
     /// Номера сносок в абзаце: тоже зависят от текста выше.
     marks: Vec<String>,
-    /// Стиль таблицы, если абзац в ячейке.
-    table: Option<String>,
+    /// Стиль таблицы и части таблицы, если абзац в ячейке.
+    table: Option<TableCellStyle>,
     prepared: Arc<Prepared>,
 }
 
 /// Абзац документа и где он стоит: ширина текста и стиль таблицы
-/// (если абзац в ячейке; `""` — стиль таблиц по умолчанию).
+/// с частями таблицы, к которым относится ячейка (если абзац в ячейке).
 struct Item<'a> {
     paragraph: &'a Paragraph,
     width: f32,
-    table: Option<String>,
+    table: Option<TableCellStyle>,
 }
 
 /// Раскладывает документ по страницам, беря из `cache` абзацы, которые
@@ -526,7 +526,7 @@ pub fn layout_document_cached(
         let entry = reused.unwrap_or_else(|| {
             rebuilt += 1;
             let label = labels[k].clone();
-            let table = item.table.as_deref();
+            let table = item.table.as_ref();
             let prepared = prepare(
                 doc,
                 item.paragraph,
@@ -873,7 +873,7 @@ fn lay_story_with(
                 item.paragraph,
                 label.as_ref(),
                 &notes.0.marks(item.paragraph, notes.1),
-                item.table.as_deref(),
+                item.table.as_ref(),
                 item.width,
                 shaper,
                 library,
@@ -1164,13 +1164,13 @@ fn list_labels(doc: &Document, all: &[Item<'_>]) -> Vec<Option<ListLabel>> {
 }
 
 /// Абзацы по порядку с шириной текста; абзацы таблиц — по строкам
-/// и ячейкам, с шириной текста своей ячейки. `table` — стиль таблицы,
-/// в ячейке которой стоят `blocks`.
+/// и ячейкам, с шириной текста своей ячейки. `table` — стиль таблицы
+/// и части таблицы ячейки, в которой стоят `blocks`.
 fn collect_paragraphs<'a>(
     doc: &Document,
     blocks: &'a [Block],
     width: f32,
-    table: Option<&str>,
+    table: Option<&TableCellStyle>,
     out: &mut Vec<Item<'a>>,
 ) {
     for block in blocks {
@@ -1178,15 +1178,15 @@ fn collect_paragraphs<'a>(
             Block::Paragraph(paragraph) => out.push(Item {
                 paragraph,
                 width,
-                table: table.map(str::to_string),
+                table: table.cloned(),
             }),
             Block::Table(t) => {
                 let geometry = TableGeometry::of(doc, t, width);
-                let style = geometry.style();
-                for row in &t.rows {
+                for (r, row) in t.rows.iter().enumerate() {
                     let mut start = 0;
                     for cell in &row.cells {
                         let (_, text_width) = geometry.text_area(start, cell);
+                        let style = geometry.cell_style((r, t.rows.len()), start, cell);
                         collect_paragraphs(doc, &cell.blocks, text_width, Some(&style), out);
                         start += cell.span();
                     }
@@ -1584,7 +1584,7 @@ fn prepare(
     paragraph: &Paragraph,
     label: Option<&ListLabel>,
     marks: &[String],
-    table: Option<&str>,
+    table: Option<&TableCellStyle>,
     width: f32,
     shaper: &mut Shaper,
     library: &FontLibrary,
@@ -1893,7 +1893,7 @@ fn list_mark(
     doc: &Document,
     paragraph: &Paragraph,
     label: &ListLabel,
-    table: Option<&str>,
+    table: Option<&TableCellStyle>,
     format: &mut ParagraphFormat,
     shaper: &mut Shaper,
     library: &FontLibrary,
@@ -4327,6 +4327,70 @@ mod tests {
         }
         let layout = lay(&d);
         assert!((layout.pages[0].lines[0].top - 10.0 - BW).abs() < 1e-3);
+    }
+
+    #[test]
+    fn table_style_formats_header_row_and_bands() {
+        use letter_model::{
+            Color, Shading, Style, StyleKind, TableArea, TableAreaStyle, TableLook,
+        };
+        let mut d = doc_with(vec![table(&[&["h", "h"], &["a", "a"], &["b", "b"]]).into()]);
+        let mut style = Style::new("Fancy", StyleKind::Table);
+        let mut header = TableAreaStyle::new(TableArea::FirstRow);
+        header.run.bold = Some(true);
+        header.cell.shading = Some(Shading::fill(Color::Rgb(200, 0, 0)));
+        header.cell.borders = Some(letter_model::Borders {
+            bottom: Some(Border::single(24)),
+            ..letter_model::Borders::default()
+        });
+        let mut band = TableAreaStyle::new(TableArea::Band1Horizontal);
+        band.cell.shading = Some(Shading::fill(Color::Rgb(0, 200, 0)));
+        style.table_areas = vec![band, header];
+        d.styles.styles.push(style);
+        if let Some(Block::Table(t)) = d.sections[0].blocks.first_mut() {
+            t.props.style = Some("Fancy".into());
+            t.props.look = Some(TableLook::WORD);
+        }
+        let layout = lay(&d);
+        let page = &layout.pages[0];
+        let fills: Vec<(u8, u8, u8)> = page
+            .shapes
+            .iter()
+            .filter(|s| s.kind == ShapeKind::Fill)
+            .map(|s| s.color)
+            .collect();
+        // Заголовок — красный, первая полоса — зелёная, вторая — без заливки.
+        assert_eq!(fills.iter().filter(|c| **c == (200, 0, 0)).count(), 2);
+        assert_eq!(fills.iter().filter(|c| **c == (0, 200, 0)).count(), 2);
+        assert_eq!(fills.len(), 4);
+        // В заголовке жирный шрифт, ниже — обычный.
+        let bold = |text: &str| {
+            let line = page.lines.iter().find(|l| &*l.text == text).unwrap();
+            line.spans.iter().all(|s| s.bold)
+        };
+        assert!(bold("h"));
+        assert!(!bold("a"));
+        // Под заголовком — толстая линия (3 пт) из стиля.
+        assert!(
+            page.shapes
+                .iter()
+                .any(|s| s.kind == ShapeKind::Rule && (s.height - 3.0).abs() < 1e-3)
+        );
+        // Без строки заголовка в параметрах таблицы — всё как без стиля.
+        if let Some(Block::Table(t)) = d.sections[0].blocks.first_mut() {
+            t.props.look = Some(TableLook {
+                first_row: false,
+                no_h_band: true,
+                ..TableLook::WORD
+            });
+        }
+        let layout = lay(&d);
+        assert!(
+            !layout.pages[0]
+                .shapes
+                .iter()
+                .any(|s| s.kind == ShapeKind::Fill)
+        );
     }
 
     #[test]

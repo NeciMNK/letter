@@ -174,11 +174,232 @@ pub struct TableProps {
     pub layout: Option<TableLayout>,
     /// Поля ячеек по умолчанию.
     pub cell_margins: Option<CellMargins>,
+    /// Какие части оформления из стиля таблицы включены (`w:tblLook`):
+    /// строка заголовка, итоговая строка, первый и последний столбцы,
+    /// чередование.
+    pub look: Option<TableLook>,
+    /// Сколько строк в одной полосе чередования (`w:tblStyleRowBandSize`).
+    pub row_band_size: Option<u32>,
+    /// Сколько столбцов в одной полосе (`w:tblStyleColBandSize`).
+    pub column_band_size: Option<u32>,
     /// Элементы управления содержимым (`w:sdt`), внутри которых лежит
     /// таблица, от внешнего к внутреннему. В `w:tblPr` не пишутся.
     pub controls: Vec<crate::ContentControlRef>,
     /// Непонятые свойства как есть.
     pub unknown: Vec<RawXml>,
+}
+
+/// Параметры стиля таблицы (`w:tblLook`, «Конструктор таблиц» в Word):
+/// какие части условного оформления стиля действуют.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TableLook {
+    /// Строка заголовка.
+    pub first_row: bool,
+    /// Итоговая строка.
+    pub last_row: bool,
+    /// Первый столбец.
+    pub first_column: bool,
+    /// Последний столбец.
+    pub last_column: bool,
+    /// Без чередования строк.
+    pub no_h_band: bool,
+    /// Без чередования столбцов.
+    pub no_v_band: bool,
+}
+
+impl TableLook {
+    /// Как у новой таблицы в Word (`04A0`): заголовок, первый столбец,
+    /// чередование строк.
+    pub const WORD: TableLook = TableLook {
+        first_row: true,
+        last_row: false,
+        first_column: true,
+        last_column: false,
+        no_h_band: false,
+        no_v_band: true,
+    };
+
+    /// Старая запись числом (`w:val="04A0"`).
+    pub fn from_bits(bits: u16) -> TableLook {
+        TableLook {
+            first_row: bits & 0x0020 != 0,
+            last_row: bits & 0x0040 != 0,
+            first_column: bits & 0x0080 != 0,
+            last_column: bits & 0x0100 != 0,
+            no_h_band: bits & 0x0200 != 0,
+            no_v_band: bits & 0x0400 != 0,
+        }
+    }
+
+    /// Запись числом (см. [`TableLook::from_bits`]).
+    pub fn bits(self) -> u16 {
+        [
+            (self.first_row, 0x0020),
+            (self.last_row, 0x0040),
+            (self.first_column, 0x0080),
+            (self.last_column, 0x0100),
+            (self.no_h_band, 0x0200),
+            (self.no_v_band, 0x0400),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, bit)| bit)
+        .sum()
+    }
+}
+
+/// Часть таблицы, у которой своё оформление в стиле таблицы
+/// (`w:tblStylePr w:type`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TableArea {
+    /// Вся таблица.
+    WholeTable,
+    /// Нечётные полосы столбцов.
+    Band1Vertical,
+    /// Чётные полосы столбцов.
+    Band2Vertical,
+    /// Нечётные полосы строк.
+    Band1Horizontal,
+    /// Чётные полосы строк.
+    Band2Horizontal,
+    /// Первый столбец.
+    FirstColumn,
+    /// Последний столбец.
+    LastColumn,
+    /// Первая строка (заголовок).
+    FirstRow,
+    /// Последняя строка (итоги).
+    LastRow,
+    /// Правая верхняя ячейка.
+    TopRightCell,
+    /// Левая верхняя ячейка.
+    TopLeftCell,
+    /// Правая нижняя ячейка.
+    BottomRightCell,
+    /// Левая нижняя ячейка.
+    BottomLeftCell,
+}
+
+impl TableArea {
+    /// Все части в том порядке, в каком Word накладывает их оформление:
+    /// следующая перекрывает предыдущие.
+    pub const ORDER: [TableArea; 13] = [
+        TableArea::WholeTable,
+        TableArea::Band1Vertical,
+        TableArea::Band2Vertical,
+        TableArea::Band1Horizontal,
+        TableArea::Band2Horizontal,
+        TableArea::FirstColumn,
+        TableArea::LastColumn,
+        TableArea::FirstRow,
+        TableArea::LastRow,
+        TableArea::TopRightCell,
+        TableArea::TopLeftCell,
+        TableArea::BottomRightCell,
+        TableArea::BottomLeftCell,
+    ];
+
+    fn bit(self) -> u16 {
+        1 << (self as u16)
+    }
+}
+
+/// Набор частей таблицы, к которым относится ячейка.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct TableAreas(u16);
+
+impl TableAreas {
+    /// Относится ли ячейка к части `area`.
+    pub fn contains(self, area: TableArea) -> bool {
+        self.0 & area.bit() != 0
+    }
+
+    /// Добавляет часть.
+    pub fn insert(&mut self, area: TableArea) {
+        self.0 |= area.bit();
+    }
+
+    /// Части ячейки в строке `row` из `rows`, занимающей столбцы сетки
+    /// `columns` (начало и конец, не включая) из `grid`, при параметрах
+    /// `look` и полосах по `bands` строк и столбцов.
+    pub fn of_cell(
+        look: TableLook,
+        (row, rows): (usize, usize),
+        (columns, grid): ((usize, usize), usize),
+        bands: (u32, u32),
+    ) -> TableAreas {
+        let mut areas = TableAreas::default();
+        areas.insert(TableArea::WholeTable);
+        let first_row = look.first_row && row == 0;
+        let last_row = look.last_row && rows > 0 && row + 1 == rows;
+        let first_column = look.first_column && columns.0 == 0;
+        let last_column = look.last_column && grid > 0 && columns.1 >= grid;
+        // Полосы считаются без строки заголовка и первого столбца.
+        if !look.no_h_band && !first_row && !last_row {
+            let index = row.saturating_sub(usize::from(look.first_row));
+            let band = index / bands.0.max(1) as usize;
+            areas.insert(if band.is_multiple_of(2) {
+                TableArea::Band1Horizontal
+            } else {
+                TableArea::Band2Horizontal
+            });
+        }
+        if !look.no_v_band && !first_column && !last_column {
+            let index = columns.0.saturating_sub(usize::from(look.first_column));
+            let band = index / bands.1.max(1) as usize;
+            areas.insert(if band.is_multiple_of(2) {
+                TableArea::Band1Vertical
+            } else {
+                TableArea::Band2Vertical
+            });
+        }
+        for (on, area) in [
+            (first_row, TableArea::FirstRow),
+            (last_row, TableArea::LastRow),
+            (first_column, TableArea::FirstColumn),
+            (last_column, TableArea::LastColumn),
+            (first_row && first_column, TableArea::TopLeftCell),
+            (first_row && last_column, TableArea::TopRightCell),
+            (last_row && first_column, TableArea::BottomLeftCell),
+            (last_row && last_column, TableArea::BottomRightCell),
+        ] {
+            if on {
+                areas.insert(area);
+            }
+        }
+        areas
+    }
+}
+
+/// Оформление части таблицы в стиле таблицы (`w:tblStylePr`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableAreaStyle {
+    /// Какая часть.
+    pub area: TableArea,
+    /// Оформление абзацев.
+    pub paragraph: crate::ParagraphProps,
+    /// Оформление символов.
+    pub run: crate::RunProps,
+    /// Свойства таблицы.
+    pub table: TableProps,
+    /// Свойства ячеек: границы, заливка.
+    pub cell: CellProps,
+    /// Непонятые элементы (`w:trPr` и т. п.) как есть.
+    pub unknown: Vec<RawXml>,
+}
+
+impl TableAreaStyle {
+    /// Пустое оформление части `area`.
+    pub fn new(area: TableArea) -> TableAreaStyle {
+        TableAreaStyle {
+            area,
+            paragraph: crate::ParagraphProps::default(),
+            run: crate::RunProps::default(),
+            table: TableProps::default(),
+            cell: CellProps::default(),
+            unknown: Vec::new(),
+        }
+    }
 }
 
 /// Правило высоты строки.
@@ -299,5 +520,36 @@ mod tests {
         };
         assert_eq!(cell.span(), 1);
         assert_eq!(cell.plain_text(), "out\nin");
+    }
+
+    #[test]
+    fn look_bits() {
+        assert_eq!(TableLook::from_bits(0x04A0), TableLook::WORD);
+        assert_eq!(TableLook::WORD.bits(), 0x04A0);
+    }
+
+    #[test]
+    fn areas_of_cells() {
+        let areas =
+            |row, columns| TableAreas::of_cell(TableLook::WORD, (row, 5), (columns, 3), (1, 1));
+        let top_left = areas(0, (0, 1));
+        assert!(top_left.contains(TableArea::FirstRow));
+        assert!(top_left.contains(TableArea::FirstColumn));
+        assert!(top_left.contains(TableArea::TopLeftCell));
+        assert!(!top_left.contains(TableArea::Band1Horizontal));
+        // Полосы: первая после заголовка — нечётная.
+        assert!(areas(1, (1, 2)).contains(TableArea::Band1Horizontal));
+        assert!(areas(2, (1, 2)).contains(TableArea::Band2Horizontal));
+        assert!(areas(3, (1, 2)).contains(TableArea::Band1Horizontal));
+        // Итоговой строки и чередования столбцов в WORD нет.
+        let last = areas(4, (2, 3));
+        assert!(!last.contains(TableArea::LastRow));
+        assert!(!last.contains(TableArea::LastColumn));
+        assert!(!last.contains(TableArea::Band1Vertical));
+        assert!(last.contains(TableArea::WholeTable));
+        // Полосы по две строки.
+        let wide = |row| TableAreas::of_cell(TableLook::WORD, (row, 9), ((1, 2), 3), (2, 1));
+        assert!(wide(2).contains(TableArea::Band1Horizontal));
+        assert!(wide(3).contains(TableArea::Band2Horizontal));
     }
 }

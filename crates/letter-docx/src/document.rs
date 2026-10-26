@@ -1149,21 +1149,29 @@ fn read_color(element: &Element) -> Option<(Color, Option<ThemeColor>)> {
 /// атрибуты непонятны (оттенок без цвета темы, не шестнадцатеричное
 /// число).
 pub(crate) fn read_theme_color(element: &Element) -> Option<Option<ThemeColor>> {
+    read_theme_attrs(element, ["themeColor", "themeShade", "themeTint"])
+}
+
+/// Ссылка на цвет темы из атрибутов `names`: имя цвета, затемнение,
+/// осветление (у заливки — `themeFill`, `themeFillShade`,
+/// `themeFillTint`). `None` — оттенок без цвета или непонятное число.
+pub(crate) fn read_theme_attrs(
+    element: &Element,
+    [color, shade, tint]: [&str; 3],
+) -> Option<Option<ThemeColor>> {
     let byte = |name: &str| -> Result<Option<u8>, ()> {
         match element.w_attr(name) {
             Some(v) => u8::from_str_radix(v, 16).map(Some).map_err(|_| ()),
             None => Ok(None),
         }
     };
-    match element.w_attr("themeColor") {
+    match element.w_attr(color) {
         Some(name) => Some(Some(ThemeColor {
             name: name.to_string(),
-            shade: byte("themeShade").ok()?,
-            tint: byte("themeTint").ok()?,
+            shade: byte(shade).ok()?,
+            tint: byte(tint).ok()?,
         })),
-        None if element.w_attr("themeShade").is_some() || element.w_attr("themeTint").is_some() => {
-            None
-        }
+        None if element.w_attr(shade).is_some() || element.w_attr(tint).is_some() => None,
         None => Some(None),
     }
 }

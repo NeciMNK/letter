@@ -12,15 +12,19 @@
 //!   ячейка, если высота не задана «точно» или «не меньше».
 //! - Объединённая по вертикали ячейка верстается в первой строке
 //!   объединения; если не помещается — последняя строка выше.
-//! - Границы: у ячейки свои, иначе внешние границы таблицы по краям
-//!   и внутренние между ячейками. Линия рисуется по центру границы
+//! - Стиль таблицы может оформлять части таблицы по-своему (строку
+//!   заголовка, полосы через строку, первый столбец…), если они включены
+//!   в параметрах таблицы (`w:tblLook`): заливка, границы ячеек, шрифт.
+//! - Границы: у ячейки свои, иначе из оформления частей таблицы, иначе
+//!   внешние границы таблицы по краям и внутренние между ячейками. Линия рисуется по центру границы
 //!   ячейки; двойные, пунктирные и прочие виды — пока сплошной линией.
 
 use std::sync::Arc;
 
 use letter_model::{
-    Alignment, Block, Border, CellVerticalAlign, Color, Document, HeightRule, Table, TableCell,
-    TableProps, TableWidth, VerticalMerge,
+    Alignment, Block, Border, Borders, CellVerticalAlign, Color, Document, HeightRule, Shading,
+    Table, TableArea, TableAreas, TableCell, TableCellStyle, TableLook, TableProps, TableWidth,
+    VerticalMerge, overlay_borders,
 };
 
 use crate::pages::{CellArea, Prepared, Shape, ShapeKind};
@@ -127,10 +131,30 @@ impl TableGeometry {
         }
     }
 
-    /// Стиль таблицы для оформления абзацев в ячейках (`""` — стиль
-    /// таблиц по умолчанию).
-    pub fn style(&self) -> String {
-        self.props.style.clone().unwrap_or_default()
+    /// Стиль таблицы и части таблицы, к которым относится ячейка `cell`
+    /// в строке `row` из `rows`, начинающаяся в столбце `start`.
+    pub fn cell_style(
+        &self,
+        (row, rows): (usize, usize),
+        start: usize,
+        cell: &TableCell,
+    ) -> TableCellStyle {
+        let columns = self.edges.len().saturating_sub(1);
+        let bands = (
+            self.props.row_band_size.unwrap_or(1),
+            self.props.column_band_size.unwrap_or(1),
+        );
+        // Без `w:tblLook` — как у новой таблицы в Word.
+        let look = self.props.look.unwrap_or(TableLook::WORD);
+        TableCellStyle {
+            style: self.props.style.clone().unwrap_or_default(),
+            areas: TableAreas::of_cell(
+                look,
+                (row, rows),
+                ((start, start + cell.span()), columns),
+                bands,
+            ),
+        }
     }
 
     /// Левый и правый край ячейки, начинающейся в столбце `start`.
@@ -338,11 +362,17 @@ pub(crate) fn build_rows(ctx: &mut Ctx<'_>, table: &Table, origin: f32, width: f
             let (text_x, text_width) = geometry.text_area(start, cell);
             let m = geometry.margins(cell);
             let content = stack(ctx, &cell.blocks, origin + text_x, text_width);
-            let own = cell.props.borders.clone().unwrap_or_default();
             let first_col = start == 0;
             let last_col = c + 1 == count;
             let first_row = r == 0;
             let last_row = r + 1 == row_count;
+            let style = geometry.cell_style((r, row_count), start, cell);
+            let (area_borders, area_shading) =
+                area_cell(ctx.doc, &style, [first_row, last_row, first_col, last_col]);
+            let own = match &cell.props.borders {
+                Some(direct) => overlay_borders(Some(area_borders), direct),
+                None => area_borders,
+            };
             let merge = cell.props.v_merge;
             let top = if merge == Some(VerticalMerge::Continue) {
                 None
@@ -372,6 +402,7 @@ pub(crate) fn build_rows(ctx: &mut Ctx<'_>, table: &Table, origin: f32, width: f
                 .props
                 .shading
                 .as_ref()
+                .or(area_shading.as_ref())
                 .map_or(table_fill, |s| s.background());
             // Как в Word, линии границ занимают место: текст начинается
             // под верхней линией, а под таблицей остаётся место для нижней.
@@ -449,6 +480,53 @@ pub(crate) fn build_rows(ctx: &mut Ctx<'_>, table: &Table, origin: f32, width: f
     }
     spread_merged_cells(&mut rows, &merges);
     rows
+}
+
+/// Границы и заливка ячейки из оформления частей таблицы в её стиле.
+/// `edges` — у края ли таблицы ячейка: сверху, снизу, слева, справа.
+/// Границы части ложатся на её края, внутренние линии части — между
+/// ячейками внутри неё: строка заголовка — сверху и снизу каждой своей
+/// ячейки, а слева и справа — только у краёв таблицы.
+fn area_cell(
+    doc: &Document,
+    style: &TableCellStyle,
+    [top, bottom, left, right]: [bool; 4],
+) -> (Borders, Option<Shading>) {
+    let mut borders = Borders::default();
+    let mut shading = None;
+    for area in doc.table_areas(Some(style)) {
+        if let Some(fill) = &area.cell.shading {
+            shading = Some(fill.clone());
+        }
+        let Some(b) = &area.cell.borders else {
+            continue;
+        };
+        let pick = |edge: bool, outer: &Option<Border>, inner: &Option<Border>| {
+            if edge { outer.clone() } else { inner.clone() }
+        };
+        let (rows, columns) = match area.area {
+            TableArea::WholeTable => (false, false),
+            TableArea::FirstRow
+            | TableArea::LastRow
+            | TableArea::Band1Horizontal
+            | TableArea::Band2Horizontal => (true, false),
+            TableArea::FirstColumn
+            | TableArea::LastColumn
+            | TableArea::Band1Vertical
+            | TableArea::Band2Vertical => (false, true),
+            _ => (true, true),
+        };
+        let sides = Borders {
+            top: pick(top || rows, &b.top, &b.inside_h),
+            bottom: pick(bottom || rows, &b.bottom, &b.inside_h),
+            left: pick(left || columns, &b.left, &b.inside_v),
+            right: pick(right || columns, &b.right, &b.inside_v),
+            inside_h: None,
+            inside_v: None,
+        };
+        borders = overlay_borders(Some(borders), &sides);
+    }
+    (borders, shading)
 }
 
 fn shift_segment(segment: &mut Segment, dy: f32) {

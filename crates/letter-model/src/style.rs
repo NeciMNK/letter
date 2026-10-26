@@ -63,6 +63,9 @@ pub struct Style {
     pub run: RunProps,
     /// Свойства таблицы (`w:tblPr`) — у стилей таблиц.
     pub table: TableProps,
+    /// Оформление частей таблицы (`w:tblStylePr`): строки заголовка,
+    /// полос и т. п. — у стилей таблиц.
+    pub table_areas: Vec<crate::TableAreaStyle>,
     /// Стиль создан пользователем, а не встроен в Word (`w:customStyle`).
     pub custom: bool,
     /// Непонятые элементы стиля (`w:uiPriority`, `w:qFormat`, свойства
@@ -83,6 +86,7 @@ impl Style {
             paragraph: ParagraphProps::default(),
             run: RunProps::default(),
             table: TableProps::default(),
+            table_areas: Vec::new(),
             custom: false,
             unknown: Vec::new(),
         }

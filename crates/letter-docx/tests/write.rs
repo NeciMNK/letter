@@ -15,8 +15,9 @@ use letter_model::{
     Highlight, Hyperlink, Indentation, Inline, LineSpacing, PageMargins, PageSize, Paragraph,
     ParagraphBorders, ParagraphProps, RawXml, RowHeight, RowProps, Run, RunContent, RunFonts,
     RunProps, Section, SectionProps, SectionStart, Shading, Spacing, Style, StyleKind, Styles,
-    TabLeader, TabStop, TabStopKind, Table, TableCell, TableLayout, TableProps, TableRow,
-    TableWidth, ThemeColor, ThemeFont, Twips, Underline, VerticalAlign, VerticalMerge,
+    TabLeader, TabStop, TabStopKind, Table, TableArea, TableAreaStyle, TableCell, TableLayout,
+    TableLook, TableProps, TableRow, TableWidth, ThemeColor, ThemeFont, Twips, Underline,
+    VerticalAlign, VerticalMerge,
 };
 
 const FIXTURES: &[&str] = &[
@@ -430,6 +431,9 @@ fn everything() -> Document {
                         right: Some(TableWidth::Twips(Twips(108))),
                         ..CellMargins::default()
                     }),
+                    look: Some(TableLook::WORD),
+                    row_band_size: Some(1),
+                    column_band_size: Some(2),
                     unknown: Vec::new(),
                 }),
                 grid: vec![Twips(2000), Twips(3000)],
@@ -526,6 +530,18 @@ fn everything() -> Document {
     mine.custom = true;
     let mut grid = Style::new("Grid", StyleKind::Table);
     grid.table.borders = Some(Borders::all(Border::single(4)));
+    let mut header = TableAreaStyle::new(TableArea::FirstRow);
+    header.run.bold = Some(true);
+    header.paragraph.spacing.after = Some(Twips(0));
+    header.cell.shading = Some(Shading::fill(Color::Rgb(0x44, 0x72, 0xC4)));
+    header.cell.borders = Some(Borders {
+        bottom: Some(Border::single(12)),
+        ..Borders::default()
+    });
+    let mut band = TableAreaStyle::new(TableArea::Band1Horizontal);
+    band.cell.shading = Some(Shading::fill(Color::Rgb(0xD9, 0xE2, 0xF3)));
+    grid.table_areas = vec![header, band];
+    grid.table.row_band_size = Some(1);
     grid.table.cell_margins = Some(CellMargins {
         left: Some(TableWidth::Twips(Twips(108))),
         ..CellMargins::default()

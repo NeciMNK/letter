@@ -74,7 +74,9 @@ pub use picture::{
 pub use properties::{AppProperties, CoreProperties, Properties, Statistics};
 pub use protection::{DocumentProtection, EditRestriction, PasswordHash, WriteProtection};
 pub use raw::RawXml;
-pub use resolve::{ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps, overlay_borders};
+pub use resolve::{
+    ResolvedFonts, ResolvedParagraphProps, ResolvedRunProps, TableCellStyle, overlay_borders,
+};
 pub use run::{
     BreakKind, Color, FieldChar, FieldCharKind, Highlight, Hyperlink, OBJECT_CHAR, Revision,
     RevisionKind, Run, RunContent, RunFonts, RunProps, ThemeColor, ThemeFont, Underline,
@@ -93,7 +95,8 @@ pub use style::{DocDefaults, Style, StyleKind, Styles};
 pub use symbol::{Symbol, is_symbol_font, symbol_char};
 pub use table::{
     Block, CellMargins, CellProps, CellVerticalAlign, HeightRule, RowHeight, RowProps, Table,
-    TableCell, TableLayout, TableProps, TableRow, TableWidth, VerticalMerge,
+    TableArea, TableAreaStyle, TableAreas, TableCell, TableLayout, TableLook, TableProps, TableRow,
+    TableWidth, VerticalMerge,
 };
 pub use theme::{Theme, ThemeFontSet};
 pub use units::{HalfPoints, Twips};

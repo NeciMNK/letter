@@ -8,8 +8,8 @@
 
 use letter_model::{
     Block, Border, Borders, CellMargins, Color, Document, LineSpacing, PageSize, Paragraph,
-    Shading, Style, StyleKind, Table, TableCell, TableProps, TableRow, TableWidth, Twips,
-    VerticalMerge,
+    Shading, Style, StyleKind, Table, TableCell, TableLook, TableProps, TableRow, TableWidth,
+    Twips, VerticalMerge,
 };
 
 use crate::edit::{
@@ -255,6 +255,8 @@ pub fn insert_table(doc: &mut Document, at: Position, rows: usize, columns: usiz
         props: Box::new(TableProps {
             style: Some(GRID_STYLE.into()),
             width: Some(TableWidth::Auto),
+            // Как у новой таблицы в Word: заголовок, первый столбец, полосы.
+            look: Some(TableLook::WORD),
             ..TableProps::default()
         }),
         grid: vec![Twips(width); columns],

@@ -1099,6 +1099,9 @@ fn style_xml(style: &Style) -> String {
     if !table.is_empty() {
         children.push("tblPr", element("w:tblPr", &table));
     }
+    for area in &style.table_areas {
+        children.push("tblStylePr", crate::table::table_area_xml(area));
+    }
     children.raw(&style.unknown);
     let attrs: Vec<(String, String)> = attrs
         .into_iter()
