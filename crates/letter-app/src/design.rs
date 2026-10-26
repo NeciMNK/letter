@@ -76,6 +76,13 @@ pub fn design(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                         ui.close();
                     }
                 }
+                ui.separator();
+                if ui.button(tr("borders-dialog")).clicked() {
+                    out.push(RibbonCommand::BordersDialog(
+                        crate::borders_dialog::BordersTab::Page,
+                    ));
+                    ui.close();
+                }
             },
         );
     });

@@ -308,6 +308,8 @@ pub enum RibbonCommand {
     EvenOddHeaders(bool),
     /// Окно «Формат номеров страниц».
     PageNumberFormat,
+    /// Окно «Границы и заливка» на нужной вкладке.
+    BordersDialog(crate::borders_dialog::BordersTab),
     /// «Закрыть окно колонтитулов».
     CloseHeaderFooter,
     /// Обновить поля в выделенном (F9).

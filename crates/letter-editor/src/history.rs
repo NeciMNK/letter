@@ -145,6 +145,17 @@ pub enum Command {
         /// Строк.
         rows: usize,
     },
+    /// Границы выделенных абзацев из окна «Границы и заливка».
+    ParagraphBorders(Box<letter_model::ParagraphBorders>),
+    /// Линии выделенных ячеек из окна «Границы и заливка» (см.
+    /// [`crate::table::set_cell_border_lines`]).
+    CellBorderLines(Box<letter_model::Borders>),
+    /// Границы всей таблицы с курсором.
+    TableBorders(Box<letter_model::Borders>),
+    /// Заливка всей таблицы с курсором; `None` — без заливки.
+    TableShading(Option<Color>),
+    /// Границы страниц во всём документе; `None` — без рамки.
+    PageBorders(Option<Box<letter_model::PageBorders>>),
     /// Вставить рисунок у курсора (заменяет выделенное).
     InsertPicture(Box<Picture>),
     /// Новый размер выделенного рисунка, EMU (выделение остаётся).
@@ -736,6 +747,11 @@ impl History {
                 | Command::TableStyle(_)
                 | Command::TableLook(_)
                 | Command::SplitCells { .. }
+                | Command::ParagraphBorders(_)
+                | Command::CellBorderLines(_)
+                | Command::TableBorders(_)
+                | Command::TableShading(_)
+                | Command::PageBorders(_)
                 | Command::ResizePicture { .. }
                 | Command::PictureAnchor(_)
                 | Command::PictureShape(_)
@@ -786,9 +802,8 @@ impl History {
             | Command::InsertToc(_)
             | Command::AcceptRevisions { all: true }
             | Command::RejectRevisions { all: true }
-            | Command::PageSetup(PageSetup::Borders(_)) => {
-                (0, paragraph_count(doc).saturating_sub(1))
-            }
+            | Command::PageSetup(PageSetup::Borders(_))
+            | Command::PageBorders(_) => (0, paragraph_count(doc).saturating_sub(1)),
             // Блочный элемент занимает несколько абзацев.
             Command::SetControl(_) => crate::controls::control_range(doc, selection.focus)
                 .map_or((start.paragraph, end.paragraph), |(_, a, b)| {
@@ -827,6 +842,7 @@ impl History {
             command,
             Command::SectionBreak(_)
                 | Command::PageSetup(_)
+                | Command::PageBorders(_)
                 | Command::HeaderFooter { .. }
                 | Command::TitlePage { .. }
                 | Command::PageNumbering { .. }
@@ -952,6 +968,28 @@ impl History {
             }
             Command::SplitCells { columns, rows } => {
                 split_cell(doc, selection.focus.paragraph, *columns, *rows).map(Selection::caret)
+            }
+            Command::ParagraphBorders(borders) => {
+                crate::format::set_paragraph_borders(doc, start.paragraph, end.paragraph, borders);
+                Some(selection)
+            }
+            Command::CellBorderLines(lines) => {
+                crate::table::set_cell_border_lines(doc, start.paragraph, end.paragraph, lines)
+                    .then_some(selection)
+            }
+            Command::TableBorders(borders) => {
+                crate::table::set_table_borders(doc, selection.focus.paragraph, borders)
+                    .then_some(selection)
+            }
+            Command::TableShading(fill) => {
+                crate::table::set_table_shading(doc, selection.focus.paragraph, *fill)
+                    .then_some(selection)
+            }
+            Command::PageBorders(borders) => {
+                for section in &mut doc.sections {
+                    section.props.page_borders = borders.as_deref().cloned();
+                }
+                Some(selection)
             }
             Command::ResizePicture { width, height } => {
                 resize_picture(doc, start, *width, *height);
@@ -1155,6 +1193,11 @@ impl History {
             | Command::TableStyle(_)
             | Command::TableLook(_)
             | Command::SplitCells { .. }
+            | Command::ParagraphBorders(_)
+            | Command::CellBorderLines(_)
+            | Command::TableBorders(_)
+            | Command::TableShading(_)
+            | Command::PageBorders(_)
             | Command::ResizePicture { .. }
             | Command::PictureAnchor(_)
             | Command::PictureShape(_)
@@ -1553,6 +1596,12 @@ mod tests {
         };
         assert_eq!(h.run(&mut d, at, moved), at);
         assert_ne!(d, before);
+        h.undo(&mut d);
+        assert_eq!(d, before);
+        // Рамка страниц из окна — тоже.
+        let page = Command::PageBorders(crate::PageBorderPreset::Box.borders().map(Box::new));
+        h.run(&mut d, at, page);
+        assert!(d.sections[0].props.page_borders.is_some());
         h.undo(&mut d);
         assert_eq!(d, before);
         // «Разделить ячейки» тоже отменяется.

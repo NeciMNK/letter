@@ -889,6 +889,8 @@ pub struct Viewer {
     /// Слияние: выбранные получатели.
     mailing: Option<Mailing>,
     page_number_dialog: PageNumberDialog,
+    /// Окно «Границы и заливка».
+    borders_dialog: crate::borders_dialog::BordersDialog,
     /// Окно «Ограничить редактирование».
     protect_dialog: ProtectDialog,
     /// Проверка орфографии.
@@ -1122,6 +1124,7 @@ impl Viewer {
             design_mode: false,
             mailing: None,
             page_number_dialog: PageNumberDialog::default(),
+            borders_dialog: Default::default(),
             protect_dialog: ProtectDialog::default(),
             spelling: crate::spelling::Spelling::start(dir.clone()),
             password_dialog: PasswordDialog::default(),
@@ -1777,6 +1780,7 @@ impl Viewer {
             && !self.rule_dialog.open
             && !self.envelope_dialog.open
             && !self.page_number_dialog.open
+            && !self.borders_dialog.open
             && !self.password_dialog.open
             && !self.symbol_dialog.open
             && (self.ribbon.keytips.active() || !crate::access::typing_elsewhere(&ctx))
@@ -1923,6 +1927,10 @@ impl Viewer {
             }
             if let Some((page, numbering)) = self.page_number_dialog.ui(&ctx) {
                 self.set_page_numbering(page, numbering);
+            }
+            if let Some(commands) = self.borders_dialog.ui(&ctx) {
+                let commands = commands.into_iter().map(RibbonCommand::Edit).collect();
+                self.run_ribbon(&ctx, commands);
             }
             if let Some(action) = self.protect_dialog.ui(&ctx) {
                 self.protect_action(action);
@@ -3569,6 +3577,24 @@ impl Viewer {
                     {
                         let current = section.props.page_numbering.clone();
                         self.page_number_dialog.show(page, current);
+                    }
+                }
+                RibbonCommand::BordersDialog(tab) => {
+                    self.apply_actions(ctx, std::mem::take(&mut actions));
+                    let page = self.story_page();
+                    if let Some(document) = &self.document {
+                        let at = document.selection().start();
+                        let context = crate::borders_dialog::BordersContext {
+                            in_table: letter_editor::in_table(&document.doc, at.paragraph),
+                            paragraph: formatting_at(&document.doc, at)
+                                .map(|(props, _)| props.borders)
+                                .unwrap_or_default(),
+                            cell: letter_editor::cell_borders_at(&document.doc, at.paragraph),
+                            page: document
+                                .page_section(page)
+                                .and_then(|s| s.props.page_borders.clone()),
+                        };
+                        self.borders_dialog.show(tab, &context);
                     }
                 }
                 RibbonCommand::PageNumber(place) => {
@@ -6862,6 +6888,44 @@ mod tests {
         viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
         let document = viewer.document.as_ref().unwrap();
         assert!(document.layout.pages[0].footer.is_empty());
+    }
+
+    #[test]
+    fn borders_and_shading_window() {
+        use crate::borders_dialog::BordersTab;
+        use letter_model::Block;
+        let ctx = Context::default();
+        let mut viewer = Viewer::new(FontLibrary::embedded_only());
+        viewer.open(&fixture("pages.docx")).unwrap();
+        frame(&ctx, &mut viewer, screen());
+        viewer.run_ribbon(
+            &ctx,
+            vec![RibbonCommand::BordersDialog(BordersTab::Borders)],
+        );
+        assert!(viewer.borders_dialog.open);
+        // Вне таблицы — рамка абзаца и рамка страниц.
+        let dialog = &mut viewer.borders_dialog;
+        dialog.sides = [true, true, true, true, false, false];
+        dialog.borders_touched = true;
+        dialog.page_on = true;
+        dialog.page_touched = true;
+        let commands = dialog
+            .commands()
+            .into_iter()
+            .map(RibbonCommand::Edit)
+            .collect();
+        viewer.run_ribbon(&ctx, commands);
+        let doc = &viewer.document.as_ref().unwrap().doc;
+        let Some(Block::Paragraph(first)) = doc.sections[0].blocks.first() else {
+            panic!("нет абзаца");
+        };
+        let borders = first.props.borders.as_ref().unwrap();
+        assert_eq!(borders.top.as_ref().unwrap().style, "single");
+        assert!(doc.sections[0].props.page_borders.is_some());
+        // Одна отмена — одна правка: сначала уходит рамка страниц.
+        viewer.run_ribbon(&ctx, vec![RibbonCommand::Undo]);
+        let doc = &viewer.document.as_ref().unwrap().doc;
+        assert!(doc.sections[0].props.page_borders.is_none());
     }
 
     #[test]

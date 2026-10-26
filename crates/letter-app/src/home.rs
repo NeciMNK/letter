@@ -6,6 +6,7 @@ use eframe::egui::{self, Color32, Key, RichText, TextEdit, Ui, vec2};
 use letter_editor::{BorderEdge, ListKind, ParagraphFormat, RunFormat};
 use letter_model::{Alignment, Color, HalfPoints, Highlight, LineSpacing, Twips};
 
+use crate::borders_dialog::BordersTab;
 use crate::icons::{self, Icon, color_button, icon_button, icon_text_button};
 use crate::keytips::{self, Level, TipAction};
 use crate::ribbon::{RibbonCommand, RibbonInfo, group, group_with_launcher};
@@ -543,6 +544,11 @@ fn shading_and_borders(
                 out.push(RibbonCommand::Paragraph(ParagraphFormat::Border(edge)));
                 ui.close();
             }
+        }
+        ui.separator();
+        if ui.button(tr("borders-dialog")).clicked() {
+            out.push(RibbonCommand::BordersDialog(BordersTab::Borders));
+            ui.close();
         }
     });
 }
