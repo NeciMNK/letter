@@ -36,14 +36,21 @@ impl Border {
         matches!(self.style.as_str(), "nil" | "none")
     }
 
-    /// Толщина в пунктах; у линии без вида — 0.
+    /// Толщина в пунктах; у линии без вида — 0. У двойной линии
+    /// `w:sz` — толщина каждой из линий и промежутка между ними, поэтому
+    /// вся линия втрое толще (у тройной — впятеро).
     pub fn width_points(&self) -> f32 {
         if self.is_none() {
             return 0.0;
         }
         // Word рисует линии не тоньше 1/4 пт и не толще 6 пт.
         let eighths = self.size.unwrap_or(4).clamp(2, 96);
-        eighths as f32 / 8.0
+        let lines = match self.style.as_str() {
+            "double" => 3.0,
+            "triple" => 5.0,
+            _ => 1.0,
+        };
+        eighths as f32 / 8.0 * lines
     }
 }
 
@@ -200,6 +207,11 @@ mod tests {
             theme_color: None,
         };
         assert_eq!(none.width_points(), 0.0);
+        let double = Border {
+            style: "double".into(),
+            ..Border::single(4)
+        };
+        assert_eq!(double.width_points(), 1.5);
     }
 
     #[test]

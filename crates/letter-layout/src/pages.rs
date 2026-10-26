@@ -697,30 +697,23 @@ fn page_borders(page: &mut Page, borders: &PageBorders) {
             page.height - m.bottom + space(&bottom) + width(&bottom),
         )
     };
-    let rule = |b: &Border, x: f32, y: f32, w: f32, h: f32| Shape {
-        x,
-        y,
-        width: w,
-        height: h,
-        color: match b.color {
-            Some(letter_model::Color::Rgb(r, g, b)) => (r, g, b),
-            _ => (0, 0, 0),
-        },
-        kind: ShapeKind::Rule,
-    };
+    let rule =
+        |b: &Border, x: f32, y: f32, w: f32, h: f32| crate::rules::border_shapes(b, x, y, w, h);
     if let Some(b) = &top {
-        page.shapes.push(rule(b, x0, y0, x1 - x0, b.width_points()));
+        page.shapes
+            .extend(rule(b, x0, y0, x1 - x0, b.width_points()));
     }
     if let Some(b) = &bottom {
         let w = b.width_points();
-        page.shapes.push(rule(b, x0, y1 - w, x1 - x0, w));
+        page.shapes.extend(rule(b, x0, y1 - w, x1 - x0, w));
     }
     if let Some(b) = &left {
-        page.shapes.push(rule(b, x0, y0, b.width_points(), y1 - y0));
+        page.shapes
+            .extend(rule(b, x0, y0, b.width_points(), y1 - y0));
     }
     if let Some(b) = &right {
         let w = b.width_points();
-        page.shapes.push(rule(b, x1 - w, y0, w, y1 - y0));
+        page.shapes.extend(rule(b, x1 - w, y0, w, y1 - y0));
     }
 }
 
@@ -3004,17 +2997,8 @@ impl Pager {
         let (inner_left, inner_right) = (run.left - space(&f.left), run.right + space(&f.right));
         let (outer_left, outer_right) =
             (inner_left - width(&f.left), inner_right + width(&f.right));
-        let rule = |b: &Border, x: f32, y: f32, w: f32, h: f32| Shape {
-            x,
-            y,
-            width: w,
-            height: h,
-            color: match b.color {
-                Some(letter_model::Color::Rgb(r, g, b)) => (r, g, b),
-                _ => (0, 0, 0),
-            },
-            kind: ShapeKind::Rule,
-        };
+        let rule =
+            |b: &Border, x: f32, y: f32, w: f32, h: f32| crate::rules::border_shapes(b, x, y, w, h);
         if let Some(color) = f.fill {
             page.shapes.push(Shape {
                 x: inner_left,
@@ -3028,27 +3012,27 @@ impl Pager {
         let across = outer_right - outer_left;
         if let (true, Some(b)) = (run.top_edge, &f.top) {
             page.shapes
-                .push(rule(b, outer_left, run.top, across, b.width_points()));
+                .extend(rule(b, outer_left, run.top, across, b.width_points()));
         }
         if let (true, Some(b)) = (run.bottom_edge, &f.bottom) {
             let w = b.width_points();
             page.shapes
-                .push(rule(b, outer_left, run.bottom - w, across, w));
+                .extend(rule(b, outer_left, run.bottom - w, across, w));
         }
         if let Some(b) = &f.between {
             for &y in &run.between {
                 page.shapes
-                    .push(rule(b, outer_left, y, across, b.width_points()));
+                    .extend(rule(b, outer_left, y, across, b.width_points()));
             }
         }
         let height = run.bottom - run.top;
         if let Some(b) = &f.left {
             page.shapes
-                .push(rule(b, outer_left, run.top, b.width_points(), height));
+                .extend(rule(b, outer_left, run.top, b.width_points(), height));
         }
         if let Some(b) = &f.right {
             page.shapes
-                .push(rule(b, inner_right, run.top, b.width_points(), height));
+                .extend(rule(b, inner_right, run.top, b.width_points(), height));
         }
     }
 

@@ -22,8 +22,8 @@
 use std::sync::Arc;
 
 use letter_model::{
-    Alignment, Block, Border, Borders, CellVerticalAlign, Color, Document, HeightRule, Shading,
-    Table, TableArea, TableAreas, TableCell, TableCellStyle, TableLook, TableProps, TableWidth,
+    Alignment, Block, Border, Borders, CellVerticalAlign, Document, HeightRule, Shading, Table,
+    TableArea, TableAreas, TableCell, TableCellStyle, TableLook, TableProps, TableWidth,
     VerticalMerge, overlay_borders,
 };
 
@@ -698,26 +698,16 @@ pub(crate) fn draw_row(
     }
 }
 
-fn border_color(border: &Border) -> (u8, u8, u8) {
-    match border.color {
-        Some(Color::Rgb(r, g, b)) => (r, g, b),
-        _ => (0, 0, 0),
-    }
-}
-
 fn horizontal(canvas: &mut impl Canvas, border: &Border, left: f32, right: f32, y: f32) {
     let w = border.width_points();
     if w <= 0.0 {
         return;
     }
-    canvas.shape(Shape {
-        x: left - w / 2.0,
-        y: y - w / 2.0,
-        width: right - left + w,
-        height: w,
-        color: border_color(border),
-        kind: ShapeKind::Rule,
-    });
+    for shape in
+        crate::rules::border_shapes(border, left - w / 2.0, y - w / 2.0, right - left + w, w)
+    {
+        canvas.shape(shape);
+    }
 }
 
 fn vertical(canvas: &mut impl Canvas, border: &Border, x: f32, top: f32, bottom: f32) {
@@ -725,14 +715,9 @@ fn vertical(canvas: &mut impl Canvas, border: &Border, x: f32, top: f32, bottom:
     if w <= 0.0 {
         return;
     }
-    canvas.shape(Shape {
-        x: x - w / 2.0,
-        y: top,
-        width: w,
-        height: bottom - top,
-        color: border_color(border),
-        kind: ShapeKind::Rule,
-    });
+    for shape in crate::rules::border_shapes(border, x - w / 2.0, top, w, bottom - top) {
+        canvas.shape(shape);
+    }
 }
 
 /// Делит строку таблицы, не влезающую на страницу: в первую часть —
