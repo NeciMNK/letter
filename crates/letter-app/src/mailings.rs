@@ -4,17 +4,23 @@
 //! собирает новый документ — по копии на запись.
 
 use eframe::egui::{RichText, Ui, vec2};
+use letter_editor::MergeRule;
 
 use crate::i18n::tr;
 use crate::icons::{Icon, icon_button};
 use crate::insert::menu_button;
 use crate::keytips::{self, Level, TipAction};
+use crate::merge_dialogs::RuleKind;
 use crate::ribbon::{RibbonCommand, RibbonInfo, big_label, group, row_group};
 
 /// Подсказки клавиш вкладки (для проверки).
 #[cfg(test)]
-pub const KEYTIPS: [&str; 6] = [
+pub const KEYTIPS: [&str; 10] = [
     "keytip-mailings-recipients",
+    "keytip-mailings-edit-list",
+    "keytip-mailings-address",
+    "keytip-mailings-greeting",
+    "keytip-mailings-rules",
     "keytip-mailings-insert-field",
     "keytip-mailings-preview",
     "keytip-mailings-previous",
@@ -68,7 +74,7 @@ pub fn mailings(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
     let enabled = info.has_document;
     let merge = &info.mailing;
     let has_data = enabled && !merge.fields.is_empty();
-    group(ui, tr("group-mailings-start"), |ui| {
+    row_group(ui, tr("group-mailings-start"), |ui| {
         let command = RibbonCommand::PickRecipients;
         big(
             ui,
@@ -79,8 +85,39 @@ pub fn mailings(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
             command,
             out,
         );
+        let command = RibbonCommand::EditRecipients;
+        big(
+            ui,
+            Icon::EditRecipients,
+            "edit-list",
+            has_data,
+            false,
+            command,
+            out,
+        );
     });
-    group(ui, tr("group-mailings-fields"), |ui| {
+    row_group(ui, tr("group-mailings-fields"), |ui| {
+        let command = RibbonCommand::InsertMergeRule(MergeRule::AddressBlock);
+        big(
+            ui,
+            Icon::AddressBlock,
+            "address",
+            has_data,
+            false,
+            command,
+            out,
+        );
+        let russian = crate::i18n::language() == crate::i18n::Language::Russian;
+        let command = RibbonCommand::InsertMergeRule(MergeRule::GreetingLine { russian });
+        big(
+            ui,
+            Icon::GreetingLine,
+            "greeting",
+            has_data,
+            false,
+            command,
+            out,
+        );
         menu_button(
             ui,
             Icon::MergeField,
@@ -92,6 +129,30 @@ pub fn mailings(ui: &mut Ui, info: &RibbonInfo, out: &mut Vec<RibbonCommand>) {
                 for name in &merge.fields {
                     if ui.button(name).clicked() {
                         out.push(RibbonCommand::InsertMergeField(name.clone()));
+                        ui.close();
+                    }
+                }
+            },
+        );
+        menu_button(
+            ui,
+            Icon::MergeRules,
+            tr("mailings-rules"),
+            tr("mailings-rules-hint"),
+            "keytip-mailings-rules",
+            has_data,
+            |ui| {
+                let items = [
+                    ("rule-if", RibbonCommand::RuleDialog(RuleKind::If)),
+                    (
+                        "rule-record-number",
+                        RibbonCommand::InsertMergeRule(MergeRule::RecordNumber),
+                    ),
+                    ("rule-skip", RibbonCommand::RuleDialog(RuleKind::SkipIf)),
+                ];
+                for (name, command) in items {
+                    if ui.button(tr(name)).clicked() {
+                        out.push(command);
                         ui.close();
                     }
                 }
@@ -193,6 +254,12 @@ mod tests {
         h.run();
         h.get_by_label("Город").click();
         h.run();
+        h.get_by_label("Блок адреса").click();
+        h.run();
+        h.get_all_by_label("Правила").next().unwrap().click();
+        h.run();
+        h.get_by_label("Пропустить запись, если…").click();
+        h.run();
         assert_eq!(
             *h.state(),
             [
@@ -200,6 +267,8 @@ mod tests {
                 RibbonCommand::MergeRecord(1),
                 RibbonCommand::FinishMerge,
                 RibbonCommand::InsertMergeField("Город".into()),
+                RibbonCommand::InsertMergeRule(MergeRule::AddressBlock),
+                RibbonCommand::RuleDialog(RuleKind::SkipIf),
             ]
         );
     }

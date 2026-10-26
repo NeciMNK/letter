@@ -119,6 +119,14 @@ pub enum Icon {
     MergePreview,
     /// «Найти и объединить».
     FinishMerge,
+    /// «Изменить список получателей».
+    EditRecipients,
+    /// «Блок адреса».
+    AddressBlock,
+    /// «Строка приветствия».
+    GreetingLine,
+    /// «Правила» рассылки.
+    MergeRules,
     /// Поля страницы.
     Margins,
     /// Ориентация листа.
@@ -280,6 +288,10 @@ impl Icon {
             Icon::MergeField => ("braces", '\u{E36A}'),
             Icon::MergePreview => ("scan-eye", '\u{E536}'),
             Icon::FinishMerge => ("mails", '\u{E369}'),
+            Icon::EditRecipients => ("user-pen", '\u{E5FC}'),
+            Icon::AddressBlock => ("map-pinned", '\u{E53D}'),
+            Icon::GreetingLine => ("hand", '\u{E1D7}'),
+            Icon::MergeRules => ("split", '\u{E440}'),
             Icon::Margins => ("fullscreen", '\u{E534}'),
             Icon::Orientation => ("rectangle-horizontal", '\u{E376}'),
             Icon::PageSize => ("scaling", '\u{E2EC}'),
@@ -492,7 +504,7 @@ fn ready(ctx: &Context) -> bool {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 79] = [
+    const ALL: [Icon; 83] = [
         Icon::Save,
         Icon::Undo,
         Icon::Redo,
@@ -546,6 +558,10 @@ mod tests {
         Icon::MergeField,
         Icon::MergePreview,
         Icon::FinishMerge,
+        Icon::EditRecipients,
+        Icon::AddressBlock,
+        Icon::GreetingLine,
+        Icon::MergeRules,
         Icon::Margins,
         Icon::Orientation,
         Icon::PageSize,

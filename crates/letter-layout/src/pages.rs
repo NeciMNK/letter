@@ -1597,6 +1597,9 @@ fn prepare(
     let mut notes = Vec::new();
     // Выравнивание отдельной формулы (`m:oMathPara`) в абзаце.
     let mut display_math = None;
+    // Открытые поля: прошёл ли разделитель. Текст в коде поля (результат
+    // вложенного поля, например `MERGEFIELD` внутри `IF`) не виден.
+    let mut open_fields: Vec<bool> = Vec::new();
     for run in paragraph.runs() {
         let mut resolved = doc.resolve_run_in(&paragraph.props, &run.props, table);
         if let Some(revision) = &run.props.revision {
@@ -1605,6 +1608,19 @@ fn prepare(
         let mut text = String::new();
         for item in &run.content {
             match item {
+                RunContent::Text(t) if open_fields.contains(&false) => {
+                    push_text(
+                        &mut spans,
+                        &mut span_props,
+                        &std::mem::take(&mut text),
+                        &resolved,
+                    );
+                    let hidden = ResolvedRunProps {
+                        hidden: true,
+                        ..resolved.clone()
+                    };
+                    push_text(&mut spans, &mut span_props, t, &hidden);
+                }
                 RunContent::Text(t) => text.push_str(t),
                 RunContent::Tab => text.push('\t'),
                 RunContent::Break(letter_model::BreakKind::Line) => text.push('\n'),
@@ -1724,8 +1740,18 @@ fn prepare(
                     span_props.push(resolved.clone());
                 }
                 // Код поля не виден, видно только его результат.
-                RunContent::FieldChar(_)
-                | RunContent::FieldCode(_)
+                RunContent::FieldChar(c) => match c.kind {
+                    letter_model::FieldCharKind::Begin => open_fields.push(false),
+                    letter_model::FieldCharKind::Separate => {
+                        if let Some(top) = open_fields.last_mut() {
+                            *top = true;
+                        }
+                    }
+                    letter_model::FieldCharKind::End => {
+                        open_fields.pop();
+                    }
+                },
+                RunContent::FieldCode(_)
                 | RunContent::CommentReference(_)
                 | RunContent::Unknown(_) => {}
             }
@@ -3779,6 +3805,35 @@ mod tests {
         let layout = lay(&d);
         let first = layout.pages.iter().find(|p| p.section == 1).unwrap();
         assert_eq!((first.number, first.kind), (4, HeaderFooterKind::Even));
+    }
+
+    #[test]
+    fn text_in_field_code_is_hidden() {
+        use letter_model::{FieldChar, FieldCharKind};
+        let mark = |kind| RunContent::FieldChar(FieldChar::new(kind));
+        // IF с вложенным полем: результат вложенного («зззз») — в коде IF.
+        let mut field = para("a");
+        field.content.push(letter_model::Inline::Run(Run {
+            props: RunProps::default(),
+            content: vec![
+                mark(FieldCharKind::Begin),
+                RunContent::FieldCode(" IF ".into()),
+                mark(FieldCharKind::Begin),
+                RunContent::FieldCode(" MERGEFIELD x ".into()),
+                mark(FieldCharKind::Separate),
+                RunContent::Text("зззз".into()),
+                mark(FieldCharKind::End),
+                RunContent::FieldCode(" = 1 \"b\" ".into()),
+                mark(FieldCharKind::Separate),
+                RunContent::Text("b".into()),
+                mark(FieldCharKind::End),
+            ],
+        }));
+        let width = |p: Paragraph| {
+            let layout = lay(&doc(vec![p]));
+            layout.pages[0].lines[0].line.width
+        };
+        assert!((width(field) - width(para("ab"))).abs() < 0.01);
     }
 
     #[test]

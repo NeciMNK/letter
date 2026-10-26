@@ -30,6 +30,7 @@ mod language;
 mod layout;
 mod link_dialog;
 mod mailings;
+mod merge_dialogs;
 mod modes;
 mod navigation;
 mod outlining;

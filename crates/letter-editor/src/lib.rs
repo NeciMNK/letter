@@ -81,7 +81,10 @@ pub use lists::{
     ListKind, can_continue_numbering, change_list_level, continue_numbering, list_item, list_kind,
     multilevel_list, remove_from_list, restart_numbering, tab_changes_level, toggle_list,
 };
-pub use merge::{MergeData, has_merge_fields, insert_merge_field, merge_all, show_record};
+pub use merge::{
+    Compare, MergeData, MergeRule, has_merge_fields, insert_merge_field, insert_merge_rule,
+    merge_all, show_record,
+};
 pub use navigation::{Motion, Moved, move_cursor};
 pub use notes::{insert_note, note_places, note_styles, notes, notes_mut};
 pub use outline::{OutlineEntry, bookmark_places, document_outline};
