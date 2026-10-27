@@ -53,8 +53,8 @@ fn texts(doc: &Document) -> Vec<String> {
 }
 
 /// Текст без разрывов страниц: в ODF разрыв — свойство следующего абзаца.
-/// Тексты абзацев без разрывов страниц и без рисунков (рисунки в ODT
-/// пока не записываются).
+/// Тексты абзацев без разрывов страниц и без знаков объектов (фигуры
+/// и диаграммы в ODT пока не записываются).
 fn texts_without_page_breaks(doc: &Document) -> Vec<String> {
     texts(doc)
         .iter()
@@ -688,4 +688,44 @@ fn files_on_disk() {
         vec!["Привет"]
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn pictures_survive_odt() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/docx/image.docx");
+    let docx = letter_docx::read_file(&path).unwrap();
+    let pictures = |doc: &Document| -> Vec<letter_model::Picture> {
+        paragraphs(doc)
+            .into_iter()
+            .flat_map(|p| p.runs())
+            .flat_map(|r| r.content.iter())
+            .filter_map(|c| match c {
+                RunContent::Picture(p) => Some(p.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let before = pictures(&docx);
+    assert!(!before.is_empty());
+    let bytes = letter_odt::write(&docx).unwrap();
+    let back = letter_odt::read(&bytes).unwrap();
+    let after = pictures(&back);
+    assert_eq!(after.len(), before.len());
+    let image = |p: &letter_model::Picture| p.image.as_ref().map(|i| i.bytes.clone());
+    assert_eq!(image(&after[0]), image(&before[0]));
+    // Размер — с точностью до твипа (635 EMU).
+    assert!((after[0].width - before[0].width).abs() <= 635);
+    // Картинка лежит в папке Pictures/ и записана в manifest.xml.
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    let mut manifest = String::new();
+    std::io::Read::read_to_string(
+        &mut archive.by_name("META-INF/manifest.xml").unwrap(),
+        &mut manifest,
+    )
+    .unwrap();
+    assert!(manifest.contains("Pictures/image1."));
+    assert!(
+        archive.index_for_name("Pictures/image1.png").is_some()
+            || archive.index_for_name("Pictures/image1.jpg").is_some()
+    );
 }

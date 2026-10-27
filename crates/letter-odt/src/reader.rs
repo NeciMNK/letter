@@ -2,11 +2,12 @@
 
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
+use std::sync::Arc;
 
 use letter_model::{
-    Block, BreakKind, Document, HalfPoints, Inline, Orientation, PageMargins, PageSize, Paragraph,
-    ParagraphProps, Run, RunContent, RunFonts, RunProps, Section, SectionProps, Style, StyleKind,
-    Table, TableCell, TableRow, Twips,
+    Block, BreakKind, Document, HalfPoints, ImageData, Inline, Orientation, PageMargins, PageSize,
+    Paragraph, ParagraphProps, Picture, Run, RunContent, RunFonts, RunProps, Section, SectionProps,
+    Style, StyleKind, Table, TableCell, TableRow, Twips,
 };
 use zip::ZipArchive;
 
@@ -31,6 +32,8 @@ struct Parts {
     styles: Option<Element>,
     meta: Option<Element>,
     settings: Option<Element>,
+    /// Картинки из папки `Pictures/`: путь в архиве → байты.
+    pictures: HashMap<String, Vec<u8>>,
 }
 
 pub(crate) fn read(data: &[u8]) -> Result<Document, ReadError> {
@@ -47,6 +50,7 @@ pub(crate) fn read(data: &[u8]) -> Result<Document, ReadError> {
             styles: None,
             meta: None,
             settings: None,
+            pictures: HashMap::new(),
         }
     };
     Ok(Reader::new(&parts).document(&parts))
@@ -63,6 +67,18 @@ fn zip_parts(data: &[u8]) -> Result<Parts, ReadError> {
     let content = read_part(&mut archive, "content.xml")?
         .ok_or_else(|| ReadError::MissingPart("content.xml".into()))?;
     let content = xml::parse(&content)?;
+    let names: Vec<String> = archive
+        .file_names()
+        .filter_map(Result::ok)
+        .filter(|n| n.starts_with("Pictures/"))
+        .map(|n| n.into_owned())
+        .collect();
+    let mut pictures = HashMap::new();
+    for name in names {
+        if let Some(bytes) = read_part(&mut archive, &name)? {
+            pictures.insert(name, bytes);
+        }
+    }
     // Без остальных частей документ всё равно можно показать.
     let mut optional = |name: &str| {
         read_part(&mut archive, name)
@@ -71,6 +87,7 @@ fn zip_parts(data: &[u8]) -> Result<Parts, ReadError> {
             .and_then(|bytes| xml::parse(&bytes).ok())
     };
     Ok(Parts {
+        pictures,
         styles: optional("styles.xml"),
         meta: optional("meta.xml"),
         settings: optional("settings.xml"),
@@ -127,6 +144,8 @@ struct Reader<'a> {
     masters: HashMap<String, SectionProps>,
     default_master: Option<String>,
     body: Option<&'a Element>,
+    /// Картинки архива.
+    pictures: &'a HashMap<String, Vec<u8>>,
 }
 
 impl<'a> Reader<'a> {
@@ -156,6 +175,7 @@ impl<'a> Reader<'a> {
             auto: HashMap::new(),
             masters: HashMap::new(),
             default_master: None,
+            pictures: &parts.pictures,
             body: parts
                 .content
                 .child("office:body")
@@ -543,10 +563,46 @@ impl<'a> Reader<'a> {
                     let inner = self.span_props(child, doc, paragraph, props);
                     self.inline(child, doc, paragraph, &inner, out, depth + 1);
                 }
-                // Примечания, рисунки и прочее пока не переносятся.
+                "draw:frame" => {
+                    if let Some(picture) = self.picture(child) {
+                        out.push(RunContent::Picture(picture), props);
+                    }
+                }
+                // Примечания, фигуры и прочее пока не переносятся.
                 _ => {}
             }
         }
+    }
+
+    /// Рисунок из `draw:frame` с картинкой из архива (`draw:image`).
+    /// Привязка к абзацу и обтекание пока не читаются: рисунок встаёт
+    /// в строку.
+    fn picture(&self, frame: &Element) -> Option<Picture> {
+        let image = frame.child("draw:image")?;
+        let href = image.attr("xlink:href")?;
+        let bytes = self.pictures.get(href.trim_start_matches("./"))?;
+        let extension = href
+            .rsplit('.')
+            .next()
+            .unwrap_or("png")
+            .to_ascii_lowercase();
+        let size = |name: &str| frame.attr(name).and_then(parse_length);
+        let (width, height) = (size("svg:width")?, size("svg:height")?);
+        // Твип — 635 EMU.
+        Some(Picture {
+            drawing: None,
+            width: i64::from(width.0) * 635,
+            height: i64::from(height.0) * 635,
+            image: Some(Arc::new(ImageData {
+                name: format!("media/image.{extension}"),
+                bytes: bytes.clone(),
+                chart: None,
+            })),
+            relationship: None,
+            raw: None,
+            anchor: None,
+            shape: None,
+        })
     }
 
     /// Оформление внутри `text:span` (и других элементов со стилем).
