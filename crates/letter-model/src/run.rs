@@ -275,6 +275,32 @@ pub struct Hyperlink {
 }
 
 impl Hyperlink {
+    /// Разбирает код поля `HYPERLINK`: адрес и ключи `\l` (закладка), `\o`
+    /// (подсказка), `\t` (окно). Не ссылка — `None`.
+    pub fn from_field_code(code: &str) -> Option<Hyperlink> {
+        let words = field_words(code);
+        let (first, rest) = words.split_first()?;
+        if !first.eq_ignore_ascii_case("HYPERLINK") {
+            return None;
+        }
+        let mut link = Hyperlink {
+            history: true,
+            ..Hyperlink::default()
+        };
+        let mut rest = rest.iter();
+        while let Some(word) = rest.next() {
+            match word.as_str() {
+                "\\l" => link.anchor = rest.next().cloned(),
+                "\\o" => link.tooltip = rest.next().cloned(),
+                "\\t" => link.frame = rest.next().cloned(),
+                w if w.starts_with('\\') => {}
+                w if link.target.is_none() => link.target = Some(w.to_string()),
+                _ => {}
+            }
+        }
+        (link.target.is_some() || link.anchor.is_some()).then_some(link)
+    }
+
     /// Ссылка на адрес `target`.
     pub fn to(target: impl Into<String>) -> Hyperlink {
         Hyperlink {
@@ -492,6 +518,38 @@ pub enum VerticalAlign {
     Superscript,
     /// Подстрочный знак: H₂O.
     Subscript,
+}
+
+/// Слова кода поля: в кавычках — целиком, без кавычек.
+fn field_words(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut chars = code.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+        } else if c == '"' {
+            chars.next();
+            let mut word = String::new();
+            for c in chars.by_ref() {
+                if c == '"' {
+                    break;
+                }
+                word.push(c);
+            }
+            out.push(word);
+        } else {
+            let mut word = String::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_whitespace() || c == '"' {
+                    break;
+                }
+                word.push(c);
+                chars.next();
+            }
+            out.push(word);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
