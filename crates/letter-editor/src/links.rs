@@ -1,7 +1,10 @@
 //! Гиперссылки и закладки: ссылка у курсора, поставить и снять ссылку,
 //! где закладка.
 
-use letter_model::{Bookmark, Color, Document, Hyperlink, Inline, Paragraph, RunProps, Underline};
+use letter_model::{
+    Bookmark, Color, Document, FieldCharKind, Hyperlink, Inline, Paragraph, RunContent, RunProps,
+    Underline,
+};
 
 use crate::edit::{paragraph_count, paragraph_mut, paragraph_ref, split_content, tidy};
 use crate::format::apply;
@@ -44,15 +47,48 @@ pub fn link_at(doc: &Document, at: Position) -> Option<(Hyperlink, Position, Pos
 
 /// Куски текста абзаца с их ссылками: начало, конец (байты) и ссылка.
 /// Пустые фрагменты пропускаются.
+/// Результат поля `HYPERLINK` — тоже ссылка, как в Word.
 fn segments(paragraph: &Paragraph) -> Vec<(usize, usize, Option<Hyperlink>)> {
-    let mut out = Vec::new();
+    let mut out: Vec<(usize, usize, Option<Hyperlink>)> = Vec::new();
     let mut offset = 0;
+    // Открытые поля: код и ссылка из него (после `separate`).
+    let mut fields: Vec<(String, Option<Hyperlink>)> = Vec::new();
     for run in paragraph.runs() {
-        let len: usize = run.content.iter().map(|c| c.text_len()).sum();
-        if len > 0 {
-            out.push((offset, offset + len, run.props.link.clone()));
+        for item in &run.content {
+            match item {
+                RunContent::FieldChar(c) => match c.kind {
+                    FieldCharKind::Begin => fields.push((String::new(), None)),
+                    FieldCharKind::Separate => {
+                        if let Some((code, link)) = fields.last_mut() {
+                            *link = Hyperlink::from_field_code(code);
+                        }
+                    }
+                    FieldCharKind::End => {
+                        fields.pop();
+                    }
+                },
+                RunContent::FieldCode(text) => {
+                    if let Some((code, None)) = fields.last_mut() {
+                        code.push_str(text);
+                    }
+                }
+                _ => {}
+            }
+            let len = item.text_len();
+            if len == 0 {
+                continue;
+            }
+            let link = run
+                .props
+                .link
+                .clone()
+                .or_else(|| fields.iter().rev().find_map(|(_, link)| link.clone()));
+            match out.last_mut() {
+                Some((_, end, last)) if *end == offset && *last == link => *end += len,
+                _ => out.push((offset, offset + len, link)),
+            }
+            offset += len;
         }
-        offset += len;
     }
     out
 }
@@ -289,6 +325,40 @@ mod tests {
         );
         doc.sections[0].blocks = vec![p.into()];
         doc
+    }
+
+    #[test]
+    fn hyperlink_field_is_a_link() {
+        use letter_model::{FieldChar, RunContent};
+        let char_run = |kind| Run {
+            props: RunProps::default(),
+            content: vec![RunContent::FieldChar(FieldChar::new(kind))],
+        };
+        let code = Run {
+            props: RunProps::default(),
+            content: vec![RunContent::FieldCode(
+                r#" HYPERLINK "https://example.com" \o "Пример" "#.into(),
+            )],
+        };
+        let mut doc = Document::new();
+        doc.sections[0].blocks = vec![
+            Paragraph::from_runs([
+                Run::text("ab "),
+                char_run(FieldCharKind::Begin),
+                code,
+                char_run(FieldCharKind::Separate),
+                Run::text("site"),
+                char_run(FieldCharKind::End),
+                Run::text(" c"),
+            ])
+            .into(),
+        ];
+        let (link, start, end) = link_at(&doc, Position::new(0, 4)).unwrap();
+        assert_eq!(link.target.as_deref(), Some("https://example.com"));
+        assert_eq!(link.tooltip.as_deref(), Some("Пример"));
+        assert_eq!((start.offset, end.offset), (3, 7));
+        assert!(link_at(&doc, Position::new(0, 1)).is_none());
+        assert!(link_at(&doc, Position::new(0, 8)).is_none());
     }
 
     #[test]
