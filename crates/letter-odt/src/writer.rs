@@ -103,7 +103,7 @@ pub(crate) fn write(doc: &Document) -> Result<Vec<u8>, WriteError> {
         ("styles.xml", styles),
         ("meta.xml", meta(doc)),
         ("settings.xml", settings(doc)),
-        ("META-INF/manifest.xml", manifest()),
+        ("META-INF/manifest.xml", manifest(&writer.media)),
     ];
 
     let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
@@ -116,6 +116,11 @@ pub(crate) fn write(doc: &Document) -> Result<Vec<u8>, WriteError> {
     for (name, xml) in parts {
         zip.start_file(name, deflated)?;
         zip.write_all(xml.as_bytes())?;
+    }
+    // Картинки уже сжаты — без сжатия, как у LibreOffice.
+    for (path, bytes, _) in &writer.media {
+        zip.start_file(path.as_str(), stored)?;
+        zip.write_all(bytes)?;
     }
     Ok(zip.finish()?.into_inner())
 }
@@ -158,6 +163,8 @@ struct Writer<'a> {
     /// Шаблон страницы, с которого начинается следующий блок.
     pending_master: Option<String>,
     tables: usize,
+    /// Картинки для папки `Pictures/`: путь в архиве, байты, MIME-тип.
+    media: Vec<(String, Vec<u8>, &'static str)>,
     /// Ширина текста текущего раздела (для таблиц).
     text_width: Twips,
 }
@@ -201,6 +208,7 @@ impl<'a> Writer<'a> {
             pending_break: None,
             pending_master: None,
             tables: 0,
+            media: Vec::new(),
             text_width: Twips(9000),
         }
     }
@@ -432,9 +440,12 @@ impl<'a> Writer<'a> {
                 RunContent::Math(m) => text.push(&m.linear_text().replace('\n', " ")),
                 RunContent::Tab => text.element("<text:tab/>"),
                 RunContent::Break(_) => text.element("<text:line-break/>"),
-                // Рисунки в ODT пока не записываются.
-                RunContent::Picture(_)
-                | RunContent::FieldChar(_)
+                RunContent::Picture(picture) => {
+                    if let Some(frame) = self.picture(picture) {
+                        text.element(&frame);
+                    }
+                }
+                RunContent::FieldChar(_)
                 | RunContent::FieldCode(_)
                 | RunContent::NoteReference(_)
                 | RunContent::NoteMark(_)
@@ -445,6 +456,24 @@ impl<'a> Writer<'a> {
         if style.is_some() {
             text.out.push_str("</text:span>");
         }
+    }
+
+    /// Рисунок в строке: `draw:frame` с картинкой из `Pictures/`. Фигуры,
+    /// диаграммы и картинки незнакомого вида не записываются.
+    fn picture(&mut self, picture: &letter_model::Picture) -> Option<String> {
+        let image = picture.image.as_ref().filter(|i| i.chart.is_none())?;
+        let (extension, mime) = image_kind(&image.bytes)?;
+        let path = format!("Pictures/image{}.{extension}", self.media.len() + 1);
+        self.media.push((path.clone(), image.bytes.clone(), mime));
+        let n = self.media.len();
+        Some(format!(
+            "<draw:frame draw:name=\"Image{n}\" text:anchor-type=\"as-char\" \
+             svg:width=\"{}pt\" svg:height=\"{}pt\" draw:z-index=\"0\">\
+             <draw:image xlink:href=\"{path}\" xlink:type=\"simple\" \
+             xlink:show=\"embed\" xlink:actuate=\"onLoad\"/></draw:frame>",
+            picture.width_points(),
+            picture.height_points()
+        ))
     }
 
     fn table(&mut self, table: &Table, out: &mut String, top: bool) {
@@ -944,7 +973,22 @@ fn settings(doc: &Document) -> String {
     out
 }
 
-fn manifest() -> String {
+/// Вид картинки по первым байтам: расширение и MIME-тип.
+fn image_kind(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
+    if bytes.starts_with(b"\x89PNG") {
+        Some(("png", "image/png"))
+    } else if bytes.starts_with(&[0xFF, 0xD8]) {
+        Some(("jpg", "image/jpeg"))
+    } else if bytes.starts_with(b"GIF8") {
+        Some(("gif", "image/gif"))
+    } else if bytes.starts_with(b"BM") {
+        Some(("bmp", "image/bmp"))
+    } else {
+        None
+    }
+}
+
+fn manifest(media: &[(String, Vec<u8>, &'static str)]) -> String {
     let mut out = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<manifest:manifest \
          xmlns:manifest=\"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0\" \
@@ -958,6 +1002,13 @@ fn manifest() -> String {
         let _ = write!(
             out,
             "<manifest:file-entry manifest:full-path=\"{part}\" manifest:media-type=\"text/xml\"/>"
+        );
+    }
+    for (path, _, mime) in media {
+        let _ = write!(
+            out,
+            "<manifest:file-entry manifest:full-path=\"{}\" manifest:media-type=\"{mime}\"/>",
+            escape(path)
         );
     }
     out.push_str("</manifest:manifest>");
